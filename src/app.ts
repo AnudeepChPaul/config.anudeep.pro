@@ -1,7 +1,9 @@
 import { stat, unlink } from 'node:fs/promises';
 import net from 'node:net';
+import formbody from '@fastify/formbody';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { type InternalRouteOptions, registerInternalRoutes } from './routes/internal.js';
+import { registerUiRoutes, type UiRouteOptions } from './routes/ui.js';
 
 /**
  * The read API, bound to a Unix socket and nothing else.
@@ -77,11 +79,12 @@ export interface ReadApi {
 }
 
 export interface ReadApiOptions extends InternalRouteOptions {
-  readonly logger?: FastifyInstance['log'] | false;
+  /** A pino instance. Fastify 5 takes an existing logger as `loggerInstance`, not `logger`. */
+  readonly logger?: FastifyInstance['log'];
 }
 
 export async function buildReadApi(options: ReadApiOptions): Promise<ReadApi> {
-  const app = Fastify({ logger: options.logger ?? false });
+  const app = Fastify(options.logger ? { loggerInstance: options.logger } : { logger: false });
   registerInternalRoutes(app, options);
   await app.ready();
 
@@ -104,4 +107,35 @@ export async function buildReadApi(options: ReadApiOptions): Promise<ReadApi> {
       listeningOn = null;
     },
   };
+}
+
+export interface WebAppOptions extends UiRouteOptions {
+  readonly environment: string;
+  /** Whether an authentication layer is in front of these routes. */
+  readonly authenticated: boolean;
+  readonly logger?: FastifyInstance['log'];
+}
+
+export class UnprotectedUiError extends Error {}
+
+/**
+ * The CRUD UI, over HTTP.
+ *
+ * Unlike the read API this one is reachable from a browser, so it refuses to start in prod
+ * without authentication in front of it. These routes can close registration and change MFA
+ * enforcement for the whole platform; running them unprotected because a login was not wired up
+ * yet is not a state worth leaving reachable, and a warning in a log is not a control.
+ */
+export async function buildWebApp(options: WebAppOptions): Promise<FastifyInstance> {
+  if (options.environment === 'prod' && !options.authenticated) {
+    throw new UnprotectedUiError(
+      'refusing to serve the configuration UI in prod without authentication',
+    );
+  }
+
+  const app = Fastify(options.logger ? { loggerInstance: options.logger } : { logger: false });
+  await app.register(formbody);
+  registerUiRoutes(app, options);
+  await app.ready();
+  return app;
 }

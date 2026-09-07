@@ -238,6 +238,11 @@ export class GitRepository {
     }
   }
 
+  /** One file's contents as committed at HEAD. */
+  async readFile(path: string): Promise<string> {
+    return this.git('show', `${await this.headCommit()}:${path}`);
+  }
+
   private async listYamlFiles(commit: Sha, dir: string): Promise<string[]> {
     // `-z` because a path may contain anything a filesystem allows; without it git quotes and
     // escapes unusual names and the split would be wrong.

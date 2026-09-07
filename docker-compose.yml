@@ -2,6 +2,31 @@
 name: config-anudeep-pro
 
 services:
+  # The service itself, for local work: `docker compose up app`, then open
+  # http://localhost:8200. A sample repository is seeded into the volume by `make seed`.
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment:
+      CONFIG_ENVIRONMENT: dev
+      CONFIG_LOG_LEVEL: debug
+      CONFIG_REPO_DIR: /var/lib/config/repo
+      CONFIG_SOCKET_PATH: /run/config/config.sock
+      CONFIG_SNAPSHOT_PATH: /var/lib/config/snapshot.json
+      # Binds inside the container; the port mapping below decides who can reach it. The UI has
+      # no authentication until slice 10, which is also why CONFIG_ENVIRONMENT must stay dev.
+      CONFIG_HTTP_HOST: 0.0.0.0
+      CONFIG_AGE_KEY: ${CONFIG_AGE_KEY:-}
+    volumes:
+      - ./src:/app/src:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - config_repo:/var/lib/config
+      - config_socket:/run/config
+    # 127.0.0.1 explicitly: an unauthenticated editor that can close registration must not be
+    # reachable from the network, and a bare "8200:8200" would publish it on every interface.
+    ports: ["127.0.0.1:8200:8200"]
+
   # `docker compose run --rm test` — the suite on Linux, where SO_PEERCRED exists.
   #
   # Not a long-running service and deliberately not part of `up`: it runs, reports, and exits.
@@ -23,3 +48,6 @@ services:
 
 volumes:
   config_test_modules:
+  config_repo:
+  # Shared with consuming services, which reach the read API at /run/config/config.sock.
+  config_socket:

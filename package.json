@@ -20,6 +20,7 @@
     "check": "biome check . && tsc --noEmit && vitest run"
   },
   "dependencies": {
+    "@fastify/formbody": "^9.0.0",
     "fastify": "5.12.3",
     "koffi": "^3.2.1",
     "pino": "10.3.1",

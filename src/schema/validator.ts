@@ -53,6 +53,14 @@ export class SchemaSet {
     return new SchemaSet(services);
   }
 
+  /**
+   * The declared keys for a service, so the UI can render a form the schema describes rather
+   * than guessing types from whatever values happen to be set.
+   */
+  definitionsFor(service: string): ReadonlyMap<string, KeyDefinition> {
+    return this.services.get(service) ?? new Map();
+  }
+
   /** Whether this key must be SOPS-encrypted before it is committed. */
   isSecret(service: string, key: string): boolean {
     return this.services.get(service)?.get(key)?.secret ?? false;

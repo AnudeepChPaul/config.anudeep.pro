@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+#
+# Development: tsx watch with the source bind-mounted, so a save reloads the server.
+FROM node:24-bookworm-slim
+WORKDIR /app
+ARG SOPS_VERSION=3.13.3
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git openssh-client ca-certificates curl age \
+  && ARCH="$(dpkg --print-architecture)" \
+  && curl -fsSL -o /usr/local/bin/sops \
+     "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.${ARCH}" \
+  && chmod +x /usr/local/bin/sops \
+  && rm -rf /var/lib/apt/lists/*
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+# Created here, owned by app, so a fresh named volume mounted over them inherits that
+# ownership. Docker seeds an empty volume from the image, root-owned if the path did not exist.
+RUN useradd -u 10010 -m app \
+  && mkdir -p /var/lib/config /run/config \
+  && chown -R app:app /var/lib/config /run/config && chown -R app:app /app
+USER app
+RUN git config --global --add safe.directory '*' \
+  && git config --global user.email 'config@anudeep.pro' \
+  && git config --global user.name 'config service'
+EXPOSE 8200
+CMD ["pnpm", "dev"]
