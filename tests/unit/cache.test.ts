@@ -1,9 +1,6 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ConfigCache } from '@config/src/store/cache.js';
 import type { ConfigTree } from '@config/src/store/types.js';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 /**
  * The cache is what every read is actually served from, so that no service read depends on git,
