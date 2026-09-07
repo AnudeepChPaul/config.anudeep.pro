@@ -43,7 +43,7 @@ describe('GitRepository.headCommit', () => {
   });
 });
 
-describe('GitRepository.readTree', () => {
+describe('GitRepository.readSources', () => {
   it('keys every config file by its service/environment namespace', async () => {
     const repo = await newRepo();
     await repo.commit({
@@ -52,35 +52,27 @@ describe('GitRepository.readTree', () => {
       'config/api/prod.yaml': 'RATE_LIMIT: 100\n',
     });
 
-    const tree = await new GitRepository(repo.dir).readTree();
+    const { sources } = await new GitRepository(repo.dir).readSources();
 
-    expect([...tree.namespaces.keys()].sort()).toEqual(['api/prod', 'iam/dev', 'iam/prod']);
-    expect(tree.namespaces.get('iam/prod')).toEqual({ MFA_ENFORCEMENT: 'all' });
+    expect([...sources.keys()].sort()).toEqual(['api/prod', 'iam/dev', 'iam/prod']);
   });
 
-  it('preserves YAML types rather than stringifying everything', async () => {
-    // The schema validator in slice 3 asserts typed keys. If the loader flattened everything to
-    // strings, every bool and int constraint would have to be re-parsed downstream.
+  it('returns the file text as committed, without interpreting it', async () => {
+    // Parsing belongs to the loader, after decryption. If this method parsed, it would have to
+    // parse ciphertext — and an encrypted file is not the document it will become.
     const repo = await newRepo();
-    await repo.commit({
-      'config/iam/prod.yaml':
-        'KILL_PASSWORD_LOGIN: true\nSESSION_TTL: 3600\nFP_COMPONENTS: [ua, lang]\n',
-    });
+    await repo.commit({ 'config/iam/prod.yaml': 'MFA_ENFORCEMENT: all\n' });
 
-    const tree = await new GitRepository(repo.dir).readTree();
+    const { sources } = await new GitRepository(repo.dir).readSources();
 
-    expect(tree.namespaces.get('iam/prod')).toEqual({
-      KILL_PASSWORD_LOGIN: true,
-      SESSION_TTL: 3600,
-      FP_COMPONENTS: ['ua', 'lang'],
-    });
+    expect(sources.get('iam/prod')).toBe('MFA_ENFORCEMENT: all\n');
   });
 
   it('reports the commit it read at', async () => {
     const repo = await newRepo();
     const sha = await repo.commit({ 'config/iam/prod.yaml': 'A: 1\n' });
 
-    expect((await new GitRepository(repo.dir).readTree()).commit).toBe(sha);
+    expect((await new GitRepository(repo.dir).readSources()).commit).toBe(sha);
   });
 
   it('reads committed state, ignoring an uncommitted working-tree edit', async () => {
@@ -91,9 +83,9 @@ describe('GitRepository.readTree', () => {
     await repo.commit({ 'config/iam/prod.yaml': 'MFA_ENFORCEMENT: all\n' });
     await repo.write('config/iam/prod.yaml', 'MFA_ENFORCEMENT: optional\n');
 
-    const tree = await new GitRepository(repo.dir).readTree();
+    const { sources } = await new GitRepository(repo.dir).readSources();
 
-    expect(tree.namespaces.get('iam/prod')).toEqual({ MFA_ENFORCEMENT: 'all' });
+    expect(sources.get('iam/prod')).toContain('all');
   });
 
   it('does not see an untracked file that was never committed', async () => {
@@ -101,9 +93,9 @@ describe('GitRepository.readTree', () => {
     await repo.commit({ 'config/iam/prod.yaml': 'A: 1\n' });
     await repo.write('config/rogue/prod.yaml', 'B: 2\n');
 
-    const tree = await new GitRepository(repo.dir).readTree();
+    const { sources } = await new GitRepository(repo.dir).readSources();
 
-    expect(tree.namespaces.has('rogue/prod')).toBe(false);
+    expect(sources.has('rogue/prod')).toBe(false);
   });
 
   it('reads only config/, leaving schema and sops files alone', async () => {
@@ -115,39 +107,28 @@ describe('GitRepository.readTree', () => {
       'services.yaml': 'services: []\n',
     });
 
-    const tree = await new GitRepository(repo.dir).readTree();
+    const { sources } = await new GitRepository(repo.dir).readSources();
 
-    expect([...tree.namespaces.keys()]).toEqual(['iam/prod']);
+    expect([...sources.keys()]).toEqual(['iam/prod']);
   });
 
   it('ignores non-YAML files inside config/', async () => {
     const repo = await newRepo();
     await repo.commit({ 'config/iam/prod.yaml': 'A: 1\n', 'config/iam/README.md': '# notes\n' });
 
-    const tree = await new GitRepository(repo.dir).readTree();
+    const { sources } = await new GitRepository(repo.dir).readSources();
 
-    expect([...tree.namespaces.keys()]).toEqual(['iam/prod']);
+    expect([...sources.keys()]).toEqual(['iam/prod']);
   });
 
-  it('treats an empty config file as a namespace with no overrides', async () => {
-    // Distinct from an absent namespace: the file exists, so the service is known and simply
-    // overrides nothing today.
-    const repo = await newRepo();
-    await repo.commit({ 'config/iam/prod.yaml': '' });
-
-    const tree = await new GitRepository(repo.dir).readTree();
-
-    expect(tree.namespaces.get('iam/prod')).toEqual({});
-  });
-
-  it('returns an empty tree for a repo with no config directory', async () => {
+  it('returns nothing for a repo with no config directory', async () => {
     // A fresh repo must not crash the service on boot; there is simply nothing to override.
     const repo = await newRepo();
 
-    const tree = await new GitRepository(repo.dir).readTree();
+    const { commit, sources } = await new GitRepository(repo.dir).readSources();
 
-    expect(tree.namespaces.size).toBe(0);
-    expect(tree.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(sources.size).toBe(0);
+    expect(commit).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it('rejects a config file nested deeper than service/environment', async () => {
@@ -156,23 +137,9 @@ describe('GitRepository.readTree', () => {
     const repo = await newRepo();
     await repo.commit({ 'config/iam/prod/extra.yaml': 'A: 1\n' });
 
-    await expect(new GitRepository(repo.dir).readTree()).rejects.toThrow(
+    await expect(new GitRepository(repo.dir).readSources()).rejects.toThrow(
       /config\/iam\/prod\/extra\.yaml/,
     );
-  });
-
-  it('rejects malformed YAML, naming the file', async () => {
-    const repo = await newRepo();
-    await repo.commit({ 'config/iam/prod.yaml': 'A: [unclosed\n' });
-
-    await expect(new GitRepository(repo.dir).readTree()).rejects.toThrow(/config\/iam\/prod\.yaml/);
-  });
-
-  it('rejects a config file whose top level is not a mapping', async () => {
-    const repo = await newRepo();
-    await repo.commit({ 'config/iam/prod.yaml': '- a\n- b\n' });
-
-    await expect(new GitRepository(repo.dir).readTree()).rejects.toThrow(/config\/iam\/prod\.yaml/);
   });
 });
 

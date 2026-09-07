@@ -1,9 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { parse as parseYaml } from 'yaml';
 import type { Namespace } from '../identity/types.js';
 import { isNamespace } from '../namespace.js';
-import type { ConfigTree, RawConfig, Sha } from '../store/types.js';
+import type { ConfigSources, Sha } from '../store/types.js';
 
 /**
  * The read half of the git engine.
@@ -43,25 +42,24 @@ export class GitRepository {
   }
 
   /**
-   * Every namespace as of HEAD, with the sha it was read at.
+   * Every namespace's file text as of HEAD, with the sha it was read at.
+   *
+   * Text, not parsed values: a SOPS document is not the document it will become, so parsing
+   * here would type-check ciphertext. Decryption and parsing belong to the loader.
    *
    * The sha is read first and every file is then read *at that sha*, so a commit landing
    * mid-read cannot produce a tree that mixes two states — and the reported sha is genuinely
    * the one the values came from, which is what slice 7's stale check depends on.
    */
-  async readTree(): Promise<ConfigTree> {
+  async readSources(): Promise<ConfigSources> {
     const commit = await this.headCommit();
-    const namespaces = new Map<Namespace, RawConfig>();
+    const sources = new Map<Namespace, string>();
 
-    for (const path of await this.listConfigFiles(commit)) {
-      const namespace = this.namespaceOf(path);
-      namespaces.set(
-        namespace,
-        this.parseConfig(path, await this.git('show', `${commit}:${path}`)),
-      );
+    for (const path of await this.listYamlFiles(commit, CONFIG_DIR)) {
+      sources.set(this.namespaceOf(path), await this.git('show', `${commit}:${path}`));
     }
 
-    return { commit, namespaces };
+    return { commit, sources };
   }
 
   /**
@@ -87,10 +85,6 @@ export class GitRepository {
     return schemas;
   }
 
-  private async listConfigFiles(commit: Sha): Promise<string[]> {
-    return this.listYamlFiles(commit, CONFIG_DIR);
-  }
-
   private async listYamlFiles(commit: Sha, dir: string): Promise<string[]> {
     // `-z` because a path may contain anything a filesystem allows; without it git quotes and
     // escapes unusual names and the split would be wrong.
@@ -108,23 +102,5 @@ export class GitRepository {
       );
     }
     return candidate;
-  }
-
-  private parseConfig(path: string, source: string): RawConfig {
-    let parsed: unknown;
-    try {
-      parsed = parseYaml(source);
-    } catch (cause) {
-      throw new GitRepositoryError(`${path} is not valid YAML`, { cause });
-    }
-
-    // An empty file is a namespace that overrides nothing — different from an absent one.
-    if (parsed === null || parsed === undefined) return Object.freeze({});
-
-    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new GitRepositoryError(`${path} must be a mapping of config keys to values`);
-    }
-
-    return Object.freeze(parsed as Record<string, unknown>);
   }
 }
