@@ -33,6 +33,14 @@ export interface SaveRequest {
 export interface SaveResult {
   readonly commit: Sha;
   readonly changedKeys: readonly string[];
+  /**
+   * Whether the commit reached the remote.
+   *
+   * False is not a failure. The commit is durable locally and already being served; the push is
+   * how it becomes off-host backup, and the background retry will catch up. The UI shows this
+   * as unpublished rather than as an error.
+   */
+  readonly published: boolean;
 }
 
 export interface SaveError {
@@ -96,7 +104,7 @@ export class ConfigWriteService {
 
     const { next, changes } = applyChanges(current, request.changes);
     if (changes.length === 0) {
-      return ok({ commit: head, changedKeys: [] });
+      return ok({ commit: head, changedKeys: [], published: true });
     }
 
     const validation = this.options.schemas().validate(request.service, next);
@@ -138,7 +146,12 @@ export class ConfigWriteService {
       message,
     );
 
-    return ok({ commit, changedKeys: changes.map((c) => c.key) });
+    // After the commit, deliberately. A push failure must not undo a save that is already
+    // durable and already being served — during a GitHub outage an operator still has to be
+    // able to close registration.
+    const push = await repository.push();
+
+    return ok({ commit, changedKeys: changes.map((c) => c.key), published: push.pushed });
   }
 
   /** Schema-secret keys that survived encryption as readable text. */

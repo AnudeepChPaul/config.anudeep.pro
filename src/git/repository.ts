@@ -25,18 +25,125 @@ const CONFIG_DIR = 'config';
 /** Where the typed key definitions live, one file per service. */
 const SCHEMA_DIR = 'schema';
 
+export interface PushResult {
+  readonly pushed: boolean;
+  /** Why not, when `pushed` is false. Carried to the UI's unpublished banner. */
+  readonly reason?: string;
+}
+
+export interface UnpushedCommit {
+  readonly sha: Sha;
+  readonly subject: string;
+}
+
+export interface SshOptions {
+  /** The deploy key. Read-write, scoped to one repository, revocable in a click. */
+  readonly keyPath: string;
+  readonly knownHostsPath?: string;
+}
+
+/**
+ * The ssh invocation git uses for remote operations.
+ *
+ * `IdentitiesOnly=yes` because otherwise ssh offers every key it can find, including the box's
+ * own, and may authenticate as somebody else entirely — which tends to work in development and
+ * fail confusingly in production.
+ *
+ * Host key checking stays on. Disabling it is the usual shortcut and it removes the only thing
+ * standing between a push and handing the repository's entire history to an impostor of
+ * github.com.
+ */
+export function buildSshCommand(options: SshOptions): string {
+  const parts = [
+    'ssh',
+    `-i ${options.keyPath}`,
+    '-o IdentitiesOnly=yes',
+    '-o StrictHostKeyChecking=yes',
+  ];
+  if (options.knownHostsPath) parts.push(`-o UserKnownHostsFile=${options.knownHostsPath}`);
+  return parts.join(' ');
+}
+
 export class GitRepositoryError extends Error {}
 
 export class GitRepository {
-  constructor(private readonly dir: string) {}
+  constructor(
+    private readonly dir: string,
+    private readonly ssh?: SshOptions,
+  ) {}
 
   private async git(...args: string[]): Promise<string> {
     try {
-      const { stdout } = await run('git', args, { cwd: this.dir, maxBuffer: 32 * 1024 * 1024 });
+      const { stdout } = await run('git', args, {
+        cwd: this.dir,
+        maxBuffer: 32 * 1024 * 1024,
+        env: this.ssh
+          ? { ...process.env, GIT_SSH_COMMAND: buildSshCommand(this.ssh) }
+          : process.env,
+      });
       return stdout;
     } catch (cause) {
       throw new GitRepositoryError(`git ${args[0]} failed in ${this.dir}`, { cause });
     }
+  }
+
+  /** The configured push remote, or null when the clone is deliberately local. */
+  private async remoteName(): Promise<string | null> {
+    try {
+      const remotes = (await this.git('remote')).trim();
+      return remotes ? (remotes.split('\n')[0] ?? null) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Publishes local commits. Never throws.
+   *
+   * A GitHub outage must not become a 500 on a save that already succeeded locally, so the
+   * failure is returned and the caller decides what to show.
+   */
+  async push(): Promise<PushResult> {
+    const remote = await this.remoteName();
+    if (!remote) {
+      // Saying "pushed" here would be a lie the UI would render as published, on a repository
+      // that has no off-host copy at all.
+      return { pushed: false, reason: 'no remote is configured' };
+    }
+
+    try {
+      await this.git('push', remote, 'HEAD:main');
+      return { pushed: true };
+    } catch (cause) {
+      return { pushed: false, reason: (cause as Error).message };
+    }
+  }
+
+  /**
+   * Commits the remote does not have, newest first.
+   *
+   * Empty when no remote is configured: there is nothing to be behind, and reporting all of
+   * history as unpushed would leave a permanent warning on a deliberately local repository.
+   */
+  async unpushedCommits(): Promise<UnpushedCommit[]> {
+    const remote = await this.remoteName();
+    if (!remote) return [];
+
+    let output: string;
+    try {
+      output = await this.git('log', `${remote}/main..HEAD`, '--format=%H%x00%s');
+    } catch {
+      // No remote-tracking ref yet — nothing has ever been fetched or pushed.
+      return [];
+    }
+
+    return output
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [sha = '', subject = ''] = line.split('\0');
+        return { sha, subject };
+      });
   }
 
   async headCommit(): Promise<Sha> {

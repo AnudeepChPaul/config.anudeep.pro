@@ -39,6 +39,26 @@ export class TestRepo {
     await writeFile(full, contents, 'utf8');
   }
 
+  /**
+   * Gives this repo a bare remote and returns its path.
+   *
+   * A local bare repository rather than a real GitHub: push, fetch and the remote-tracking refs
+   * behave identically, and the parts that differ — SSH transport and the deploy key — are
+   * asserted separately on the command that is built, not by talking to GitHub from a test.
+   */
+  async addRemote(name = 'origin'): Promise<string> {
+    const remote = await mkdtemp(join(tmpdir(), 'config-remote-'));
+    await run('git', ['init', '--bare', '--initial-branch=main'], { cwd: remote });
+    await this.git('remote', 'add', name, remote);
+    await this.git('push', '-u', name, 'main');
+    return remote;
+  }
+
+  /** Points the remote at a path that does not exist, so pushes fail as they would offline. */
+  async breakRemote(name = 'origin'): Promise<void> {
+    await this.git('remote', 'set-url', name, join(this.dir, 'no-such-remote.git'));
+  }
+
   /** Write and commit, returning the new sha. */
   async commit(files: Record<string, string>, message = 'change'): Promise<string> {
     for (const [path, contents] of Object.entries(files)) await this.write(path, contents);

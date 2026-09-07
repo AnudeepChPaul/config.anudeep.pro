@@ -84,6 +84,15 @@ withSops('ConfigWriteService', () => {
       REQUEST,
     );
 
+  /** Rebuilds the service after the repo's remote changes, since git is read per call. */
+  const rebuild = () =>
+    new ConfigWriteService({
+      repository: git,
+      loader: new ConfigLoader(new SopsDecryptor(key.secret)),
+      encryptor: new SopsEncryptor(repo.dir),
+      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+    });
+
   beforeEach(async () => {
     await setUp();
   });
@@ -299,6 +308,63 @@ withSops('ConfigWriteService', () => {
       await save({ SMTP_PASSWORD: 'hunter2' });
 
       expect(await repo.git('log', '-1', '--format=%B')).not.toContain('hunter2');
+    });
+  });
+
+  describe('publishing', () => {
+    it('reports the save as published when the push succeeds', async () => {
+      const remote = await repo.addRemote();
+      service = rebuild();
+
+      const result = await save();
+
+      expect(result.ok && result.value.published).toBe(true);
+      expect(await repo.git('ls-remote', remote, 'refs/heads/main')).toContain(
+        result.ok ? result.value.commit : '',
+      );
+    });
+
+    it('still succeeds when the push fails', async () => {
+      // The plan's chosen failure behaviour. A GitHub outage during an incident must not stop
+      // an operator from closing registration.
+      await repo.addRemote();
+      await repo.breakRemote();
+      service = rebuild();
+
+      const result = await save();
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('flags an unpushed save rather than claiming it was published', async () => {
+      await repo.addRemote();
+      await repo.breakRemote();
+      service = rebuild();
+
+      const result = await save();
+
+      expect(result.ok && result.value.published).toBe(false);
+    });
+
+    it('serves the value even though it was never pushed', async () => {
+      // Committed locally is the durability guarantee; the push is the off-host backup.
+      await repo.addRemote();
+      await repo.breakRemote();
+      service = rebuild();
+
+      await save();
+
+      expect(await served()).toMatchObject({ MFA_ENFORCEMENT: 'all' });
+    });
+
+    it('leaves the commit for the background retry to publish', async () => {
+      await repo.addRemote();
+      await repo.breakRemote();
+      service = rebuild();
+
+      await save();
+
+      expect(await git.unpushedCommits()).toHaveLength(1);
     });
   });
 
