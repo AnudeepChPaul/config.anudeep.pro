@@ -1,5 +1,9 @@
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
+import {
+  randomBytes,
+  type ScryptOptions,
+  scrypt as scryptCallback,
+  timingSafeEqual,
+} from 'node:crypto';
 import { err, ok, type Result } from '../identity/types.js';
 import { decodeBase32 } from './base32.js';
 import { totpCounter, verifyTotp } from './totp.js';
@@ -17,7 +21,21 @@ import { totpCounter, verifyTotp } from './totp.js';
  * during an iam outage.
  */
 
-const scrypt = promisify(scryptCallback);
+/**
+ * `promisify` resolves to scrypt's three-argument overload and drops the options one, so the
+ * cost parameters would not typecheck. Wrapped by hand to keep them.
+ */
+const scrypt = (
+  password: string,
+  salt: Buffer,
+  keyLength: number,
+  options: ScryptOptions,
+): Promise<Buffer> =>
+  new Promise((resolve, reject) => {
+    scryptCallback(password, salt, keyLength, options, (error, derived) =>
+      error ? reject(error) : resolve(derived),
+    );
+  });
 
 /**
  * Deliberately slow. The cost is the point: it is paid once, by a human, during an incident.
@@ -69,7 +87,7 @@ export interface BreakGlassOptions {
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16);
-  const derived = (await scrypt(password, salt, KEY_LENGTH, SCRYPT)) as Buffer;
+  const derived = await scrypt(password, salt, KEY_LENGTH, SCRYPT);
   // The parameters travel with the hash so they can be raised later without invalidating every
   // existing credential.
   return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString('base64')}$${derived.toString('base64')}`;
@@ -80,12 +98,12 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
   if (scheme !== 'scrypt' || !n || !r || !p || !salt || !hash) return false;
 
   const expected = Buffer.from(hash, 'base64');
-  const derived = (await scrypt(password, Buffer.from(salt, 'base64'), expected.length, {
+  const derived = await scrypt(password, Buffer.from(salt, 'base64'), expected.length, {
     N: Number(n),
     r: Number(r),
     p: Number(p),
     maxmem: SCRYPT.maxmem,
-  })) as Buffer;
+  });
 
   return derived.length === expected.length && timingSafeEqual(derived, expected);
 }
