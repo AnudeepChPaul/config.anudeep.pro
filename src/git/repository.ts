@@ -1,0 +1,130 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { parse as parseYaml } from 'yaml';
+import type { Namespace } from '../identity/types.js';
+import { isNamespace } from '../namespace.js';
+import type { ConfigTree, RawConfig, Sha } from '../store/types.js';
+
+/**
+ * The read half of the git engine.
+ *
+ * Reads go through `git show`/`git ls-tree` against **HEAD**, not against the checked-out files.
+ * The working tree is dirty during a pull, mid-write, and after a crash; serving from it would
+ * hand services values that no commit records and no audit trail explains. Reading the object
+ * store means a read is always of a state that someone committed.
+ *
+ * The git binary is shelled out to rather than reimplemented: the deploy-key SSH transport,
+ * packfiles and ref locking are all things git already does correctly.
+ */
+
+const run = promisify(execFile);
+
+/** Where namespace files live. Everything else in the repo is not configuration. */
+const CONFIG_DIR = 'config';
+/** Where the typed key definitions live, one file per service. */
+const SCHEMA_DIR = 'schema';
+
+export class GitRepositoryError extends Error {}
+
+export class GitRepository {
+  constructor(private readonly dir: string) {}
+
+  private async git(...args: string[]): Promise<string> {
+    try {
+      const { stdout } = await run('git', args, { cwd: this.dir, maxBuffer: 32 * 1024 * 1024 });
+      return stdout;
+    } catch (cause) {
+      throw new GitRepositoryError(`git ${args[0]} failed in ${this.dir}`, { cause });
+    }
+  }
+
+  async headCommit(): Promise<Sha> {
+    return (await this.git('rev-parse', 'HEAD')).trim();
+  }
+
+  /**
+   * Every namespace as of HEAD, with the sha it was read at.
+   *
+   * The sha is read first and every file is then read *at that sha*, so a commit landing
+   * mid-read cannot produce a tree that mixes two states — and the reported sha is genuinely
+   * the one the values came from, which is what slice 7's stale check depends on.
+   */
+  async readTree(): Promise<ConfigTree> {
+    const commit = await this.headCommit();
+    const namespaces = new Map<Namespace, RawConfig>();
+
+    for (const path of await this.listConfigFiles(commit)) {
+      const namespace = this.namespaceOf(path);
+      namespaces.set(
+        namespace,
+        this.parseConfig(path, await this.git('show', `${commit}:${path}`)),
+      );
+    }
+
+    return { commit, namespaces };
+  }
+
+  /**
+   * Every service's schema source as of HEAD, keyed by service name.
+   *
+   * Returned as raw text rather than parsed, so that parsing and its error messages stay in
+   * the validator, which is where the reader of an error will look for them.
+   */
+  async readSchemas(): Promise<Record<string, string>> {
+    const commit = await this.headCommit();
+    const schemas: Record<string, string> = {};
+
+    for (const path of await this.listYamlFiles(commit, SCHEMA_DIR)) {
+      const service = path.slice(SCHEMA_DIR.length + 1, -'.yaml'.length);
+      if (service.includes('/')) {
+        throw new GitRepositoryError(
+          `${path} is not a schema file: expected ${SCHEMA_DIR}/<service>.yaml`,
+        );
+      }
+      schemas[service] = await this.git('show', `${commit}:${path}`);
+    }
+
+    return schemas;
+  }
+
+  private async listConfigFiles(commit: Sha): Promise<string[]> {
+    return this.listYamlFiles(commit, CONFIG_DIR);
+  }
+
+  private async listYamlFiles(commit: Sha, dir: string): Promise<string[]> {
+    // `-z` because a path may contain anything a filesystem allows; without it git quotes and
+    // escapes unusual names and the split would be wrong.
+    const output = await this.git('ls-tree', '-r', '--name-only', '-z', commit, '--', dir);
+    return output.split('\0').filter((path) => path.endsWith('.yaml'));
+  }
+
+  private namespaceOf(path: string): Namespace {
+    const candidate = path.slice(CONFIG_DIR.length + 1, -'.yaml'.length);
+    if (!isNamespace(candidate)) {
+      // Skipping it silently would mean an operator edits a file, sees a green commit, and the
+      // value never reaches anything.
+      throw new GitRepositoryError(
+        `${path} is not a config file: expected ${CONFIG_DIR}/<service>/<environment>.yaml`,
+      );
+    }
+    return candidate;
+  }
+
+  private parseConfig(path: string, source: string): RawConfig {
+    let parsed: unknown;
+    try {
+      parsed = parseYaml(source);
+    } catch (cause) {
+      throw new GitRepositoryError(`${path} is not valid YAML`, { cause });
+    }
+
+    // An empty file is a namespace that overrides nothing — different from an absent one.
+    if (parsed === null || parsed === undefined) return Object.freeze({});
+
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new GitRepositoryError(`${path} must be a mapping of config keys to values`);
+    }
+
+    return Object.freeze(parsed as Record<string, unknown>);
+  }
+}
