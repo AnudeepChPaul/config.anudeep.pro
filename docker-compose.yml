@@ -1,0 +1,25 @@
+# Pinned so the project identity does not follow the directory name.
+name: config-anudeep-pro
+
+services:
+  # `docker compose run --rm test` — the suite on Linux, where SO_PEERCRED exists.
+  #
+  # Not a long-running service and deliberately not part of `up`: it runs, reports, and exits.
+  # node_modules is a named volume rather than a bind mount so the Linux-native koffi binary
+  # never collides with the darwin one in the host checkout.
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./vitest.config.ts:/app/vitest.config.ts:ro
+      - config_test_modules:/app/node_modules
+    environment:
+      CONFIG_ENVIRONMENT: test
+      CONFIG_LOG_LEVEL: silent
+
+volumes:
+  config_test_modules:

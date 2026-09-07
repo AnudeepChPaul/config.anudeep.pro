@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1
+#
+# The suite on Linux.
+#
+# This image exists for one reason: `SO_PEERCRED` is a Linux syscall, so the two tests that
+# prove peer identity comes from the kernel — the claim the entire auth model rests on — cannot
+# run on a developer's Mac. `pnpm test` on darwin skips them and reports green, which is exactly
+# the shape of a gap that gets shipped.
+#
+# `git` is installed because the repository tests drive the real binary against real repos.
+FROM node:24-bookworm-slim
+WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+# Runs as a non-root uid, matching how services actually run — and without it the peer-credential
+# test cannot distinguish "the kernel reported the truth" from "the kernel reported 0 and the
+# client also claimed 0". Per-service uid scoping is the whole mechanism; root is not a service.
+RUN useradd -u 10001 -m app && chown -R app:app /app
+USER app
+# git refuses to operate in a directory owned by another uid, which is what a bind-mounted host
+# checkout looks like from inside the container.
+RUN git config --global --add safe.directory '*' \
+  && git config --global user.email 'test@anudeep.pro' \
+  && git config --global user.name 'config test'
+CMD ["pnpm", "test"]
