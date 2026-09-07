@@ -106,7 +106,10 @@ linuxOnly('ConfigClient', () => {
       const started = Date.now();
       const config = await client({ fetchTimeoutMs: 30_000 }).load(DEFAULTS);
 
-      expect(Date.now() - started).toBeLessThan(500);
+      // A second, not a tighter bound: this is the suite's only wall-clock assertion and it
+      // runs in a container under load. It stays decisive regardless — awaiting the fetch here
+      // takes the full 30s timeout, not 1.1 seconds.
+      expect(Date.now() - started).toBeLessThan(1_000);
       expect(config).toEqual(DEFAULTS);
     });
 
