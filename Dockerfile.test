@@ -10,8 +10,17 @@
 # `git` is installed because the repository tests drive the real binary against real repos.
 FROM node:24-bookworm-slim
 WORKDIR /app
+# `age` for key generation, `sops` for the encryption format itself. Both are needed by the
+# decryptor tests, which encrypt real fixtures at test time rather than checking in ciphertext
+# that nobody can regenerate.
+ARG SOPS_VERSION=3.13.3
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
+  && apt-get install -y --no-install-recommends git ca-certificates curl age \
+  && ARCH="$(dpkg --print-architecture)" \
+  && curl -fsSL -o /usr/local/bin/sops \
+     "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.${ARCH}" \
+  && chmod +x /usr/local/bin/sops \
+  && apt-get purge -y curl && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
