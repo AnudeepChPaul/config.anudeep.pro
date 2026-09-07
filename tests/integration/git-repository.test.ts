@@ -182,3 +182,116 @@ describe('GitRepository.readSchemas', () => {
     );
   });
 });
+
+describe('GitRepository.writeAndCommit', () => {
+  it('commits a new namespace file and returns the new sha', async () => {
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+    const before = await git.headCommit();
+
+    const sha = await git.writeAndCommit({ 'config/iam/prod.yaml': 'A: 1\n' }, 'add iam config');
+
+    expect(sha).not.toBe(before);
+    expect(sha).toBe(await git.headCommit());
+    expect((await git.readSources()).sources.get('iam/prod')).toBe('A: 1\n');
+  });
+
+  it('creates the directories a new service needs', async () => {
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+
+    await git.writeAndCommit({ 'config/brandnew/prod.yaml': 'A: 1\n' }, 'add service');
+
+    expect((await git.readSources()).sources.has('brandnew/prod')).toBe(true);
+  });
+
+  it('overwrites an existing file rather than appending to it', async () => {
+    const repo = await newRepo();
+    await repo.commit({ 'config/iam/prod.yaml': 'A: 1\nB: 2\n' });
+    const git = new GitRepository(repo.dir);
+
+    await git.writeAndCommit({ 'config/iam/prod.yaml': 'A: 9\n' }, 'drop B');
+
+    expect((await git.readSources()).sources.get('iam/prod')).toBe('A: 9\n');
+  });
+
+  it('deletes a file when given null', async () => {
+    // Removing a namespace entirely is a legitimate operation; leaving an empty file behind
+    // would keep serving an empty override where the service expects nothing at all.
+    const repo = await newRepo();
+    await repo.commit({ 'config/iam/prod.yaml': 'A: 1\n', 'config/api/prod.yaml': 'B: 2\n' });
+    const git = new GitRepository(repo.dir);
+
+    await git.writeAndCommit({ 'config/iam/prod.yaml': null }, 'remove iam/prod');
+
+    const { sources } = await git.readSources();
+    expect(sources.has('iam/prod')).toBe(false);
+    expect(sources.has('api/prod')).toBe(true);
+  });
+
+  it('writes the message verbatim, trailers included', async () => {
+    // The message is the audit record. Anything git or the shell mangles here is lost.
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+    const message =
+      'Set MFA\n\nActor: me@anudeep.pro\nKey: MFA_ENFORCEMENT\nOld-Value-Hash: sha256:aa';
+
+    await git.writeAndCommit({ 'config/iam/prod.yaml': 'A: 1\n' }, message);
+
+    expect(await repo.git('log', '-1', '--format=%B')).toBe(message);
+  });
+
+  it('leaves git able to parse the trailers back out', async () => {
+    // If the format is right, `git log --format=%(trailers)` recovers the attribution — which
+    // is what makes the history queryable rather than just readable.
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+
+    await git.writeAndCommit(
+      { 'config/iam/prod.yaml': 'A: 1\n' },
+      'Set MFA\n\nActor: me@anudeep.pro\nKey: MFA_ENFORCEMENT',
+    );
+
+    const trailers = await repo.git('log', '-1', '--format=%(trailers:key=Actor,valueonly)');
+    expect(trailers.trim()).toBe('me@anudeep.pro');
+  });
+
+  it('commits several files as one change', async () => {
+    // One save, one commit. Two commits would make a partial rollback possible and would show
+    // an intermediate state that no operator ever chose.
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+    const before = await repo.git('rev-list', '--count', 'HEAD');
+
+    await git.writeAndCommit(
+      { 'config/iam/prod.yaml': 'A: 1\n', 'config/api/prod.yaml': 'B: 2\n' },
+      'two namespaces',
+    );
+
+    expect(Number(await repo.git('rev-list', '--count', 'HEAD'))).toBe(Number(before) + 1);
+  });
+
+  it('touches nothing it was not asked to change', async () => {
+    const repo = await newRepo();
+    await repo.commit({ 'config/api/prod.yaml': 'B: 2\n', 'schema/api.yaml': 'keys: {}\n' });
+    const git = new GitRepository(repo.dir);
+
+    await git.writeAndCommit({ 'config/iam/prod.yaml': 'A: 1\n' }, 'add iam');
+
+    const changed = await repo.git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD');
+    expect(changed.split('\n')).toEqual(['config/iam/prod.yaml']);
+  });
+
+  it('makes no commit when nothing actually changed', async () => {
+    // Saving a value identical to the current one should not fill the history with empty
+    // commits that a reviewer then has to read.
+    const repo = await newRepo();
+    await repo.commit({ 'config/iam/prod.yaml': 'A: 1\n' });
+    const git = new GitRepository(repo.dir);
+    const before = await git.headCommit();
+
+    const sha = await git.writeAndCommit({ 'config/iam/prod.yaml': 'A: 1\n' }, 'no-op');
+
+    expect(sha).toBe(before);
+  });
+});

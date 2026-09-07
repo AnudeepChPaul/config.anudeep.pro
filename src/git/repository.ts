@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Namespace } from '../identity/types.js';
 import { isNamespace } from '../namespace.js';
@@ -83,6 +85,50 @@ export class GitRepository {
     }
 
     return schemas;
+  }
+
+  /**
+   * Writes the given files and commits them as a single change.
+   *
+   * `files` maps repository-relative paths to their new contents, or to null to delete. One
+   * save is one commit: splitting it would allow a partial rollback and would publish an
+   * intermediate state that no operator ever chose.
+   *
+   * The message is passed through a file rather than `-m` so that trailers, blank lines and
+   * anything else in it survive exactly as built — the message is the audit record.
+   */
+  async writeAndCommit(files: Record<string, string | null>, message: string): Promise<Sha> {
+    for (const [path, contents] of Object.entries(files)) {
+      const full = join(this.dir, path);
+      if (contents === null) {
+        await rm(full, { force: true });
+      } else {
+        await mkdir(dirname(full), { recursive: true });
+        await writeFile(full, contents, 'utf8');
+      }
+    }
+
+    await this.git('add', '--', ...Object.keys(files));
+
+    // Saving a value identical to the current one is not an error, but it is not history
+    // either: an empty commit is something a reviewer has to read and rule out.
+    const staged = await this.git('diff', '--cached', '--name-only');
+    if (!staged.trim()) return this.headCommit();
+
+    await this.commitStaged(message);
+    return this.headCommit();
+  }
+
+  private async commitStaged(message: string): Promise<void> {
+    // `--file -` would need stdin, which Node's socketpair stdio makes unreliable; a temp file
+    // in the repo's own .git directory avoids both that and the shell quoting that `-m` invites.
+    const messageFile = join(this.dir, '.git', `COMMIT_EDITMSG_${process.pid}`);
+    await writeFile(messageFile, message, 'utf8');
+    try {
+      await this.git('commit', '--file', messageFile, '--cleanup=verbatim');
+    } finally {
+      await rm(messageFile, { force: true });
+    }
   }
 
   private async listYamlFiles(commit: Sha, dir: string): Promise<string[]> {
