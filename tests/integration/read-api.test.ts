@@ -1,6 +1,8 @@
+import { spawn } from 'node:child_process';
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import http from 'node:http';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildReadApi } from '@config/src/app.js';
@@ -35,6 +37,34 @@ const registryFor = (service: string, namespaces: string[]) =>
   ServiceRegistry.fromYaml(
     `services:\n  - name: ${service}\n    uid: ${uid()}\n    namespaces: [${namespaces.join(', ')}]\n`,
   );
+
+/**
+ * Leaves a genuinely stale socket at `path`: a child process binds it and is SIGKILLed, so
+ * nothing ever unlinks it. Writing a regular file would not exercise the same code — the point
+ * is a socket inode whose owner is gone.
+ */
+async function leaveStaleSocket(path: string): Promise<void> {
+  const child = spawn(process.execPath, [
+    '-e',
+    `require('net').createServer().listen(${JSON.stringify(path)}, () => console.log('up'))`,
+  ]);
+  await new Promise<void>((resolve, reject) => {
+    child.stdout.once('data', () => resolve());
+    child.once('error', reject);
+  });
+  child.kill('SIGKILL');
+  await new Promise((resolve) => child.once('exit', resolve));
+}
+
+/** A second process genuinely listening on the socket — the case that must not be clobbered. */
+function listenOnSocket(path: string): Promise<{ close: () => Promise<void> }> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.listen(path, () =>
+      resolve({ close: () => new Promise<void>((done) => server.close(() => done())) }),
+    );
+  });
+}
 
 /** A GET over the Unix socket. No host, no port — there is nothing to address but the path. */
 function get(socketPath: string, path: string): Promise<{ status: number; body: string }> {
@@ -261,17 +291,50 @@ linuxOnly('read API over a Unix socket', () => {
       expect(statSync(socketPath).isSocket()).toBe(true);
     });
 
-    it('starts even though a stale socket file is already at the path', async () => {
+    it('takes over a socket left behind by a killed process', async () => {
       // A container killed with SIGKILL never runs its cleanup, so the inode stays and bind()
-      // fails with EADDRINUSE. Refusing to start after an unclean shutdown would make every
-      // service on the host wait for a human. Simulated here by leaving a file at the path,
-      // since a clean close removes the real one.
-      writeFileSync(socketPath, '');
+      // fails with EADDRINUSE. Refusing to start would leave every service on the host waiting
+      // for a human. Simulated exactly: a child binds the socket and is killed uncleanly.
+      await leaveStaleSocket(socketPath);
       expect(existsSync(socketPath)).toBe(true);
 
       await expect(start({})).resolves.toBeTruthy();
 
       expect((await get(socketPath, '/config/iam/prod')).status).toBe(200);
+    });
+
+    it('refuses to start when another instance is live on the socket', async () => {
+      // The dangerous case. Unlinking unconditionally would take the path away from a running
+      // instance: its existing connections would survive, but every later connect would reach
+      // the new process, and two instances would be serving the same config with no sign that
+      // anything was wrong. Better to fail loudly and stay down.
+      const live = await listenOnSocket(socketPath);
+
+      await expect(start({})).rejects.toThrow(/already/i);
+
+      expect(existsSync(socketPath)).toBe(true);
+      await live.close();
+    });
+
+    it('leaves a live instance socket in place when it refuses', async () => {
+      const live = await listenOnSocket(socketPath);
+
+      await start({}).catch(() => {});
+
+      // Still serving the original process, not deleted out from under it.
+      expect(statSync(socketPath).isSocket()).toBe(true);
+      await live.close();
+    });
+
+    it('refuses to start when the path holds something that is not a socket', async () => {
+      // Deleting whatever happens to sit at a configured path is how a typo in a compose file
+      // becomes data loss. A regular file here means the configuration is wrong, not that a
+      // previous run crashed.
+      writeFileSync(socketPath, 'not a socket');
+
+      await expect(start({})).rejects.toThrow(/not a socket/i);
+
+      expect(existsSync(socketPath)).toBe(true);
     });
 
     it('removes the socket file when it shuts down cleanly', async () => {

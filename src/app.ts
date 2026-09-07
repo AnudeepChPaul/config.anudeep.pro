@@ -1,4 +1,5 @@
-import { unlink } from 'node:fs/promises';
+import { stat, unlink } from 'node:fs/promises';
+import net from 'node:net';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { type InternalRouteOptions, registerInternalRoutes } from './routes/internal.js';
 
@@ -10,6 +11,64 @@ import { type InternalRouteOptions, registerInternalRoutes } from './routes/inte
  * because there is no address to send it to. Caddy has no route to it and it is not on the
  * Docker network.
  */
+
+/** How long to wait for a connect attempt before calling a socket abandoned. */
+const LIVENESS_TIMEOUT_MS = 1_000;
+
+export class SocketInUseError extends Error {}
+
+/**
+ * Whether anything is actually accepting connections on `path`.
+ *
+ * A socket file outlives the process that bound it, so its presence says nothing about whether
+ * an instance is running. Connecting is the only way to tell the two apart: a live listener
+ * accepts, an abandoned inode refuses with ECONNREFUSED.
+ */
+function isSocketLive(path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect(path);
+    const settle = (live: boolean) => {
+      socket.destroy();
+      resolve(live);
+    };
+    socket.setTimeout(LIVENESS_TIMEOUT_MS, () => settle(false));
+    socket.once('connect', () => settle(true));
+    socket.once('error', () => settle(false));
+  });
+}
+
+/**
+ * Clears the path if — and only if — what sits there is a socket nobody is serving.
+ *
+ * Three cases, and they need three different answers:
+ *
+ *  - **Nothing there.** Ordinary first start.
+ *  - **An abandoned socket.** A container killed with SIGKILL never runs its cleanup. Refusing
+ *    to start would leave every service on the host waiting for a human, so it is removed.
+ *  - **A live socket, or a file that is not a socket.** Refuse. Unlinking a live instance's
+ *    socket would not disturb its existing connections but would silently redirect every new
+ *    one, leaving two processes serving the same config with nothing to show for it. And
+ *    deleting whatever happens to sit at a configured path is how a typo in a compose file
+ *    becomes data loss.
+ */
+async function clearAbandonedSocket(path: string): Promise<void> {
+  let stats: Awaited<ReturnType<typeof stat>>;
+  try {
+    stats = await stat(path);
+  } catch {
+    return;
+  }
+
+  if (!stats.isSocket()) {
+    throw new SocketInUseError(`${path} exists and is not a socket; refusing to remove it`);
+  }
+
+  if (await isSocketLive(path)) {
+    throw new SocketInUseError(`${path} is already being served by another instance`);
+  }
+
+  await unlink(path);
+}
 
 export interface ReadApi {
   readonly server: FastifyInstance['server'];
@@ -32,14 +91,7 @@ export async function buildReadApi(options: ReadApiOptions): Promise<ReadApi> {
     server: app.server,
 
     async listen(socketPath: string): Promise<void> {
-      // A container killed with SIGKILL leaves the socket file behind and bind() then fails
-      // with EADDRINUSE. Refusing to start after an unclean shutdown would make every service
-      // on the host wait for a human, so a stale file is removed first.
-      //
-      // This is safe because only one process is meant to own this path: if another instance
-      // were genuinely live, removing the file would not disturb its existing connections, and
-      // the compose file gives each deployment its own socket.
-      await unlink(socketPath).catch(() => {});
+      await clearAbandonedSocket(socketPath);
       await app.listen({ path: socketPath });
       listeningOn = socketPath;
     },
