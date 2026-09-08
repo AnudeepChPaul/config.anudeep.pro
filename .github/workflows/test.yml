@@ -1,0 +1,50 @@
+# The suite for this service.
+#
+# It runs on Linux because two of its guarantees only exist there: SO_PEERCRED, which is the
+# whole of the read API's authentication, and the sops toolchain. On a developer's Mac those
+# files skip and the suite still reports green — which is exactly the shape of a gap that gets
+# shipped, so CI is where the real number comes from.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install age and sops
+        env:
+          SOPS_VERSION: 3.13.3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends age
+          curl -fsSL -o /tmp/sops \
+            "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+          sudo install -m 0755 /tmp/sops /usr/local/bin/sops
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Lint and typecheck
+        run: pnpm lint && pnpm typecheck
+
+      - name: Test
+        # The runner is not root, so the peer-credential tests can tell a real uid from zero.
+        run: |
+          git config --global user.email 'ci@anudeep.pro'
+          git config --global user.name 'ci'
+          pnpm vitest run

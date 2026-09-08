@@ -1,0 +1,49 @@
+# Validation for the CONFIG REPOSITORY — copy this file into that repo, not this one.
+#
+# It runs the same SchemaSet and ServiceRegistry the service runs, so CI cannot drift into
+# enforcing different rules from the ones the write path enforces.
+#
+# It deliberately has NO age key. CI is the least trusted place this repository is ever cloned,
+# and handing it the key to prove secrets are encrypted would give away the thing being
+# protected. Everything is decided from ciphertext.
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The check reads the commit under test through git, so it needs the object it is
+          # validating — but no history beyond that.
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: AnudeepChPaul/config.anudeep.pro
+          path: .config-service
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .config-service/.nvmrc
+
+      - name: Install the validator
+        working-directory: .config-service
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Validate configuration
+        working-directory: .config-service
+        # Reports every problem and exits non-zero if there are any. The output names files and
+        # keys but never a value, because these logs are retained and widely readable.
+        run: pnpm tsx src/cli/validate-repo.ts "$GITHUB_WORKSPACE"

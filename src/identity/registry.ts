@@ -59,6 +59,11 @@ export class ServiceRegistry {
     );
   }
 
+  /** Every declared service, for checks that need the whole table rather than one lookup. */
+  services(): readonly ServiceIdentity[] {
+    return [...this.byUid.values()];
+  }
+
   /** The service holding this uid, or null. Root is not special-cased: it holds no grant. */
   identify(uid: number): ServiceIdentity | null {
     return this.byUid.get(uid) ?? null;
