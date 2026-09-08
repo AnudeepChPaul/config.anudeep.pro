@@ -1071,6 +1071,34 @@ describe('the tick and button behaviour the page depends on', () => {
     const idleLine = (body: string) =>
       body.slice(body.indexOf('class="idle"'), body.indexOf('class="selection"'));
 
+    it('never renders the document version as an editable key', async () => {
+      // It is metadata the file carries about itself. A row for it would invite editing a
+      // counter the write path maintains, and the schema has no definition to render it with.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const body = await page();
+
+      expect(body).not.toContain('name="key.version"');
+      expect(body).not.toContain('data-select="version"');
+    });
+
+    it('shows the revision in the idle line, where the rest of the file is described', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['intent', 'publish'],
+        ['message', 'ship it'],
+      ]);
+
+      expect(idleLine(await page())).toMatch(/revision 1/);
+    });
+
     it('fills the idle line with where you are, rather than leaving it blank', async () => {
       const body = await page();
       const line = idleLine(body);

@@ -124,6 +124,16 @@ linuxOnly('read API over a Unix socket', () => {
     socketPath = join(dir, 'config.sock');
   });
 
+  it('does not serve the document version, which is metadata and not configuration', async () => {
+    // A service has no default for it and no use for it, and the number moves on every save —
+    // so serving it would invalidate a consumer's cache for a change to nothing it reads.
+    await start({ namespaces: { 'iam/prod': { version: 3, MFA_ENFORCEMENT: 'all' } } });
+
+    const response = await get(socketPath, '/config/iam/prod');
+
+    expect(JSON.parse(response.body).config).toEqual({ MFA_ENFORCEMENT: 'all' });
+  });
+
   afterEach(async () => {
     await app?.close();
     app = null;

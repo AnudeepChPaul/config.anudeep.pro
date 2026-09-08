@@ -458,12 +458,17 @@ function idleLine(options: {
   rows: readonly KeyRow[];
   commit: string;
   repoWebUrl?: string | null;
+  revision?: number;
   nextEnvironment?: string | null;
   lastChange?: { subject: string; author: string; at: string } | null;
 }): SafeHtml {
   const parts: SafeHtml[] = [
     html`${options.rows.length} variable${options.rows.length === 1 ? '' : 's'} in ${options.active}`,
   ];
+
+  // Absent on a file that has never been written through the console, where saying "revision 0"
+  // would imply a counter that is running when none is.
+  if (options.revision) parts.push(html`revision ${options.revision}`);
 
   const next = options.nextEnvironment;
   if (next) {
@@ -628,6 +633,8 @@ export function renderProduct(options: {
   commit: string;
   /** Where this repository lives in a browser, for linking the commit being served. */
   repoWebUrl?: string | null;
+  /** The document's revision counter, 0 for a file that has never carried one. */
+  revision?: number;
   /** The environment this one promotes into, for the drift count. */
   nextEnvironment?: string | null;
   /** The audit trail's most recent entry for this namespace. */

@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AccessGuard } from '../identity/access-guard.js';
 import type { ConfigCache } from '../store/cache.js';
+import { configOnly } from '../store/metadata.js';
 
 /**
  * The read API every service calls.
@@ -101,7 +102,12 @@ export function registerInternalRoutes(app: FastifyInstance, options: InternalRo
         }
       }
 
-      const config = cache.get(service, environment);
+      // Metadata the file carries about itself — its sops block and its revision counter — is
+      // not configuration. A service has no default for it and no use for it, and the counter
+      // moves on every save, so serving it would invalidate a consumer's cache for a change to
+      // nothing it reads.
+      const stored = cache.get(service, environment);
+      const config = stored === null ? null : configOnly(stored);
 
       if (config === null) {
         // The caller is granted this namespace, so it is entitled to know the namespace has no

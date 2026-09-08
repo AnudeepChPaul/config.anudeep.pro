@@ -11,6 +11,7 @@ import { err, ok, type Result } from '../identity/types.js';
 import type { SchemaSet, ValidationError } from '../schema/validator.js';
 import type { Draft, DraftChange, DraftStore } from './draft-store.js';
 import type { ConfigLoader } from './loader.js';
+import { bumpedVersion, VERSION_KEY, versionOf } from './metadata.js';
 import type { SopsEncryptor } from './sops-encryptor.js';
 import type { RawConfig, Sha } from './types.js';
 
@@ -223,6 +224,13 @@ export class ConfigWriteService {
         });
       }
 
+      // A revision of the document, so the counter moves here and nowhere else. Publishing
+      // writes down what a draft already decided; counting that as a second revision would make
+      // the number mean nothing in particular. It is numbered from what is COMMITTED rather
+      // than from the draft in hand, so a namespace edited five times before publishing arrives
+      // at the next number rather than five past it.
+      next[VERSION_KEY] = bumpedVersion(committed);
+
       const plaintext = stringifyYaml(sortKeys(next));
       const document = await this.options.encryptor.encrypt(namespace, plaintext);
 
@@ -353,6 +361,10 @@ export class ConfigWriteService {
           keyChanges.push({ key, oldValue: committed[key], newValue: stagedConfig[key] });
         }
 
+        // Carried from the draft, not recomputed: this commit IS that revision of the document,
+        // and rebuilding a subset must not leave the file numbered as if it had never moved.
+        next[VERSION_KEY] = versionOf(stagedConfig);
+
         const validation = schemas.validate(service, next);
         if (!validation.ok) {
           return err({
@@ -435,6 +447,10 @@ export class ConfigWriteService {
     const next: Record<string, unknown> = { ...committed };
     const changes: DraftChange[] = [];
     const schemas = this.options.schemas();
+
+    // The keys left behind are a revision of their own: they are being written against the
+    // commit the publish just made, not against the one the original draft was built on.
+    next[VERSION_KEY] = bumpedVersion(committed);
 
     for (const key of residual.keys) {
       const value = previous[key];

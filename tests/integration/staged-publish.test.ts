@@ -3,6 +3,7 @@ import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
 import { DraftStore } from '@config/src/store/draft-store.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
+import { versionOf } from '@config/src/store/metadata.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
 import { ConfigWriteService } from '@config/src/store/write-service.js';
@@ -84,6 +85,74 @@ withSops('staging and scoped publishing', () => {
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
     return (await loader.resolve(await git.readSources())).namespaces.get(namespace);
   };
+
+  /**
+   * The revision counter each namespace file carries.
+   *
+   * It exists so two hosts editing one namespace can be told apart: a document numbered behind
+   * the one on origin was written against something that has since moved. Nothing acts on that
+   * yet — this keeps the number honest so the check has something to compare when it arrives.
+   */
+  describe('the document version', () => {
+    const versionOfDraft = async (namespace: string) => {
+      const draft = await drafts.get(namespace);
+      const loader = new ConfigLoader(new SopsDecryptor(key.secret));
+      return versionOf(await loader.resolveOne(namespace, draft?.document ?? ''));
+    };
+
+    it('starts at 1 on the first draft of a file that never carried one', async () => {
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+
+      expect(await versionOfDraft('iam/dev')).toBe(1);
+    });
+
+    it('rises once per draft save, not once per publish', async () => {
+      // Publishing writes down what a draft already decided; it is not a second revision of the
+      // document, and counting it twice would make the number mean nothing in particular.
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      await service.publish(['iam/dev'], 'first', ACTOR, REQUEST);
+
+      expect(versionOf((await served('iam/dev')) ?? {})).toBe(1);
+
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'admins' });
+
+      expect(await versionOfDraft('iam/dev')).toBe(2);
+    });
+
+    it('carries on from the number already in the file', async () => {
+      await repo.commit({ 'config/iam/dev.yaml': 'version: 41\nMFA_ENFORCEMENT: optional\n' });
+
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+
+      expect(await versionOfDraft('iam/dev')).toBe(42);
+    });
+
+    it('is not itself a change: a save that only bumps it stages nothing', async () => {
+      await repo.commit({ 'config/iam/dev.yaml': 'version: 4\nMFA_ENFORCEMENT: optional\n' });
+
+      const result = await stage('iam', 'dev', { MFA_ENFORCEMENT: 'optional' });
+
+      expect(result.ok).toBe(false);
+      expect(result.ok ? '' : result.error.code).toBe('nothing_staged');
+    });
+
+    it('never appears in the change list an operator reviews', async () => {
+      // It moves on every save, so listing it would put a line in every hover panel and every
+      // commit body saying the counter counted.
+      const result = await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+
+      expect(result.ok && result.value.changes.map((change) => change.key)).toEqual([
+        'MFA_ENFORCEMENT',
+      ]);
+    });
+
+    it('is committed with the file, so the next host reads the number this one wrote', async () => {
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      await service.publish(['iam/dev'], 'ship it', ACTOR, REQUEST);
+
+      expect(await git.readFile('config/iam/dev.yaml')).toContain('version:');
+    });
+  });
 
   describe('staging', () => {
     it('does not commit', async () => {

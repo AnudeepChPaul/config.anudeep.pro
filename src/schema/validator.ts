@@ -1,5 +1,6 @@
 import { parse as parseYaml } from 'yaml';
 import { err, ok, type Result } from '../identity/types.js';
+import { isMetadataKey } from '../store/metadata.js';
 import type { RawConfig } from '../store/types.js';
 
 /**
@@ -83,6 +84,11 @@ export class SchemaSet {
 
     const errors: ValidationError[] = [];
     for (const [key, value] of Object.entries(config)) {
+      // `sops` and `version` are metadata the file carries about itself. Checking them against
+      // the schema would fail every document that has them, and the first fix anyone would
+      // reach for is deleting the thing that failed.
+      if (isMetadataKey(key)) continue;
+
       const definition = keys.get(key);
       if (!definition) {
         // Otherwise a mistyped key writes cleanly, the service reads its default, and nothing

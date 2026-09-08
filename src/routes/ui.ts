@@ -4,6 +4,7 @@ import type { KeyDefinition, SchemaSet } from '../schema/validator.js';
 import type { DraftStore } from '../store/draft-store.js';
 import { EnvironmentOrder } from '../store/environment-order.js';
 import type { ConfigLoader } from '../store/loader.js';
+import { isMetadataKey, versionOf } from '../store/metadata.js';
 import type { ConfigWriteService } from '../store/write-service.js';
 import {
   type EnvironmentSummary,
@@ -191,6 +192,9 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           commit: sources.commit,
           repoWebUrl,
           nextEnvironment,
+          // What revision of this namespace the console is showing. Read from the draft when
+          // there is one, since that is the document on screen.
+          revision: versionOf(shown),
           // The audit trail's latest entry for this namespace, shown where the operator is
           // about to add to it.
           lastChange: await repository.lastChange(`config/${namespace}.yaml`),
@@ -470,7 +474,11 @@ function buildRows(
   context: RowContext = {},
 ): KeyRow[] {
   const definitions = schemas.definitionsFor(service);
-  const keys = new Set([...definitions.keys(), ...Object.keys(config)]);
+  // Metadata the file carries about itself is not an editable key: a row for it would invite
+  // editing a counter the write path maintains, and there is no definition to render it with.
+  const keys = new Set(
+    [...definitions.keys(), ...Object.keys(config)].filter((key) => !isMetadataKey(key)),
+  );
   const committed = context.committed;
 
   return [...keys].sort().map((key) => {
