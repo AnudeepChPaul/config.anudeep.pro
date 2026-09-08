@@ -105,6 +105,8 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .actionslot .card { margin-bottom: 0; }
   .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   .actionline .count { color: #b45309; }
+  .actionline .idle { color: #5b6070; }
+  .selection { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   .actionline .sep { color: #cbd0d9; }
   /* The selection count is a hover trigger like the others, but it is ordinary running text
      rather than an amber "unpublished" marker — it states what you are about to do, not a
@@ -435,6 +437,69 @@ function changeLines(changes: readonly PendingChange[]): SafeHtml[] {
   );
 }
 
+/**
+ * Where you are, for a toolbar with nothing to do.
+ *
+ * Four facts, in the order they are usually wanted: the size of this environment, how far it
+ * has drifted from the one it promotes into, the commit being served, and the audit trail's
+ * most recent entry — which is the line immediately above the one a publish is about to write.
+ */
+function idleLine(options: {
+  active: string;
+  rows: readonly KeyRow[];
+  commit: string;
+  nextEnvironment?: string | null;
+  lastChange?: { subject: string; author: string; at: string } | null;
+}): SafeHtml {
+  const parts: SafeHtml[] = [
+    html`${options.rows.length} variable${options.rows.length === 1 ? '' : 's'} in ${options.active}`,
+  ];
+
+  if (options.nextEnvironment) {
+    // Counted against what the next environment actually holds, including keys it has not got
+    // at all — those are drift too, and the ones a promotion would create.
+    const drift = options.rows.filter((row) => {
+      const there = row.elsewhere?.find((env) => env.environment === options.nextEnvironment);
+      return !there || format(there.value) !== format(row.value);
+    }).length;
+    parts.push(
+      drift === 0
+        ? html`identical to ${options.nextEnvironment}`
+        : html`${drift} differ from ${options.nextEnvironment}`,
+    );
+  }
+
+  parts.push(html`serving <code>${options.commit.slice(0, 8)}</code>`);
+
+  if (options.lastChange) {
+    parts.push(
+      html`last published ${ago(options.lastChange.at)} by ${options.lastChange.author} — “${options.lastChange.subject}”`,
+    );
+  }
+
+  return html`<span class="idle">${joinDots(parts)}</span>`;
+}
+
+/** Separators between the idle line's facts, rendered once rather than at every call site. */
+function joinDots(parts: readonly SafeHtml[]): SafeHtml[] {
+  return parts.flatMap((part, index) =>
+    index === 0 ? [part] : [html`<span class="sep"> · </span>`, part],
+  );
+}
+
+/**
+ * Coarse relative time. Deliberately not a precise one: "2h ago" is what the reader wants, and
+ * a formatted timestamp would be in the server's timezone rather than theirs.
+ */
+function ago(iso: string): string {
+  const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (!Number.isFinite(seconds)) return 'at an unknown time';
+  if (seconds < 90) return 'just now';
+  if (seconds >= 86_400) return `${Math.round(seconds / 86_400)}d ago`;
+  if (seconds >= 3600) return `${Math.round(seconds / 3600)}h ago`;
+  return `${Math.round(seconds / 60)}m ago`;
+}
+
 /** The panel alone, for a trigger that is not the standard "N unpublished" marker. */
 function detailPanel(title: string, changes: readonly PendingChange[]): SafeHtml {
   return html`<span class="detail" data-detail><h3>${title}</h3>${changeLines(changes)}</span>`;
@@ -523,6 +588,10 @@ export function renderProduct(options: {
   active: string;
   rows: readonly KeyRow[];
   commit: string;
+  /** The environment this one promotes into, for the drift count. */
+  nextEnvironment?: string | null;
+  /** The audit trail's most recent entry for this namespace. */
+  lastChange?: { subject: string; author: string; at: string } | null;
   message?: string;
   notice?: string;
   error?: string;
@@ -549,6 +618,9 @@ export function renderProduct(options: {
   const ticked = options.rows.filter((row) => row.pending).length;
   // Something is written down, as opposed to merely typed into the page.
   const hasDraft = (activeEnv?.pending.length ?? 0) > 0;
+  // Nothing ticked and nothing written down: the toolbar has nothing to act on, so it says
+  // where you are instead.
+  const idle = ticked === 0 && !hasDraft;
 
   const body = html`
 
@@ -589,30 +661,40 @@ export function renderProduct(options: {
         <div class="actionslot">
         <div class="card actions" style="padding:.7rem 1.25rem;" data-actions${
           hasDraft ? html` data-has-draft` : html``
-        }${ticked === 0 && !hasDraft ? html` hidden` : html``}>
+        }>
           <div class="actionline">
-            <!-- The count says how many; hovering it says which. The script rebuilds the panel
-                 as ticks move, because before a draft is saved the server has never seen the
-                 edits the panel is describing. -->
-            <span class="pending sel" tabindex="0">
-              <span class="count" data-label="{n} of {t} unpublished changes."
-                >${ticked} of ${options.rows.length} unpublished changes.</span>
-              ${detailPanel('Selected', activeEnv?.pending ?? [])}
-            </span>
-            <button type="submit" name="intent" value="save" class="linkbtn"
-                    data-needs-ticks data-label="Draft {n} change{s}?"
-                    ${ticked === 0 ? 'disabled' : ''}>Draft ${ticked} change${ticked === 1 ? '' : 's'}?</button>
             ${
-              // Publishing appears only once something is actually saved. Not disabled —
-              // absent: you cannot publish what has not been written down, and a permanently
-              // greyed action invites clicking at it to find out why.
-              hasDraft
-                ? html`<span class="sep">·</span>
-                    <button type="submit" name="intent" value="publish" class="linkbtn go"
-                            data-needs-ticks data-label="Publish {n} in ${options.active}?"
-                            ${ticked === 0 ? 'disabled' : ''}>Publish ${ticked} in ${options.active}?</button>`
-                : html``
+              // The slot's height is reserved either way, so an idle toolbar is space already
+              // paid for. It says where you are: what this environment holds, how far it has
+              // drifted from the one it promotes into, what is being served, and the audit
+              // entry immediately above the one you are about to write. The script swaps it for
+              // the selection the moment there is one.
+              idle ? idleLine(options) : html``
             }
+            <span class="selection" data-selection ${idle ? 'hidden' : ''}>
+              <!-- The count says how many; hovering it says which. The script rebuilds the panel
+                   as ticks move, because before a draft is saved the server has never seen the
+                   edits the panel is describing. -->
+              <span class="pending sel" tabindex="0">
+                <span class="count" data-label="{n} of {t} unpublished changes."
+                  >${ticked} of ${options.rows.length} unpublished changes.</span>
+                ${detailPanel('Selected', activeEnv?.pending ?? [])}
+              </span>
+              <button type="submit" name="intent" value="save" class="linkbtn"
+                      data-needs-ticks data-label="Draft {n} change{s}?"
+                      ${ticked === 0 ? 'disabled' : ''}>Draft ${ticked} change${ticked === 1 ? '' : 's'}?</button>
+              ${
+                // Publishing appears only once something is actually saved. Not disabled —
+                // absent: you cannot publish what has not been written down, and a permanently
+                // greyed action invites clicking at it to find out why.
+                hasDraft
+                  ? html`<span class="sep">·</span>
+                      <button type="submit" name="intent" value="publish" class="linkbtn go"
+                              data-needs-ticks data-label="Publish {n} in ${options.active}?"
+                              ${ticked === 0 ? 'disabled' : ''}>Publish ${ticked} in ${options.active}?</button>`
+                  : html``
+              }
+            </span>
           </div>
           ${
             // The message comes with the publish action, and takes focus when it arrives: it is

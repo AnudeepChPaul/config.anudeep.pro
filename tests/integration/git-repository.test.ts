@@ -295,3 +295,31 @@ describe('GitRepository.writeAndCommit', () => {
     expect(sha).toBe(before);
   });
 });
+
+/**
+ * The audit trail's most recent entry, shown where the operator is about to add to it.
+ */
+describe('GitRepository.lastChange', () => {
+  it('reports who last touched a path, when, and why', async () => {
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+    await git.writeAndCommit({ 'config/iam/dev.yaml': 'A: 1\n' }, 'first');
+    await git.writeAndCommit({ 'config/iam/prod.yaml': 'B: 1\n' }, 'not this one');
+    const sha = await git.writeAndCommit({ 'config/iam/dev.yaml': 'A: 2\n' }, 'Rotate the token');
+
+    const last = await git.lastChange('config/iam/dev.yaml');
+
+    expect(last?.sha).toBe(sha);
+    expect(last?.subject).toBe('Rotate the token');
+    expect(last?.author).toBeTruthy();
+    expect(Date.parse(last?.at ?? '')).not.toBeNaN();
+  });
+
+  it('is null for a path no commit has ever touched, rather than throwing', async () => {
+    // A namespace can exist as a draft before it exists as a file.
+    const repo = await newRepo();
+    await repo.commit({ 'config/iam/dev.yaml': 'A: 1\n' });
+
+    expect(await new GitRepository(repo.dir).lastChange('config/iam/nope.yaml')).toBeNull();
+  });
+});

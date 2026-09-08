@@ -13,7 +13,9 @@ const source = readFileSync(join(process.cwd(), 'src/views/assets/ticks.js'), 'u
 
 const markup = `
   <form data-keys>
-    <div data-actions hidden>
+    <div data-actions>
+      <span class="idle">12 variables in dev</span>
+      <span class="selection" data-selection hidden>
     <input type="checkbox" name="select" value="A" data-select="A">
     <input type="text" name="key.A" value="one" data-key="A" data-original="one">
     <input type="checkbox" name="select" value="B" data-select="B">
@@ -23,6 +25,7 @@ const markup = `
       <span class="detail" data-detail><h3>Selected</h3></span>
     </span>
     <button type="submit" name="intent" value="save" data-needs-ticks data-label="Save {n}" disabled>Save 0</button>
+      </span>
     </div>
   </form>
 `;
@@ -34,7 +37,8 @@ const field = (key: string) =>
 const button = () => document.querySelector('button') as HTMLButtonElement;
 const sentence = () => document.querySelector('span[data-label]') as HTMLSpanElement;
 const detail = () => document.querySelector('[data-detail]') as HTMLElement;
-const actions = () => document.querySelector('[data-actions]') as HTMLElement;
+const selection = () => document.querySelector('[data-selection]') as HTMLElement;
+const idle = () => document.querySelector('.idle') as HTMLElement;
 
 /** What a person doing it with a mouse does: the click both toggles and fires `change`. */
 const clickTick = (key: string) => {
@@ -145,28 +149,34 @@ describe('the running sentence', () => {
 });
 
 describe('the toolbar itself', () => {
-  // With nothing selected there is nothing to say and nothing to press, and an empty card
-  // above the fields is just a bar that never does anything.
-  it('is not shown at all while nothing is ticked', () => {
-    expect(actions().hidden).toBe(true);
+  // The slot's height is reserved either way, so the idle state is space already paid for: it
+  // says where you are rather than sitting blank.
+  it('says where you are while nothing is ticked', () => {
+    expect(idle().hidden).toBe(false);
+    expect(selection().hidden).toBe(true);
   });
 
-  it('appears the moment something is', () => {
+  it('swaps to the selection the moment something is ticked', () => {
     type('A', 'two');
-    expect(actions().hidden).toBe(false);
+
+    expect(selection().hidden).toBe(false);
+    expect(idle().hidden).toBe(true);
   });
 
-  it('goes away again when the last tick does', () => {
+  it('swaps back when the last tick goes', () => {
     type('A', 'two');
     type('A', 'one');
-    expect(actions().hidden).toBe(true);
+
+    expect(idle().hidden).toBe(false);
+    expect(selection().hidden).toBe(true);
   });
 
-  it('stays put when a draft exists, which is publishable with nothing ticked', () => {
-    document.body.innerHTML = markup.replace('data-actions hidden', 'data-actions data-has-draft');
+  it('shows the selection with a draft and no ticks, which is still publishable', () => {
+    document.body.innerHTML = markup.replace('data-actions>', 'data-actions data-has-draft>');
     new Function(source)();
 
-    expect(actions().hidden).toBe(false);
+    expect(selection().hidden).toBe(false);
+    expect(idle().hidden).toBe(true);
   });
 });
 

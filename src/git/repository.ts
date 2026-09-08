@@ -31,6 +31,14 @@ export interface PushResult {
   readonly reason?: string;
 }
 
+export interface LastChange {
+  readonly sha: Sha;
+  readonly subject: string;
+  readonly author: string;
+  /** ISO 8601, so the page can say "2h ago" without the server guessing a timezone. */
+  readonly at: string;
+}
+
 export interface UnpushedCommit {
   readonly sha: Sha;
   readonly subject: string;
@@ -92,6 +100,27 @@ export class GitRepository {
     try {
       const remotes = (await this.git('remote')).trim();
       return remotes ? (remotes.split('\n')[0] ?? null) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The most recent commit touching one path: the audit trail's latest entry for a namespace.
+   *
+   * Null when no commit has ever touched it — a namespace can exist as a draft before it exists
+   * as a file, and that is not an error.
+   */
+  async lastChange(path: string): Promise<LastChange | null> {
+    try {
+      const out = (
+        await this.git('log', '-1', '--format=%H%x00%s%x00%an%x00%aI', '--', path)
+      ).trim();
+      if (!out) return null;
+
+      const [sha, subject, author, at] = out.split('\0');
+      if (!sha || !at) return null;
+      return { sha: sha as Sha, subject: subject ?? '', author: author ?? '', at };
     } catch {
       return null;
     }

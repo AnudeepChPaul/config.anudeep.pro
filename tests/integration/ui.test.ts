@@ -1054,10 +1054,46 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(body).toContain('data-label="{n} of {t} unpublished changes."');
     });
 
-    it('renders no toolbar at all when nothing is selected and nothing is drafted', async () => {
-      // Not an empty bar above the fields: with nothing ticked it has nothing to say and
-      // nothing to press.
-      expect(await page()).toContain('data-actions hidden');
+    it('hides the selection while nothing is selected, showing where you are instead', async () => {
+      const body = await page();
+
+      expect(body).toMatch(/<span class="selection" data-selection hidden>/);
+      expect(body).toContain('class="idle"');
+    });
+
+    /** The idle line holds nested spans, so it runs to the selection that follows it. */
+    const idleLine = (body: string) =>
+      body.slice(body.indexOf('class="idle"'), body.indexOf('class="selection"'));
+
+    it('fills the idle line with where you are, rather than leaving it blank', async () => {
+      const body = await page();
+      const line = idleLine(body);
+
+      // What this environment holds, and what is being served.
+      expect(line).toMatch(/4 variables in dev/);
+      expect(line).toContain('serving');
+    });
+
+    it('says how far dev has drifted from the environment it promotes into', async () => {
+      // The dev fixture has SESSION_TTL 900 against prod's 3600, and two keys prod has not got.
+      const line = idleLine(await page());
+
+      expect(line).toMatch(/differ from prod/);
+    });
+
+    it('names the last publish, which is the entry above the one you are about to write', async () => {
+      const line = idleLine(await page());
+
+      expect(line).toMatch(/last published/i);
+    });
+
+    it('drops the idle line the moment the toolbar has something to say', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+
+      expect(await page()).not.toContain('class="idle"');
     });
 
     it('holds the toolbar height whether or not the toolbar is there', async () => {
@@ -1077,7 +1113,7 @@ describe('the tick and button behaviour the page depends on', () => {
       const body = await page();
 
       expect(body).toContain('data-has-draft');
-      expect(body.match(/<div class="card actions"[^>]*>/)?.[0]).not.toContain('hidden');
+      expect(body).toMatch(/<span class="selection" data-selection >/);
     });
 
     it('renders the actions as links in the sentence, not as boxed buttons', async () => {

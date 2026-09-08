@@ -70,11 +70,17 @@
         .replace('{s}', ticked === 1 ? '' : 's');
     }
 
-    // Nothing ticked and nothing written down: there is nothing to say and nothing to press,
-    // and an empty bar above the fields is a control that never does anything. A saved draft
-    // keeps it, because a draft is publishable whatever the ticks say.
+    // Nothing ticked and nothing written down: the toolbar has nothing to act on, so it shows
+    // where you are instead. A saved draft counts as something, since it is publishable
+    // whatever the ticks say.
     const actions = form.querySelector('[data-actions]');
-    if (actions) actions.hidden = ticked === 0 && actions.getAttribute('data-has-draft') === null;
+    if (actions) {
+      const idle = ticked === 0 && actions.getAttribute('data-has-draft') === null;
+      const selection = actions.querySelector('[data-selection]');
+      const where = actions.querySelector('.idle');
+      if (selection) selection.hidden = idle;
+      if (where) where.hidden = !idle;
+    }
   };
 
   /**

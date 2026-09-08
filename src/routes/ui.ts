@@ -181,6 +181,10 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           active,
           rows: buildRows(schemaSet, service, shown, {}, {}, { committed, elsewhere }),
           commit: sources.commit,
+          nextEnvironment,
+          // The audit trail's latest entry for this namespace, shown where the operator is
+          // about to add to it.
+          lastChange: await repository.lastChange(`config/${namespace}.yaml`),
           ...(options.notice ? { notice: options.notice } : {}),
           ...(offer ? { offer } : {}),
         }),
