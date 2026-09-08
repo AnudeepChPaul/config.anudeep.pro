@@ -4,6 +4,7 @@ import { BreakGlass } from '@config/src/auth/break-glass.js';
 import { SessionCodec } from '@config/src/auth/session.js';
 import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
+import { DraftStore } from '@config/src/store/draft-store.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
@@ -41,7 +42,10 @@ withSops('the CRUD UI', () => {
   let git: GitRepository;
   let app: Awaited<ReturnType<typeof buildWebApp>>;
 
+  let drafts: DraftStore;
+
   const start = async (options: { environment?: string; authenticated?: boolean } = {}) => {
+    drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     // `auth` present IS authentication; these cases only care whether prod refuses to run
     // without it, so a minimal stand-in is enough to say "something is in front".
     const auth = options.authenticated
@@ -60,11 +64,13 @@ withSops('the CRUD UI', () => {
       repository: git,
       loader,
       schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+      drafts,
       writeService: new ConfigWriteService({
         repository: git,
         loader,
         encryptor: new SopsEncryptor(repo.dir),
         schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+        drafts,
       }),
       environment: options.environment ?? 'dev',
       auth,
@@ -126,7 +132,21 @@ withSops('the CRUD UI', () => {
 
       const body = (await get('/')).body;
 
-      expect(body).toContain('iam/prod');
+      // Products, not namespaces: the index no longer lists an environment at all.
+      expect(body).toContain('>iam<');
+      expect(body).not.toContain('iam/prod');
+    });
+
+    it('summarises the keys across every environment, not just one', async () => {
+      // Taking the first environment's keys presents dev's configuration as the product's,
+      // which is wrong the moment two environments differ — which is the point of having them.
+      await repo.commit({ 'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\n' });
+      await start();
+
+      const body = (await get('/')).body;
+
+      expect(body).toContain('MFA_ENFORCEMENT');
+      expect(body).toContain('SESSION_TTL');
     });
 
     it('shows the commit being served', async () => {
@@ -140,7 +160,7 @@ withSops('the CRUD UI', () => {
     it('lists the keys and their values', async () => {
       await start();
 
-      const body = (await get('/ns/iam/prod')).body;
+      const body = (await get('/p/iam?env=prod')).body;
 
       expect(body).toContain('MFA_ENFORCEMENT');
       expect(body).toContain('optional');
@@ -152,7 +172,7 @@ withSops('the CRUD UI', () => {
       // during an incident.
       await start();
 
-      const body = (await get('/ns/iam/prod')).body;
+      const body = (await get('/p/iam?env=prod')).body;
 
       expect(body).toContain('<select');
       // Every value the enum permits, so the operator picks rather than recalls.
@@ -187,7 +207,7 @@ withSops('the CRUD UI', () => {
       expect(result.ok).toBe(true);
       await start();
 
-      const body = (await get('/ns/iam/prod')).body;
+      const body = (await get('/p/iam?env=prod')).body;
 
       expect(body).toContain('SMTP_PASSWORD');
       expect(body).not.toContain('hunter2');
@@ -196,21 +216,24 @@ withSops('the CRUD UI', () => {
     it('says a secret is set without saying what it is', async () => {
       await start();
 
-      expect((await get('/ns/iam/prod')).body).toMatch(/SMTP_PASSWORD/);
+      expect((await get('/p/iam?env=prod')).body).toMatch(/SMTP_PASSWORD/);
     });
 
-    it('carries the current commit in the form, so a save can be checked for staleness', async () => {
+    it('shows the staged value rather than the published one once an edit is pending', async () => {
+      // The editor should show what will be published, not what was published last — otherwise
+      // an operator re-reads their own pending change as if it had not been made.
       await start();
+      await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all' });
 
-      const body = (await get('/ns/iam/prod')).body;
+      const body = (await get('/p/iam?env=prod')).body;
 
-      expect(body).toContain(`value="${await git.headCommit()}"`);
+      expect(body).toContain('value="all"');
     });
 
     it('returns 404 for a namespace that does not exist', async () => {
       await start();
 
-      expect((await get('/ns/nope/prod')).statusCode).toBe(404);
+      expect((await get('/p/nope')).statusCode).toBe(404);
     });
   });
 
@@ -221,7 +244,7 @@ withSops('the CRUD UI', () => {
       await repo.commit({ 'config/evil/prod.yaml': "A: '</textarea><script>alert(1)</script>'\n" });
       await start();
 
-      const body = (await get('/ns/evil/prod')).body;
+      const body = (await get('/p/evil?env=prod')).body;
 
       expect(body).not.toContain('<script>alert(1)</script>');
       expect(body).toContain('&lt;script&gt;');
@@ -231,7 +254,7 @@ withSops('the CRUD UI', () => {
       await repo.commit({ 'config/evil/prod.yaml': '"<img src=x onerror=alert(1)>": 1\n' });
       await start();
 
-      expect((await get('/ns/evil/prod')).body).not.toContain('<img src=x');
+      expect((await get('/p/evil?env=prod')).body).not.toContain('<img src=x');
     });
   });
 
@@ -239,61 +262,47 @@ withSops('the CRUD UI', () => {
     it('applies a change and redirects back to the namespace', async () => {
       await start();
 
-      const response = await post('/ns/iam/prod', {
+      const response = await post('/p/iam/prod', {
         baseCommit: await git.headCommit(),
         message: 'tighten MFA',
         'key.MFA_ENFORCEMENT': 'all',
       });
 
       expect(response.statusCode).toBe(303);
-      expect(response.headers.location).toBe('/ns/iam/prod');
-      expect((await get('/ns/iam/prod')).body).toContain('all');
+      expect(response.headers.location).toBe('/p/iam?env=prod');
+      expect((await get('/p/iam?env=prod')).body).toContain('all');
     });
 
     it('shows validation errors instead of applying the change', async () => {
       await start();
       const before = await git.headCommit();
 
-      const response = await post('/ns/iam/prod', {
-        baseCommit: before,
-        message: 'break it',
-        'key.SESSION_TTL': '1',
-      });
+      const response = await post('/p/iam/prod', { 'key.SESSION_TTL': '1' });
 
       expect(response.statusCode).toBe(422);
       expect(response.body).toContain('SESSION_TTL');
       expect(await git.headCommit()).toBe(before);
     });
 
-    it('reports a conflict when the page was loaded before someone else saved', async () => {
+    it('says so when a draft was overtaken by an edit in the repository', async () => {
+      // Staleness moved from the form to the draft: a draft is built from the values committed
+      // at the time, so publishing must refuse if the file has moved since.
       await start();
-      const stale = await git.headCommit();
-      await post('/ns/iam/prod', {
-        baseCommit: stale,
-        message: 'first',
-        'key.MFA_ENFORCEMENT': 'all',
-      });
+      await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all' });
+      await repo.commit({ 'config/iam/prod.yaml': 'MFA_ENFORCEMENT: admins\nSESSION_TTL: 7200\n' });
 
-      const response = await post('/ns/iam/prod', {
-        baseCommit: stale,
-        message: 'second',
-        'key.MFA_ENFORCEMENT': 'admins',
-      });
+      const response = await post('/publish', { namespace: 'iam/prod', message: 'go' });
 
-      expect(response.statusCode).toBe(409);
-      expect(response.body).toMatch(/reload|changed|conflict/i);
+      expect(response.statusCode).toBe(303);
+      expect(decodeURIComponent(String(response.headers.location))).toMatch(/changed since/i);
     });
 
-    it('requires an audit message, since it becomes the commit subject', async () => {
+    it('publishes nothing when the selection has no pending changes', async () => {
       await start();
 
-      const response = await post('/ns/iam/prod', {
-        baseCommit: await git.headCommit(),
-        message: '',
-        'key.MFA_ENFORCEMENT': 'all',
-      });
+      const response = await post('/publish', { namespace: 'iam', message: 'go' });
 
-      expect(response.statusCode).toBe(422);
+      expect(decodeURIComponent(String(response.headers.location))).toMatch(/nothing selected/i);
     });
 
     it('leaves a stored secret alone when its field is submitted blank', async () => {
@@ -319,12 +328,8 @@ withSops('the CRUD UI', () => {
         { id: 'r', sourceIp: '::1' },
       );
 
-      await post('/ns/iam/prod', {
-        baseCommit: await git.headCommit(),
-        message: 'unrelated flag change',
-        'key.MFA_ENFORCEMENT': 'all',
-        'key.SMTP_PASSWORD': '',
-      });
+      await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all', 'key.SMTP_PASSWORD': '' });
+      await post('/publish', { namespace: 'iam/prod', message: 'unrelated flag change' });
 
       const loader = new ConfigLoader(new SopsDecryptor(key.secret));
       const tree = await loader.resolve(await git.readSources());
@@ -338,11 +343,7 @@ withSops('the CRUD UI', () => {
       // Retyping a form during an incident is how the wrong value gets entered the second time.
       await start();
 
-      const response = await post('/ns/iam/prod', {
-        baseCommit: await git.headCommit(),
-        message: 'break it',
-        'key.SESSION_TTL': '1',
-      });
+      const response = await post('/p/iam/prod', { 'key.SESSION_TTL': '1' });
 
       expect(response.body).toContain('value="1"');
     });

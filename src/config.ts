@@ -15,6 +15,7 @@ export interface ServiceConfig {
   readonly repoDir: string;
   readonly socketPath: string;
   readonly snapshotPath: string;
+  readonly draftsPath: string;
   readonly ageKey: string;
   readonly httpHost: string;
   readonly httpPort: number;
@@ -42,6 +43,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     repoDir: env.CONFIG_REPO_DIR ?? '/var/lib/config/repo',
     socketPath: env.CONFIG_SOCKET_PATH ?? '/run/config/config.sock',
     snapshotPath: env.CONFIG_SNAPSHOT_PATH ?? '/var/lib/config/snapshot.json',
+    draftsPath: env.CONFIG_DRAFTS_PATH ?? '/var/lib/config/drafts.json',
     // Needed to decrypt anything, including the last-known-good snapshot at boot.
     ageKey: environment === 'prod' ? required('CONFIG_AGE_KEY') : (env.CONFIG_AGE_KEY ?? ''),
     // Loopback by default. The UI has no authentication until slice 10, and 0.0.0.0 would put

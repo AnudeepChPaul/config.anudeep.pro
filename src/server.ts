@@ -12,6 +12,7 @@ import { PeerCredentialResolver, platformPeerCredentialReader } from './identity
 import { ServiceRegistry } from './identity/registry.js';
 import { SchemaSet } from './schema/validator.js';
 import { ConfigCache } from './store/cache.js';
+import { DraftStore } from './store/draft-store.js';
 import { ConfigLoader } from './store/loader.js';
 import { SnapshotStore } from './store/snapshot.js';
 import { SopsDecryptor } from './store/sops.js';
@@ -36,6 +37,8 @@ async function main(): Promise<void> {
   const loader = new ConfigLoader(decryptor);
   const cache = new ConfigCache();
   const snapshots = new SnapshotStore(config.snapshotPath);
+  // Unpublished edits. Beside the snapshot rather than in the repo: a draft is not a commit.
+  const drafts = new DraftStore(config.draftsPath);
 
   // The repo first; the snapshot only if it cannot be read. A snapshot that loaded over good
   // data would serve yesterday's config after a successful start.
@@ -76,11 +79,13 @@ async function main(): Promise<void> {
     repository,
     loader,
     schemas: () => currentSchemas,
+    drafts,
     writeService: new ConfigWriteService({
       repository,
       loader,
       encryptor: new SopsEncryptor(config.repoDir),
       schemas: () => currentSchemas,
+      drafts,
     }),
     environment: config.environment,
     auth: config.sessionSecret

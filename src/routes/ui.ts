@@ -1,9 +1,17 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { GitRepository } from '../git/repository.js';
 import type { KeyDefinition, SchemaSet } from '../schema/validator.js';
+import type { DraftStore } from '../store/draft-store.js';
 import type { ConfigLoader } from '../store/loader.js';
 import type { ConfigWriteService } from '../store/write-service.js';
-import { type KeyRow, renderIndex, renderNamespace } from '../views/pages.js';
+import {
+  type EnvironmentSummary,
+  type KeyRow,
+  type PendingChange,
+  type ProductSummary,
+  renderProduct,
+  renderProducts,
+} from '../views/pages.js';
 
 /**
  * The CRUD UI.
@@ -17,6 +25,7 @@ export interface UiRouteOptions {
   readonly loader: ConfigLoader;
   readonly schemas: () => SchemaSet;
   readonly writeService: ConfigWriteService;
+  readonly drafts: DraftStore;
 }
 
 interface NamespaceParams {
@@ -28,42 +37,110 @@ interface NamespaceParams {
 const KEY_PREFIX = 'key.';
 
 export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions): void {
-  const { repository, loader, schemas, writeService } = options;
+  const { repository, loader, schemas, writeService, drafts } = options;
 
-  const readNamespace = async (namespace: string) => {
+  /**
+   * What the console renders from: the committed tree, plus whatever is staged on top of it.
+   *
+   * Both are needed on every page — a namespace shows its live values and the fact that some
+   * of them have a pending edit — so they are read together rather than by each handler.
+   */
+  const readState = async () => {
     const sources = await repository.readSources();
-    if (!sources.sources.has(namespace)) return null;
     const tree = await loader.resolve(sources);
-    return { commit: sources.commit, config: tree.namespaces.get(namespace) ?? {} };
+    const staged = await drafts.all();
+    const pendingByNamespace = new Map<string, PendingChange[]>(
+      staged.map((draft) => [draft.namespace, [...draft.changes]]),
+    );
+    return { sources, tree, pendingByNamespace };
   };
 
-  app.get('/', async (_request, reply) => {
-    const sources = await repository.readSources();
-    const unpushed = await repository.unpushedCommits();
+  const environmentsOf = (
+    service: string,
+    namespaces: Iterable<string>,
+    pending: Map<string, PendingChange[]>,
+  ): EnvironmentSummary[] =>
+    [...namespaces]
+      .filter((namespace) => namespace.startsWith(`${service}/`))
+      .sort()
+      .map((namespace) => ({
+        name: namespace.slice(service.length + 1),
+        namespace,
+        pending: pending.get(namespace) ?? [],
+      }));
+
+  app.get('/', async (request: FastifyRequest<{ Querystring: { notice?: string } }>, reply) => {
+    const { sources, tree, pendingByNamespace } = await readState();
+
+    const services = [...new Set([...sources.sources.keys()].map((ns) => ns.split('/')[0] ?? ''))];
+    const products: ProductSummary[] = services.sort().map((service) => {
+      const environments = environmentsOf(service, sources.sources.keys(), pendingByNamespace);
+      // The union across environments, not the first one's. Taking the first showed dev's keys
+      // as if they were the product's, which is wrong whenever the environments differ — and
+      // they usually do, since that is what having environments is for.
+      const keys = [
+        ...new Set(
+          environments.flatMap((env) => Object.keys(tree.namespaces.get(env.namespace) ?? {})),
+        ),
+      ].sort();
+      return {
+        name: service,
+        keys: keys.slice(0, 3).join(', ') + (keys.length > 3 ? ` +${keys.length - 3}` : ''),
+        environments,
+      };
+    });
+
     return reply.type('text/html; charset=utf-8').send(
       String(
-        renderIndex({
-          namespaces: [...sources.sources.keys()].sort(),
+        renderProducts({
+          products,
           commit: sources.commit,
-          unpushed,
+          ...(request.query?.notice ? { notice: request.query.notice } : {}),
         }),
       ),
     );
   });
 
   app.get(
-    '/ns/:service/:environment',
-    async (request: FastifyRequest<{ Params: NamespaceParams }>, reply) => {
-      const namespace = `${request.params.service}/${request.params.environment}`;
-      const loaded = await readNamespace(namespace);
-      if (!loaded) return reply.code(404).type('text/html; charset=utf-8').send('Not found');
+    '/p/:service',
+    async (
+      request: FastifyRequest<{
+        Params: { service: string };
+        Querystring: { env?: string; notice?: string };
+      }>,
+      reply,
+    ) => {
+      const { service } = request.params;
+      const { sources, tree, pendingByNamespace } = await readState();
+      const environments = environmentsOf(service, sources.sources.keys(), pendingByNamespace);
+
+      if (environments.length === 0) {
+        return reply.code(404).type('text/html; charset=utf-8').send('Not found');
+      }
+
+      // An unknown ?env is not an error worth a 404 — it is a stale bookmark. The first
+      // environment is a better answer than a dead end.
+      const active =
+        environments.find((env) => env.name === request.query?.env)?.name ??
+        environments[0]?.name ??
+        '';
+      const namespace = `${service}/${active}`;
+
+      // Values shown are the staged ones where a draft exists: the editor should show what
+      // will be published, not what was published last.
+      const draft = await drafts.get(namespace);
+      const committed = tree.namespaces.get(namespace) ?? {};
+      const shown = draft ? await loader.resolveOne(namespace, draft.document) : committed;
 
       return reply.type('text/html; charset=utf-8').send(
         String(
-          renderNamespace({
-            namespace,
-            commit: loaded.commit,
-            rows: buildRows(schemas(), request.params.service, loaded.config),
+          renderProduct({
+            service,
+            environments,
+            active,
+            rows: buildRows(schemas(), service, shown),
+            commit: sources.commit,
+            ...(request.query?.notice ? { notice: request.query.notice } : {}),
           }),
         ),
       );
@@ -71,94 +148,109 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
   );
 
   app.post(
-    '/ns/:service/:environment',
+    '/p/:service/:environment',
     async (
       request: FastifyRequest<{ Params: NamespaceParams; Body: Record<string, string> }>,
       reply,
     ) => {
       const { service, environment } = request.params;
-      const namespace = `${service}/${environment}`;
-      const body = request.body ?? {};
-      const loaded = await readNamespace(namespace);
-      if (!loaded) return reply.code(404).type('text/html; charset=utf-8').send('Not found');
-
       const schemaSet = schemas();
-      const submitted = collectSubmitted(body);
+      const submitted = collectSubmitted(request.body ?? {});
       const changes = coerceChanges(schemaSet, service, submitted);
-
-      const reRender = (status: number, formError: string, errors: Record<string, string> = {}) =>
-        reply
-          .code(status)
-          .type('text/html; charset=utf-8')
-          .send(
-            String(
-              renderNamespace({
-                namespace,
-                commit: loaded.commit,
-                // Submitted values, not stored ones: retyping a form during an incident is how
-                // the wrong value gets entered the second time.
-                rows: buildRows(
-                  schemaSet,
-                  service,
-                  { ...loaded.config, ...changes },
-                  errors,
-                  submitted,
-                ),
-                message: body.message ?? '',
-                formError,
-              }),
-            ),
-          );
-
-      const message = (body.message ?? '').trim();
-      if (!message) {
-        // The message becomes the commit subject, which is the audit trail's only prose.
-        return reRender(422, 'An audit message is required — it becomes the commit subject.');
-      }
-
       const session = request.session;
-      const result = await writeService.save(
-        {
-          service,
-          environment,
-          baseCommit: body.baseCommit ?? '',
-          changes,
-          message,
-        },
-        // An unauthenticated app has no session; prod refuses to run that way, and the
-        // placeholder makes it obvious in the trail when dev does.
+
+      const result = await writeService.stage(
+        { service, environment, changes },
         {
           email: session?.email ?? 'unauthenticated@localhost',
           id: session?.id ?? 'anonymous',
-          via: session?.via,
+          ...(session?.via ? { via: session.via } : {}),
+        },
+      );
+
+      if (result.ok) {
+        return reply
+          .code(303)
+          .header('location', `/p/${service}?env=${encodeURIComponent(environment)}`)
+          .send();
+      }
+
+      const { sources, tree, pendingByNamespace } = await readState();
+      const perKey = Object.fromEntries(
+        (result.error.errors ?? []).map((error) => [error.key, error.message]),
+      );
+      return reply
+        .code(422)
+        .type('text/html; charset=utf-8')
+        .send(
+          String(
+            renderProduct({
+              service,
+              environments: environmentsOf(service, sources.sources.keys(), pendingByNamespace),
+              active: environment,
+              // Submitted values, not stored ones: retyping a form mid-incident is how the
+              // wrong value gets entered the second time.
+              rows: buildRows(
+                schemaSet,
+                service,
+                { ...(tree.namespaces.get(`${service}/${environment}`) ?? {}), ...changes },
+                perKey,
+                submitted,
+              ),
+              commit: sources.commit,
+              error: result.error.detail,
+            }),
+          ),
+        );
+    },
+  );
+
+  app.post(
+    '/publish',
+    async (request: FastifyRequest<{ Body: Record<string, string | string[]> }>, reply) => {
+      const body = request.body ?? {};
+      const raw = body.namespace;
+      const selected = (Array.isArray(raw) ? raw : raw ? [raw] : []).map(String);
+      const message = String(body.message ?? '').trim();
+      const session = request.session;
+
+      // A product checkbox on the index selects the product; the namespaces it stands for are
+      // resolved here rather than posted, so a hand-edited form cannot name someone else's.
+      const { sources, pendingByNamespace } = await readState();
+      const namespaces = selected.flatMap((entry) =>
+        entry.includes('/')
+          ? [entry]
+          : environmentsOf(entry, sources.sources.keys(), pendingByNamespace)
+              .filter((env) => env.pending.length > 0)
+              .map((env) => env.namespace),
+      );
+
+      if (namespaces.length === 0) {
+        return reply
+          .code(303)
+          .header('location', '/?notice=Nothing%20selected%20had%20unpublished%20changes.')
+          .send();
+      }
+
+      const result = await writeService.publish(
+        namespaces,
+        message || `Publish ${namespaces.join(', ')}`,
+        {
+          email: session?.email ?? 'unauthenticated@localhost',
+          id: session?.id ?? 'anonymous',
+          ...(session?.via ? { via: session.via } : {}),
         },
         { id: request.id, sourceIp: request.ip },
       );
 
-      if (result.ok) return reply.code(303).header('location', `/ns/${namespace}`).send();
+      const notice = result.ok
+        ? `Published ${result.value.changedKeys.length} change(s)${result.value.published ? '' : ' — not yet pushed to GitHub'}.`
+        : result.error.detail;
 
-      if (result.error.code === 'conflict') {
-        return reply
-          .code(409)
-          .type('text/html; charset=utf-8')
-          .send(
-            String(
-              renderNamespace({
-                namespace,
-                commit: result.error.currentCommit ?? loaded.commit,
-                rows: buildRows(schemaSet, service, loaded.config),
-                message,
-                formError:
-                  'Someone else changed this configuration while this page was open. Reload and reapply your change.',
-              }),
-            ),
-          );
-      }
-
-      const perKey = Object.fromEntries(
-        (result.error.errors ?? []).map((error) => [error.key, error.message]),
-      );
-      return reRender(422, result.error.detail, perKey);
+      return reply
+        .code(303)
+        .header('location', `/?notice=${encodeURIComponent(notice)}`)
+        .send();
     },
   );
 }

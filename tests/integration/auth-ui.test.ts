@@ -8,6 +8,7 @@ import { SessionCodec } from '@config/src/auth/session.js';
 import { generateTotp, totpCounter } from '@config/src/auth/totp.js';
 import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
+import { DraftStore } from '@config/src/store/draft-store.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
@@ -51,16 +52,19 @@ withSops('the editor behind authentication', () => {
 
   const start = async (withOidc = true) => {
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
+    const drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     alert = vi.fn();
     app = await buildWebApp({
       repository: git,
       loader,
       schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+      drafts,
       writeService: new ConfigWriteService({
         repository: git,
         loader,
         encryptor: new SopsEncryptor(repo.dir),
         schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+        drafts,
       }),
       environment: 'dev',
       auth: {
@@ -182,17 +186,13 @@ withSops('the editor behind authentication', () => {
     });
 
     it('refuses an unauthenticated namespace view', async () => {
-      expect((await get('/ns/iam/prod')).statusCode).toBe(302);
+      expect((await get('/p/iam?env=prod')).statusCode).toBe(302);
     });
 
     it('refuses an unauthenticated save without applying it', async () => {
       const before = await git.headCommit();
 
-      const response = await post('/ns/iam/prod', {
-        baseCommit: before,
-        message: 'sneak',
-        'key.MFA_ENFORCEMENT': 'all',
-      });
+      const response = await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all' });
 
       expect(response.statusCode).toBe(302);
       expect(await git.headCommit()).toBe(before);
@@ -294,15 +294,9 @@ withSops('the editor behind authentication', () => {
     it('commits as the signed-in person, not as an anonymous placeholder', async () => {
       // The reason this slice exists. Before it, every commit in the audit trail said
       // `unauthenticated@localhost`, which records that a change happened and nothing else.
-      await post(
-        '/ns/iam/prod',
-        {
-          baseCommit: await git.headCommit(),
-          message: 'tighten MFA',
-          'key.MFA_ENFORCEMENT': 'all',
-        },
-        signedInCookie(),
-      );
+      // Staging then publishing, since an edit no longer commits on its own.
+      await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all' }, signedInCookie());
+      await post('/publish', { namespace: 'iam/prod', message: 'tighten MFA' }, signedInCookie());
 
       const body = await repo.git('log', '-1', '--format=%B');
       expect(body).toContain('Actor: me@anudeep.pro');
@@ -312,9 +306,10 @@ withSops('the editor behind authentication', () => {
     it('records which credential was used', async () => {
       // A change made under break-glass was made while the identity provider was down and
       // nobody could be checked against it. That belongs in the record.
+      await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all' }, signedInCookie('break-glass'));
       await post(
-        '/ns/iam/prod',
-        { baseCommit: await git.headCommit(), message: 'emergency', 'key.MFA_ENFORCEMENT': 'all' },
+        '/publish',
+        { namespace: 'iam/prod', message: 'emergency' },
         signedInCookie('break-glass'),
       );
 
