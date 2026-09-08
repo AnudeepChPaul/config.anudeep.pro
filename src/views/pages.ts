@@ -589,7 +589,13 @@ export function renderProducts(options: {
               }
             </p>
           </div>
-          <button type="submit">Publish selected</button>
+          ${
+            // Absent when there is nothing waiting anywhere, like every other publish here: a
+            // permanently greyed action invites clicking at it to find out why.
+            totalPending > 0
+              ? html`<button type="submit" class="linkbtn go">Publish selected changes?</button>`
+              : html``
+          }
         </div>
         ${options.notice ? html`<div class="card">${options.notice}</div>` : html``}
         ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
@@ -666,16 +672,21 @@ export function renderProduct(options: {
           </div>
           <h1>${options.service}</h1>
         </div>
-        <form method="post" action="/publish" style="display:flex;gap:8px;align-items:flex-start;">
-          ${options.environments.map(
-            (env) =>
-              html`<input type="hidden" name="namespace" value="${options.service}/${env.name}">`,
-          )}
-          <input type="hidden" name="message" value="Publish all ${options.service} changes">
-          <button type="submit" class="ghost" ${productPending === 0 ? 'disabled' : ''}>
-            ${productPending === 0 ? 'Nothing to publish' : `Publish all ${options.service} (${productPending})`}
-          </button>
-        </form>
+        ${
+          productPending === 0
+            ? html``
+            : html`<form method="post" action="/publish"
+                    style="display:flex;gap:8px;align-items:flex-start;font-size:.8125rem;">
+                ${options.environments.map(
+                  (env) =>
+                    html`<input type="hidden" name="namespace" value="${options.service}/${env.name}">`,
+                )}
+                <input type="hidden" name="message" value="Publish all ${options.service} changes">
+                <button type="submit" class="linkbtn go">
+                  Publish all ${options.service} (${productPending})?
+                </button>
+              </form>`
+        }
       </div>
 
       <div class="tabs">${tabs}</div>
@@ -800,9 +811,11 @@ function promoteOffer(options: {
       <input type="hidden" name="from" value="${options.active}">
       <input type="hidden" name="to" value="${offer.nextEnvironment}">
       ${hidden}
-      <button type="submit" ${offer.movable.length === 0 ? 'disabled' : ''}>
-        Stage in ${offer.nextEnvironment}
-      </button>
+      ${
+        offer.movable.length === 0
+          ? html``
+          : html`<button type="submit" class="linkbtn go">Stage ${offer.movable.length} in ${offer.nextEnvironment}?</button>`
+      }
       <a href="/p/${options.service}?env=${options.active}">Not now</a>
     </form>
   </div>`;

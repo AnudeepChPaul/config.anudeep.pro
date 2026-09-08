@@ -589,7 +589,7 @@ describe('publishing ticked keys and promoting them', () => {
       expect(location).toContain('published=MFA_ENFORCEMENT');
 
       const page = await app3.inject({ method: 'GET', url: location });
-      expect(page.body).toContain('Stage in prod');
+      expect(page.body).toMatch(/Stage \d+ in prod\?/);
       expect(page.body).toContain('MFA_ENFORCEMENT');
       // The key that stayed staged was not published, so it is not on offer.
       expect(page.body).not.toContain('name="key" value="SESSION_TTL"');
@@ -799,9 +799,14 @@ describe('the environment tab offers the controls its routes accept', () => {
     });
 
     it('has no second, environment-scoped publish that would ignore the ticks', async () => {
-      // Publishing a whole product is a real action and keeps its own form. What must not
-      // survive is a button that publishes just this environment while skipping the selection —
-      // two ways to publish, one of which quietly ships more than was ticked.
+      // Publishing a whole product is a real action and keeps its own form, once there is
+      // something in it. What must not survive is a button that publishes just this environment
+      // while skipping the selection — two ways to publish, one of which quietly ships more
+      // than was ticked.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
       const body = await page();
       const productForm = body.match(/<form[^>]*action="\/publish"[\s\S]*?<\/form>/)?.[0] ?? '';
 

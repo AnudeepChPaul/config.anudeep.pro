@@ -138,6 +138,68 @@ describe('the toolbar reads as one line', () => {
   });
 });
 
+describe('every publish action reads the same way', () => {
+  // One idiom across the console: a link-styled question in the environment's own colour, and
+  // absent rather than greyed when there is nothing behind it.
+  const productsPage = (pending: number) =>
+    String(
+      renderProducts({
+        commit: 'a'.repeat(40),
+        products: [
+          {
+            name: 'iam',
+            keys: '4 keys',
+            environments: [
+              {
+                name: 'dev',
+                namespace: 'iam/dev',
+                pending: Array.from({ length: pending }, (_, i) => ({
+                  key: `K${i}`,
+                  from: 'a',
+                  to: 'b',
+                  secret: false,
+                })),
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+  it('renders the products publish as a link, phrased as a question', () => {
+    const button = productsPage(2).match(/<button[^>]*>[\s\S]*?<\/button>/)?.[0] ?? '';
+
+    expect(button).toContain('linkbtn');
+    expect(button).toContain('go');
+    expect(button).toMatch(/\?/);
+  });
+
+  it('offers no products publish at all when nothing is waiting', () => {
+    expect(productsPage(0)).not.toContain('<button');
+  });
+
+  it('renders the whole-product publish as a link, and not at all when idle', () => {
+    const busy = String(
+      renderProduct({
+        service: 'iam',
+        environments: [
+          {
+            name: 'dev',
+            namespace: 'iam/dev',
+            pending: [{ key: 'A', from: '1', to: '2', secret: false }],
+          },
+        ],
+        active: 'dev',
+        rows: [],
+        commit: 'a'.repeat(40),
+      }),
+    );
+
+    expect(busy).toMatch(/<button[^>]*class="linkbtn go"[^>]*>\s*Publish all iam \(1\)\?/);
+    expect(productPage([])).not.toContain('Publish all');
+  });
+});
+
 describe('a hidden element is actually hidden', () => {
   // `hidden` is a UA style of `display: none`, and ANY author rule setting display beats it —
   // so `.selection { display: inline-flex }` left the selection count on screen on a clean
