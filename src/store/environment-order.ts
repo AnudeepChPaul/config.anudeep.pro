@@ -35,6 +35,17 @@ export class EnvironmentOrder {
     );
   }
 
+  /**
+   * Every declared environment, in order.
+   *
+   * The console renders exactly these as tabs — for every product, whether or not it holds a
+   * file for one yet. An environment nobody declared is not rendered, and a namespace in the
+   * tree whose environment is absent from here is not either.
+   */
+  all(): readonly string[] {
+    return this.order;
+  }
+
   /** The environment after this one, or null when there is none or it is not listed. */
   next(environment: string): string | null {
     const index = this.order.indexOf(environment);

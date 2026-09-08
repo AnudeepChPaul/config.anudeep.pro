@@ -164,6 +164,9 @@ withSops('the editor behind authentication', () => {
     repo = await TestRepo.create();
     await repo.commit({
       'schema/iam.yaml': SCHEMA,
+      'services.yaml':
+        'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+      'environments.yaml': 'order: [dev, prod]\n',
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key.recipient}\n`,
     });

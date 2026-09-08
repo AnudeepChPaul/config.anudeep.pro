@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { GitRepository } from '../git/repository.js';
+import { ServiceRegistry } from '../identity/registry.js';
+import type { ServiceIdentity } from '../identity/types.js';
 import type { KeyDefinition, SchemaSet } from '../schema/validator.js';
 import type { DraftStore } from '../store/draft-store.js';
 import { EnvironmentOrder } from '../store/environment-order.js';
@@ -34,6 +36,11 @@ export interface UiRouteOptions {
    */
   readonly environmentOrder?: () => Promise<EnvironmentOrder>;
   /**
+   * The services the registry declares. The console lists exactly these — not what happens to
+   * have a file in the tree — so a product appears when it is declared and not before.
+   */
+  readonly services?: () => readonly ServiceIdentity[];
+  /**
    * The push remote's browser address, for linking the commit being served. Absent renders the
    * sha as plain text: a wrong link sends an operator mid-incident to somebody else's history.
    */
@@ -61,7 +68,38 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
   // Destructured here because productPage takes its own `options`, and the two would otherwise
   // read alike at the point of use.
   const repoWebUrl = options.repoWebUrl ?? null;
-  const readOrder = options.environmentOrder ?? (async () => EnvironmentOrder.none());
+  /**
+   * Read from the repository unless a caller supplies its own, and read per request so a change
+   * to environments.yaml takes effect without a restart.
+   *
+   * This file decides what the console renders, not just what promotes into what: an environment
+   * nobody declared has no tab, and a namespace whose environment is not declared is not shown.
+   */
+  const readOrder =
+    options.environmentOrder ??
+    (async () => {
+      try {
+        return EnvironmentOrder.fromYaml(await repository.readFile('environments.yaml'));
+      } catch {
+        return EnvironmentOrder.none();
+      }
+    });
+  const declaredEnvironments = async () => (await readOrder()).all();
+  /**
+   * The services the repository declares, read per request so a change to services.yaml shows up
+   * without a restart — the same rule the environment order follows.
+   *
+   * An unreadable or absent file lists nothing rather than falling back to whatever has a file in
+   * the tree: a product nobody declared has no uid, so no process could read it anyway.
+   */
+  const declaredServices = async (): Promise<readonly ServiceIdentity[]> => {
+    if (options.services) return options.services();
+    try {
+      return ServiceRegistry.fromYaml(await repository.readFile('services.yaml')).services();
+    } catch {
+      return [];
+    }
+  };
 
   /**
    * What the console renders from: the committed tree, plus whatever is staged on top of it.
@@ -83,30 +121,37 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     return { sources, tree, pendingByNamespace, draftsByNamespace };
   };
 
+  /**
+   * The environment tabs for a product: every environment `environments.yaml` declares, in the
+   * declared order.
+   *
+   * Not what the tree happens to hold. Deriving them from the files meant an environment existed
+   * on screen only after someone had already written to it, which is backwards — you open the
+   * tab in order to write to it. An environment with no file yet renders with nothing set.
+   */
   const environmentsOf = (
     service: string,
-    namespaces: Iterable<string>,
+    environments: readonly string[],
     pending: Map<string, PendingChange[]>,
     draftSaves: Map<string, number> = new Map(),
   ): EnvironmentSummary[] =>
-    [...namespaces]
-      .filter((namespace) => namespace.startsWith(`${service}/`))
-      .sort()
-      .map((namespace) => ({
-        name: namespace.slice(service.length + 1),
-        namespace,
-        pending: pending.get(namespace) ?? [],
-        drafts: draftSaves.get(namespace) ?? 0,
-      }));
+    environments.map((name) => ({
+      name,
+      namespace: `${service}/${name}`,
+      pending: pending.get(`${service}/${name}`) ?? [],
+      drafts: draftSaves.get(`${service}/${name}`) ?? 0,
+    }));
 
   app.get('/', async (request: FastifyRequest<{ Querystring: { notice?: string } }>, reply) => {
     const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
 
-    const services = [...new Set([...sources.sources.keys()].map((ns) => ns.split('/')[0] ?? ''))];
-    const products: ProductSummary[] = services.sort().map((service) => {
+    // Declared, not discovered: a product is listed because services.yaml says it exists.
+    const declared = await declaredServices();
+    const environmentNames = await declaredEnvironments();
+    const products: ProductSummary[] = declared.map((service) => {
       const environments = environmentsOf(
-        service,
-        sources.sources.keys(),
+        service.name,
+        environmentNames,
         pendingByNamespace,
         draftsByNamespace,
       );
@@ -119,7 +164,10 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         ),
       ].sort();
       return {
-        name: service,
+        // The uid is what the read API authenticates against, so it belongs beside the name:
+        // it is the fact that decides which process may read this product's configuration.
+        name: `${service.name} (${service.uid})`,
+        service: service.name,
         keys: keys.slice(0, 3).join(', ') + (keys.length > 3 ? ` +${keys.length - 3}` : ''),
         environments,
       };
@@ -153,10 +201,14 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     fragment: boolean;
   }): Promise<{ html: string; active: string } | null> => {
     const { service } = options;
+    // Declared or nothing. With the tabs coming from environments.yaml rather than from the
+    // files present, every service name would otherwise render a page — including one nobody
+    // declared, which no process could ever read.
+    if (!(await declaredServices()).some((entry) => entry.name === service)) return null;
     const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
     const environments = environmentsOf(
       service,
-      sources.sources.keys(),
+      await declaredEnvironments(),
       pendingByNamespace,
       draftsByNamespace,
     );
@@ -415,7 +467,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
               service,
               environments: environmentsOf(
                 service,
-                sources.sources.keys(),
+                await declaredEnvironments(),
                 pendingByNamespace,
                 draftsByNamespace,
               ),
@@ -481,11 +533,12 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
       // A product checkbox on the index selects the product; the namespaces it stands for are
       // resolved here rather than posted, so a hand-edited form cannot name someone else's.
-      const { sources, pendingByNamespace, draftsByNamespace } = await readState();
+      const { pendingByNamespace, draftsByNamespace } = await readState();
+      const environmentNames = await declaredEnvironments();
       const namespaces = selected.flatMap((entry) =>
         entry.includes('/')
           ? [entry]
-          : environmentsOf(entry, sources.sources.keys(), pendingByNamespace, draftsByNamespace)
+          : environmentsOf(entry, environmentNames, pendingByNamespace, draftsByNamespace)
               .filter((env) => env.pending.length > 0)
               .map((env) => env.namespace),
       );

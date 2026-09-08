@@ -42,6 +42,8 @@ withSops('htmx as progressive enhancement', () => {
     await repo.commit({
       'schema/iam.yaml': SCHEMA,
       'environments.yaml': 'order: [dev, prod]\n',
+      'services.yaml':
+        'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
       'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key.recipient}\n`,

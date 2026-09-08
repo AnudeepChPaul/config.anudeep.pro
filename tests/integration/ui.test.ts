@@ -98,6 +98,9 @@ withSops('the CRUD UI', () => {
     repo = await TestRepo.create();
     await repo.commit({
       'schema/iam.yaml': SCHEMA,
+      'services.yaml':
+        'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+      'environments.yaml': 'order: [dev, prod]\n',
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(SMTP_PASSWORD)$"\n    age: ${key.recipient}\n`,
     });
@@ -134,7 +137,9 @@ withSops('the CRUD UI', () => {
       const body = (await get('/')).body;
 
       // Products, not namespaces: the index no longer lists an environment at all.
-      expect(body).toContain('>iam<');
+      // Labelled with the uid the read API authenticates against: it is the fact that decides
+      // which process may read this product's configuration.
+      expect(body).toContain('iam (1002)');
       expect(body).not.toContain('iam/prod');
     });
 
@@ -242,7 +247,12 @@ withSops('the CRUD UI', () => {
     it('escapes a value that would otherwise close the element it sits in', async () => {
       // The config repo is writable through GitHub as well as through this UI, so a hostile
       // value can arrive without ever passing through this form's validation.
-      await repo.commit({ 'config/evil/prod.yaml': "A: '</textarea><script>alert(1)</script>'\n" });
+      // Declared like any other product: the console renders what services.yaml names, and the
+      // point here is that a hostile VALUE in a declared namespace is escaped.
+      await repo.commit({
+        'config/evil/prod.yaml': "A: '</textarea><script>alert(1)</script>'\n",
+        'services.yaml': 'services:\n  - name: evil\n    uid: 1099\n    namespaces: [evil/prod]\n',
+      });
       await start();
 
       const body = (await get('/p/evil?env=prod')).body;
@@ -252,7 +262,10 @@ withSops('the CRUD UI', () => {
     });
 
     it('escapes a hostile key name too', async () => {
-      await repo.commit({ 'config/evil/prod.yaml': '"<img src=x onerror=alert(1)>": 1\n' });
+      await repo.commit({
+        'config/evil/prod.yaml': '"<img src=x onerror=alert(1)>": 1\n',
+        'services.yaml': 'services:\n  - name: evil\n    uid: 1099\n    namespaces: [evil/prod]\n',
+      });
       await start();
 
       expect((await get('/p/evil?env=prod')).body).not.toContain('<img src=x');
@@ -384,6 +397,9 @@ describe('the controls a key renders', () => {
       repo2 = await TestRepo.create();
       await repo2.commit({
         'schema/iam.yaml': TYPED_SCHEMA,
+        'services.yaml':
+          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+        'environments.yaml': 'order: [dev, prod]\n',
         'config/iam/prod.yaml':
           'FP_COMPONENTS: [ua, lang]\nKILL_PASSWORD_LOGIN: false\nMFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
         'config/iam/dev.yaml': 'MFA_ENFORCEMENT: all\nSESSION_TTL: 900\n',
@@ -522,6 +538,8 @@ describe('publishing ticked keys and promoting them', () => {
       await repo3.commit({
         'schema/iam.yaml': SCHEMA2,
         'environments.yaml': 'order: [dev, prod]\n',
+        'services.yaml':
+          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
         'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
         '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(SMTP_PASSWORD)$"\n    age: ${key3.recipient}\n`,
@@ -714,6 +732,8 @@ describe('the environment tab offers the controls its routes accept', () => {
       await repo4.commit({
         'schema/iam.yaml': SCHEMA4,
         'environments.yaml': 'order: [dev, prod]\n',
+        'services.yaml':
+          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
         'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
         '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key4.recipient}\n`,
@@ -901,6 +921,8 @@ describe('the tick and button behaviour the page depends on', () => {
       await repo5.commit({
         'schema/iam.yaml': SCHEMA5,
         'environments.yaml': 'order: [dev, prod]\n',
+        'services.yaml':
+          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
         'config/iam/dev.yaml':
           'FP_COMPONENTS: [ua, lang]\nKILL_PASSWORD_LOGIN: false\nMFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
@@ -1199,6 +1221,38 @@ describe('the tick and button behaviour the page depends on', () => {
 
       expect(plain.statusCode).toBe(303);
       expect(plain.headers.location).toMatch(/notice=/);
+    });
+
+    it('renders a tab for every declared environment, file or no file', async () => {
+      // The tabs come from environments.yaml, not from what happens to be in the tree: you open
+      // the tab in order to write to it, so requiring a file first is backwards.
+      const body = await page();
+
+      expect(body).toMatch(/href="\/p\/iam\?env=dev"/);
+      expect(body).toMatch(/href="\/p\/iam\?env=prod"/);
+    });
+
+    it('renders no tab for an environment nobody declared', async () => {
+      await repo5.commit({ 'config/iam/staging.yaml': 'MFA_ENFORCEMENT: all\n' });
+
+      expect(await page()).not.toContain('env=staging');
+    });
+
+    it('counts drafts, not keys, on the publish action', async () => {
+      // One press of Save is one draft, whatever it contained.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['key.SESSION_TTL', '1200'],
+        ['intent', 'save'],
+      ]);
+      expect(await page()).toMatch(/Publish 1 draft in dev\?/);
+
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'admins'],
+        ['intent', 'save'],
+      ]);
+
+      expect(await page()).toMatch(/Publish 2 drafts in dev\?/);
     });
 
     it('names a page-local edit unsaved and a drafted change unpublished', async () => {

@@ -44,3 +44,22 @@ describe('EnvironmentOrder', () => {
     expect(EnvironmentOrder.fromYaml('order: [dev, 7, prod]\n').next('dev')).toBe('prod');
   });
 });
+
+/**
+ * The declared list is also what the console renders as tabs: every environment in the file, for
+ * every product, and nothing that is not in it.
+ */
+describe('the declared list', () => {
+  it('is every environment, in the order it was declared', () => {
+    expect(EnvironmentOrder.fromYaml('order: [dev, staging, prod]\n').all()).toEqual([
+      'dev',
+      'staging',
+      'prod',
+    ]);
+  });
+
+  it('is empty when nothing is declared, so the console renders no tabs it was not told about', () => {
+    expect(EnvironmentOrder.none().all()).toEqual([]);
+    expect(EnvironmentOrder.fromYaml('nonsense').all()).toEqual([]);
+  });
+});

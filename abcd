@@ -1,0 +1,3 @@
+Clear the variable selection when local changes are drafted.
+
+I'm planning to add search functionality on the products page.[27;5;106~Upon landing the page user can serach with environment variables.[27;5;106~Give me options as to how it should display the search results.[27;5;106~But, what I know is that clicking on a search result, will take use[27;5;106~to that product page > dev > and highlight the environment[27;5;106~variable. Each products page (eg: http://localhost:8200/p/{product}) willhave search functionality. This will also behave same, except this [27;5;106~time it doesn't need to navigate anywhere. It can just filter [27;5;106~and display only what I'm searching. Ask me open questions or [27;5;106~if there are concerns.   [27;5;106~[27;5;106~

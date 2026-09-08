@@ -82,11 +82,16 @@ async function main(): Promise<void> {
   const schemas = () => SchemaSet.fromFiles({});
   const loadSchemas = async () => SchemaSet.fromFiles(await repository.readSchemas());
 
+  // One registry for both halves: the read API authenticates against it, and the console lists
+  // what it declares. Two readings of services.yaml would drift, and the drift would show as a
+  // product you can edit but no process can read.
+  const registry = ServiceRegistry.fromYaml(await readServicesYaml(repository));
+
   const readApi = await buildReadApi({
     cache,
     guard: new AccessGuard({
       resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
-      registry: ServiceRegistry.fromYaml(await readServicesYaml(repository)),
+      registry,
       audit: (entry) => log.info({ ...entry, event: 'authorize' }),
       alert: (entry) => log.warn({ ...entry, event: 'access_denied' }),
     }),
@@ -98,6 +103,9 @@ async function main(): Promise<void> {
   let currentSchemas = await loadSchemas().catch(() => schemas());
   const web = await buildWebApp({
     repository,
+    // The console lists what the registry declares, so both halves of the service — the read API
+    // and the editor — agree on what exists.
+    services: () => registry.services(),
     repoWebUrl: config.repoWebUrl,
     loader,
     schemas: () => currentSchemas,

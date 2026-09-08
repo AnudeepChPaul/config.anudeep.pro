@@ -121,13 +121,12 @@ describe('the switch reflects the checkbox', () => {
 });
 
 describe('the toolbar reads as one line', () => {
-  it('sizes its text and its actions the same', () => {
+  it('sizes its text to match the buttons in it', () => {
     // A link-styled action set a step larger than the sentence it belongs to reads as a button
-    // pretending to be a word.
+    // pretending to be a word. The actions themselves are sized by the global button rule.
     const css = productPage([]);
 
-    expect(css).toMatch(/\.actionline[^{]*,?[^{]*\{[^}]*font-size:\s*\.8125rem/);
-    expect(css).toMatch(/\.actionline button[^{]*\{[^}]*font-size:\s*inherit/);
+    expect(css).toMatch(/\.actions \{[^}]*font-size:\s*\.8125rem/);
   });
 
   it('gives the separator enough contrast to read as one', () => {
@@ -135,6 +134,19 @@ describe('the toolbar reads as one line', () => {
     const css = productPage([]);
 
     expect(css).toMatch(/\.sep \{[^}]*color:\s*#(?!cbd0d9)[0-9a-f]{6}/);
+  });
+});
+
+describe('button styling is global', () => {
+  // It was a toolbar-local rule, so every button outside the toolbar — Sign in, the product
+  // list's actions — was set at a different size from the ones beside them.
+  it('sizes buttons in the base rule, not under the toolbar', () => {
+    const css = productPage([]);
+    const base = css.match(/\n\s*button \{[\s\S]*?\}/)?.[0] ?? '';
+
+    // Every button on every page inherits it — Sign in included, which sits outside any toolbar.
+    expect(base).toMatch(/font-size:\s*\.8125rem/);
+    expect(css).not.toMatch(/\.actionline button[^{]*\{/);
   });
 });
 
@@ -196,12 +208,14 @@ describe('every publish action reads the same way', () => {
         commit: 'a'.repeat(40),
         products: [
           {
-            name: 'iam',
+            name: 'iam (1002)',
+            service: 'iam',
             keys: '4 keys',
             environments: [
               {
                 name: 'dev',
                 namespace: 'iam/dev',
+                drafts: pending,
                 pending: Array.from({ length: pending }, (_, i) => ({
                   key: `K${i}`,
                   from: 'a',
@@ -235,6 +249,7 @@ describe('every publish action reads the same way', () => {
           {
             name: 'dev',
             namespace: 'iam/dev',
+            drafts: 1,
             pending: [{ key: 'A', from: '1', to: '2', secret: false }],
           },
         ],
@@ -244,9 +259,7 @@ describe('every publish action reads the same way', () => {
       }),
     );
 
-    expect(busy).toMatch(
-      /<button[^>]*class="linkbtn go"[\s\S]*?Publish all 1 unpublished change in iam\?/,
-    );
+    expect(busy).toMatch(/<button[^>]*class="linkbtn go"[\s\S]*?Publish all 1 draft in iam\?/);
     expect(productPage([])).not.toContain('Publish all');
   });
 });

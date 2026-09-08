@@ -51,7 +51,11 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .field { margin-bottom: 1.1rem; }
   input[type=text], select, textarea { width: 100%; padding: .45rem .6rem; border: 1px solid #cbd0d9; border-radius: 5px; font: inherit; box-sizing: border-box; }
   .err { color: #b91c1c; font-size: .78rem; margin-top: .3rem; }
-  button { background: #16181d; color: #fff; border: 0; border-radius: 5px; padding: .55rem 1.1rem; font: inherit; cursor: pointer; }
+  /* One size for every button in the console. This lived under .actionline, which set the
+     toolbar's actions at one size and left every button outside it — Sign in, the product
+     list's actions — at another, beside text of the same size. */
+  button { background: #16181d; color: #fff; border: 0; border-radius: 5px; padding: .55rem 1.1rem;
+           font: inherit; font-size: .8125rem; cursor: pointer; }
   code { font-family: ui-monospace, monospace; font-size: .85em; }
   ul { list-style: none; padding: 0; margin: 0; }
   li + li { margin-top: .5rem; }
@@ -99,10 +103,11 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .linkbtn.go:hover:not(:disabled) { color: #8a4108; }
   /* Quieter than the fields it sits above: it states what you have selected, it is not the
      thing you came to the page to read. */
-  /* One size across the whole bar, actions included: a link-styled action a step larger than
-     the sentence it belongs to reads as a button pretending to be a word. */
-  .actions, .actionline { font-size: .8125rem; }
-  .actionline button, .actionline input, .actionline code { font-size: inherit; }
+  /* The bar's text matches its actions, which are sized with every other button above. A
+     link-styled action a step larger than the sentence it belongs to reads as a button
+     pretending to be a word. */
+  .actions { font-size: .8125rem; }
+  .actionline input, .actionline code { font-size: inherit; }
   /* One line of .8125rem text, the card's padding and its bottom margin. */
   .actionslot { min-height: 3.35rem; }
   .actionslot .card { margin-bottom: 0; }
@@ -427,7 +432,10 @@ export interface EnvironmentSummary {
 }
 
 export interface ProductSummary {
+  /** What the reader sees: "iam (1002)". The uid decides which process may read this product. */
   readonly name: string;
+  /** What the links and the form use. The label carries the uid; the address must not. */
+  readonly service: string;
   readonly keys: string;
   readonly environments: readonly EnvironmentSummary[];
 }
@@ -553,8 +561,9 @@ export function renderProducts(options: {
   /** True when htmx asked: the body alone, to be swapped into the page. */
   fragment?: boolean;
 }): SafeHtml {
-  const totalPending = options.products.reduce(
-    (total, product) => total + product.environments.reduce((n, env) => n + env.pending.length, 0),
+  // Counted in drafts — presses of Save — like every other number the console reports.
+  const totalDrafts = options.products.reduce(
+    (total, product) => total + product.environments.reduce((n, env) => n + (env.drafts ?? 0), 0),
     0,
   );
 
@@ -567,11 +576,11 @@ export function renderProducts(options: {
     );
 
     return html`<div class="row">
-      <input type="checkbox" name="namespace" value="${product.name}"
+      <input type="checkbox" name="namespace" value="${product.service}"
              style="width:16px;height:16px;margin:3px 0 0;accent-color:#16181d;">
       <div style="display:flex;flex-direction:column;gap:4px;flex-grow:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:10px;">
-          <a href="/p/${product.name}" hx-get="/p/${product.name}" hx-target="#page"
+          <a href="/p/${product.service}" hx-get="/p/${product.service}" hx-target="#page"
              hx-swap="innerHTML" hx-push-url="true"
              style="font-size:.9375rem;font-weight:500;">${product.name}</a>
           ${pending.length > 0 ? pendingDetail('Waiting to publish', pending) : html``}
@@ -589,8 +598,8 @@ export function renderProducts(options: {
             <h1>Products</h1>
             <p class="sub" style="margin:0;">
               Serving <code>${options.commit.slice(0, 8)}</code>${
-                totalPending > 0
-                  ? html` · ${totalPending} unpublished change(s)`
+                totalDrafts > 0
+                  ? html` · ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'} to publish`
                   : html` · nothing unpublished`
               }
             </p>
@@ -598,10 +607,10 @@ export function renderProducts(options: {
           ${
             // Absent when there is nothing waiting anywhere, like every other publish here: a
             // permanently greyed action invites clicking at it to find out why.
-            totalPending > 0
+            totalDrafts > 0
               ? writeAction({
                   className: 'linkbtn go',
-                  resting: html`Publish selected unpublished changes?`,
+                  resting: html`Publish selected drafts?`,
                   running: 'Publishing…',
                 })
               : html``
@@ -655,7 +664,7 @@ export function renderProduct(options: {
   fragment?: boolean;
 }): SafeHtml {
   const activeEnv = options.environments.find((env) => env.name === options.active);
-  const productPending = options.environments.reduce((n, env) => n + env.pending.length, 0);
+  const productDrafts = options.environments.reduce((n, env) => n + (env.drafts ?? 0), 0);
 
   const tabs = options.environments.map(
     (env) => html`<a class="tab ${env.name === options.active ? 'on' : ''}"
@@ -703,7 +712,7 @@ export function renderProduct(options: {
           <h1>${options.service}</h1>
         </div>
         ${
-          productPending === 0
+          productDrafts === 0
             ? html``
             : html`<form method="post" action="/publish"
                     style="display:flex;gap:8px;align-items:flex-start;font-size:.8125rem;">
@@ -714,8 +723,8 @@ export function renderProduct(options: {
                 <input type="hidden" name="message" value="Publish all ${options.service} changes">
                 ${writeAction({
                   className: 'linkbtn go',
-                  resting: html`Publish all ${productPending} unpublished change${
-                    productPending === 1 ? '' : 's'
+                  resting: html`Publish all ${productDrafts} draft${
+                    productDrafts === 1 ? '' : 's'
                   } in ${options.service}?`,
                   running: 'Publishing…',
                 })}
