@@ -796,13 +796,13 @@ describe('the environment tab offers the controls its routes accept', () => {
       expect(withMore.body).toContain('name="intent" value="save"');
     });
 
-    it('offers a message field with the publish button, since publishing requires one', async () => {
+    it('asks for no message, since every commit message is generated', async () => {
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
       ]);
 
-      expect(await page()).toContain('name="message"');
+      expect(await page()).not.toContain('id="message"');
     });
 
     it('keeps the ticks in the same form as the actions', async () => {
@@ -850,8 +850,9 @@ describe('the environment tab offers the controls its routes accept', () => {
       const body = await page();
       const productForm = body.match(/<form[^>]*action="\/publish"[\s\S]*?<\/form>/)?.[0] ?? '';
 
-      expect(productForm).toContain('value="iam/dev"');
-      expect(productForm).toContain('value="iam/prod"');
+      // The service, resolved to its drafted environments by the route: naming them here made
+      // the publish abort on the first environment with nothing staged.
+      expect(productForm).toContain('name="namespace" value="iam"');
       expect(body.match(/action="\/publish"/g) ?? []).toHaveLength(1);
     });
 
@@ -915,6 +916,7 @@ describe('the tick and button behaviour the page depends on', () => {
     let key5: AgeKeypair;
     let repo5: TestRepo;
     let git5: GitRepository;
+    let drafts5: DraftStore;
     let app5: Awaited<ReturnType<typeof buildWebApp>>;
 
     const page = async () => (await app5.inject({ method: 'GET', url: '/p/iam?env=dev' })).body;
@@ -946,7 +948,7 @@ describe('the tick and button behaviour the page depends on', () => {
       });
       git5 = new GitRepository(repo5.dir);
       const loader5 = new ConfigLoader(new SopsDecryptor(key5.secret));
-      const drafts5 = new DraftStore(`${repo5.dir}/.drafts.json`);
+      drafts5 = new DraftStore(`${repo5.dir}/.drafts.json`);
       app5 = await buildWebApp({
         repository: git5,
         repoWebUrl: 'https://github.com/AnudeepChPaul/config.bare.anudeep.pro',
@@ -1282,6 +1284,67 @@ describe('the tick and button behaviour the page depends on', () => {
       const body = await page();
 
       expect(body).not.toMatch(/data-select="MFA_ENFORCEMENT"[^>]*checked/);
+    });
+
+    it('shows a validation error in place under htmx, as a fragment', async () => {
+      // htmx does not swap a non-2xx by default, so the operator saw the spinner stop and the
+      // page not change — and had every reason to think the value was accepted.
+      const failed = await app5.inject({
+        method: 'POST',
+        url: '/p/iam/dev',
+        payload: new URLSearchParams([
+          ['key.SESSION_TTL', 'abc'],
+          ['intent', 'save'],
+        ]).toString(),
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'hx-request': 'true' },
+      });
+
+      expect(failed.statusCode).toBe(422);
+      // The status stays honest; these tell htmx to swap it anyway.
+      expect(failed.headers['hx-retarget']).toBe('#page');
+      expect(failed.headers['hx-reswap']).toBe('innerHTML');
+      // A fragment, not a whole document injected into #page.
+      expect(failed.body).not.toContain('<!doctype html>');
+      expect(failed.body).toContain('SESSION_TTL');
+    });
+
+    it('still answers a scriptless browser with the same error page', async () => {
+      const failed = await post('/p/iam/dev', [
+        ['key.SESSION_TTL', 'abc'],
+        ['intent', 'save'],
+      ]);
+
+      expect(failed.statusCode).toBe(422);
+      expect(failed.body).toContain('<!doctype html>');
+      expect(failed.body).toContain('SESSION_TTL');
+    });
+
+    it('publishes a product whose other declared environments have no draft', async () => {
+      // The form used to post every declared environment, and publish aborts on the first one
+      // with nothing staged — so the button failed whenever a service had a draft in one
+      // environment, which is the ordinary case.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+
+      const published = await post('/publish', [['namespace', 'iam']]);
+
+      expect(published.statusCode).toBe(303);
+      expect(String(published.headers.location)).not.toMatch(/nothing is staged/);
+      expect(await drafts5.get('iam/dev')).toBeNull();
+    });
+
+    it('names the service, not its environments, so the scope cannot be stale', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const body = await page();
+      const form = body.match(/<form[^>]*action="\/publish"[\s\S]*?<\/form>/)?.[0] ?? '';
+
+      expect(form).toContain('name="namespace" value="iam"');
+      expect(form).not.toContain('value="iam/prod"');
     });
 
     it('filters the product list to products holding a matching key', async () => {

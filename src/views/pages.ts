@@ -868,11 +868,11 @@ export function renderProduct(options: {
             ? html``
             : html`<form method="post" action="/publish"
                     style="display:flex;gap:8px;align-items:flex-start;font-size:.8125rem;">
-                ${options.environments.map(
-                  (env) =>
-                    html`<input type="hidden" name="namespace" value="${options.service}/${env.name}">`,
-                )}
-                <input type="hidden" name="message" value="Publish all ${options.service} changes">
+                <!-- The service, not its environments. Posting every declared environment made
+                     publish() abort on the first one with nothing staged, which is the ordinary
+                     case; the route resolves a bare service to the environments that actually
+                     hold drafts, at request time, so the scope cannot be stale. -->
+                <input type="hidden" name="namespace" value="${options.service}">
                 ${writeAction({
                   className: 'linkbtn go',
                   resting: html`Publish all ${productDrafts} draft${

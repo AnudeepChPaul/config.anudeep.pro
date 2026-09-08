@@ -596,37 +596,46 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       const perKey = Object.fromEntries(
         (result.error.errors ?? []).map((error) => [error.key, error.message]),
       );
-      return reply
-        .code(422)
-        .type('text/html; charset=utf-8')
-        .send(
-          String(
-            renderProduct({
-              service,
-              environments: environmentsOf(
+      return (
+        reply
+          .code(422)
+          // The status stays honest — a refused save is not a 200 — and these two headers are how
+          // htmx is told to swap it anyway. Without them it swaps nothing on a non-2xx, so the
+          // spinner stopped, the page did not change, and the value looked accepted.
+          .header('hx-retarget', '#page')
+          .header('hx-reswap', 'innerHTML')
+          .type('text/html; charset=utf-8')
+          .send(
+            String(
+              renderProduct({
+                // A fragment when htmx asked, or the swap injects a whole document into #page.
+                fragment: isHtmx(request),
                 service,
-                await declaredEnvironments(),
-                pendingByNamespace,
-                draftsByNamespace,
-              ),
-              active: environment,
-              // Submitted values, not stored ones: retyping a form mid-incident is how the
-              // wrong value gets entered the second time.
-              rows: buildRows(
-                schemaSet,
-                service,
-                { ...(tree.namespaces.get(`${service}/${environment}`) ?? {}), ...changes },
-                perKey,
-                submitted,
-                // With the committed values in hand the rows keep their ticks, so a corrected
-                // value can be saved without re-ticking everything that was already selected.
-                { committed: tree.namespaces.get(`${service}/${environment}`) ?? {} },
-              ),
-              commit: sources.commit,
-              error: result.error.detail,
-            }),
-          ),
-        );
+                environments: environmentsOf(
+                  service,
+                  await declaredEnvironments(),
+                  pendingByNamespace,
+                  draftsByNamespace,
+                ),
+                active: environment,
+                // Submitted values, not stored ones: retyping a form mid-incident is how the
+                // wrong value gets entered the second time.
+                rows: buildRows(
+                  schemaSet,
+                  service,
+                  { ...(tree.namespaces.get(`${service}/${environment}`) ?? {}), ...changes },
+                  perKey,
+                  submitted,
+                  // With the committed values in hand the rows keep their ticks, so a corrected
+                  // value can be saved without re-ticking everything that was already selected.
+                  { committed: tree.namespaces.get(`${service}/${environment}`) ?? {} },
+                ),
+                commit: sources.commit,
+                error: result.error.detail,
+              }),
+            ),
+          )
+      );
     },
   );
 
