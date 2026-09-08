@@ -63,6 +63,20 @@ export interface ConfigWriteServiceOptions {
   readonly drafts?: DraftStore;
 }
 
+/** A namespace to publish, optionally narrowed to some of the keys staged in it. */
+export interface PublishSelection {
+  readonly namespace: string;
+  /** Omitted publishes everything staged for that namespace. */
+  readonly keys?: readonly string[];
+}
+
+export interface PromoteRequest {
+  readonly service: string;
+  readonly from: string;
+  readonly to: string;
+  readonly keys: readonly string[];
+}
+
 export interface StageRequest {
   readonly service: string;
   readonly environment: string;
@@ -190,7 +204,12 @@ export class ConfigWriteService {
         : committed;
 
       const { next, changes } = applyChanges(base, request.changes);
-      if (changes.length === 0 && existing) return ok(existing);
+      // Nothing actually moved. Writing a draft anyway would put an empty pending marker on the
+      // environment and offer a publish with no content behind it.
+      if (changes.length === 0) {
+        if (existing) return ok(existing);
+        return err({ code: 'nothing_staged', detail: 'nothing changed' });
+      }
 
       const validation = this.options.schemas().validate(request.service, next);
       if (!validation.ok) {
@@ -243,15 +262,18 @@ export class ConfigWriteService {
   }
 
   /**
-   * Commits the drafts for the given namespaces as ONE commit, and pushes.
+   * Commits what was selected as ONE commit, and pushes.
    *
-   * All or nothing: a partial publish would commit half of what the operator selected and
-   * report success, leaving the rest to be discovered later. The scope they chose is the unit
-   * of change, which is also why it is one commit and not one per environment — two commits
-   * would let a rollback undo half a decision that was made whole.
+   * A selection may narrow a namespace to some of its staged keys: the console lets an operator
+   * tick individual changes and ship only those. Whatever is left stays staged, rebased onto the
+   * commit that just happened — carrying the old base forward would make the next publish either
+   * conflict or quietly revert the key just published.
+   *
+   * Still all-or-nothing across the selection: a partial publish would commit half of what was
+   * chosen and report success.
    */
   async publish(
-    namespaces: readonly string[],
+    selections: readonly (string | PublishSelection)[],
     message: string,
     actor: Actor,
     context: RequestContext,
@@ -262,40 +284,100 @@ export class ConfigWriteService {
     if (!message.trim()) {
       return err({ code: 'invalid', detail: 'a publish message is required' });
     }
+    // A bare namespace means "everything staged there" — the common case, and it keeps callers
+    // that do not care about individual keys from having to say so.
+    const chosenSelections: PublishSelection[] = selections.map((entry) =>
+      typeof entry === 'string' ? { namespace: entry } : entry,
+    );
+    if (chosenSelections.length === 0) {
+      return err({ code: 'nothing_staged', detail: 'nothing was selected' });
+    }
 
     return this.lock.withLock(async () => {
-      const selected: Draft[] = [];
-      for (const namespace of namespaces) {
-        const draft = await drafts.get(namespace);
-        if (!draft) {
-          return err({ code: 'nothing_staged', detail: `nothing is staged for ${namespace}` });
-        }
-        selected.push(draft);
-      }
-      if (selected.length === 0) {
-        return err({ code: 'nothing_staged', detail: 'nothing was selected' });
-      }
-
-      // A draft was assembled from the values committed when it was made. If the file has moved
-      // since — someone editing on GitHub — publishing would silently overwrite them.
       const sources = await this.options.repository.readSources();
-      for (const draft of selected) {
-        const current = sources.sources.get(draft.namespace);
+      const tree = await this.options.loader.resolve(sources);
+      const schemas = this.options.schemas();
+
+      const files: Record<string, string> = {};
+      const keyChanges: KeyChange[] = [];
+      const residuals: Array<{
+        namespace: string;
+        keys: string[];
+        staged: Record<string, unknown>;
+      }> = [];
+
+      for (const selection of chosenSelections) {
+        const draft = await drafts.get(selection.namespace);
+        if (!draft) {
+          return err({
+            code: 'nothing_staged',
+            detail: `nothing is staged for ${selection.namespace}`,
+          });
+        }
+
+        const current = sources.sources.get(selection.namespace);
         if (current !== undefined && draft.basedOn !== undefined && draft.basedOn !== current) {
           return err({
             code: 'conflict',
-            detail: `${draft.namespace} changed since this edit was made`,
+            detail: `${selection.namespace} changed since this edit was made`,
             currentCommit: sources.commit,
           });
         }
-      }
 
-      const files: Record<string, string> = {};
-      const keys: KeyChange[] = [];
-      for (const draft of selected) {
-        files[`config/${draft.namespace}.yaml`] = draft.document;
-        for (const change of draft.changes) {
-          keys.push({ key: change.key, oldValue: change.from, newValue: change.to });
+        const staged = draft.changes.map((change) => change.key);
+        const chosen = selection.keys ? [...selection.keys] : staged;
+        const unknown = chosen.filter((key) => !staged.includes(key));
+        if (unknown.length > 0) {
+          return err({
+            code: 'nothing_staged',
+            detail: `not staged in ${selection.namespace}: ${unknown.join(', ')}`,
+          });
+        }
+
+        // The draft holds the whole document with secrets already encrypted, so a subset is
+        // rebuilt by decrypting it in memory and taking only the chosen keys.
+        const stagedConfig = await this.options.loader.resolveOne(
+          selection.namespace,
+          draft.document,
+        );
+        const committed = tree.namespaces.get(selection.namespace) ?? {};
+        const service = selection.namespace.split('/')[0] ?? '';
+
+        const next: Record<string, unknown> = { ...committed };
+        for (const key of chosen) {
+          if (key in stagedConfig) next[key] = stagedConfig[key];
+          else delete next[key];
+          keyChanges.push({ key, oldValue: committed[key], newValue: stagedConfig[key] });
+        }
+
+        const validation = schemas.validate(service, next);
+        if (!validation.ok) {
+          return err({
+            code: 'invalid',
+            detail: 'the change does not match the schema',
+            errors: validation.error,
+          });
+        }
+
+        const document = await this.options.encryptor.encrypt(
+          selection.namespace,
+          stringifyYaml(sortKeys(next)),
+        );
+        const unprotected = this.secretsLeftInPlaintext(service, next, document);
+        if (unprotected.length > 0) {
+          return err({
+            code: 'secret_not_encrypted',
+            detail: `.sops.yaml does not encrypt: ${unprotected.join(', ')}`,
+          });
+        }
+
+        files[`config/${selection.namespace}.yaml`] = document;
+
+        const leftover = staged.filter((key) => !chosen.includes(key));
+        if (leftover.length > 0) {
+          // The staged values are captured here, before the commit: after it, the draft is gone
+          // and the document on disk no longer holds them.
+          residuals.push({ namespace: selection.namespace, keys: leftover, staged: stagedConfig });
         }
       }
 
@@ -303,23 +385,115 @@ export class ConfigWriteService {
         actor,
         {
           message,
-          service: [...new Set(selected.map((d) => d.namespace.split('/')[0]))].join(', '),
-          environment: [...new Set(selected.map((d) => d.namespace.split('/')[1]))].join(', '),
-          keys,
+          service: [...new Set(chosenSelections.map((s) => s.namespace.split('/')[0]))].join(', '),
+          environment: [...new Set(chosenSelections.map((s) => s.namespace.split('/')[1]))].join(
+            ', ',
+          ),
+          keys: keyChanges,
         },
         context,
       );
 
       const commit = await this.options.repository.writeAndCommit(files, commitMessage);
-      await drafts.remove(selected.map((d) => d.namespace));
+      await drafts.remove(chosenSelections.map((s) => s.namespace));
+
+      // What was not published goes back as a draft, measured against the file as it now
+      // stands — carrying the old base forward would make the next publish either conflict or
+      // quietly revert the key just published.
+      for (const residual of residuals) {
+        const restaged = await this.restage(residual, actor);
+        if (!restaged.ok) return restaged;
+      }
+
       const push = await this.options.repository.push();
 
-      return ok({
-        commit,
-        changedKeys: keys.map((k) => k.key),
-        published: push.pushed,
-      });
+      return ok({ commit, changedKeys: keyChanges.map((k) => k.key), published: push.pushed });
     });
+  }
+
+  /**
+   * Puts unpublished keys back as a draft, measured against the new committed state.
+   *
+   * Called with the lock already held, so it stages directly rather than going through stage().
+   */
+  private async restage(
+    residual: { namespace: string; keys: string[]; staged: Record<string, unknown> },
+    actor: Actor,
+  ): Promise<Result<void, SaveError>> {
+    const drafts = this.options.drafts;
+    if (!drafts) return ok(undefined);
+
+    const service = residual.namespace.split('/')[0] ?? '';
+    const previous = residual.staged;
+    const sources = await this.options.repository.readSources();
+    const tree = await this.options.loader.resolve(sources);
+    const committed = tree.namespaces.get(residual.namespace) ?? {};
+
+    const next: Record<string, unknown> = { ...committed };
+    const changes: DraftChange[] = [];
+    const schemas = this.options.schemas();
+
+    for (const key of residual.keys) {
+      const value = previous[key];
+      if (value === undefined) delete next[key];
+      else next[key] = value;
+      changes.push(
+        schemas.isSecret(service, key)
+          ? { key, from: undefined, to: undefined, secret: true }
+          : { key, from: committed[key], to: value, secret: false },
+      );
+    }
+
+    const document = await this.options.encryptor.encrypt(
+      residual.namespace,
+      stringifyYaml(sortKeys(next)),
+    );
+
+    await drafts.put({
+      namespace: residual.namespace,
+      document,
+      changes,
+      actor: actor.email,
+      updatedAt: Date.now(),
+      ...(sources.sources.has(residual.namespace)
+        ? { basedOn: sources.sources.get(residual.namespace) }
+        : {}),
+    });
+    return ok(undefined);
+  }
+
+  /**
+   * Stages a published value from one environment into another.
+   *
+   * Only what the operator just shipped moves, and never a secret: SOPS gives each file its own
+   * data key, so the source's ciphertext would not decrypt in the target. Refusing beats
+   * skipping it silently, which would leave them believing it moved.
+   */
+  async promote(request: PromoteRequest, actor: Actor): Promise<Result<Draft, SaveError>> {
+    const from = `${request.service}/${request.from}`;
+    const schemas = this.options.schemas();
+
+    const secrets = request.keys.filter((key) => schemas.isSecret(request.service, key));
+    if (secrets.length > 0) {
+      return err({
+        code: 'invalid',
+        detail: `cannot promote a secret (${secrets.join(', ')}) — set it directly in ${request.to}`,
+      });
+    }
+
+    const tree = await this.options.loader.resolve(await this.options.repository.readSources());
+    const source = tree.namespaces.get(from);
+    if (!source) return err({ code: 'invalid', detail: `${from} has no configuration` });
+
+    const missing = request.keys.filter((key) => !(key in source));
+    if (missing.length > 0) {
+      return err({ code: 'invalid', detail: `${from} does not set: ${missing.join(', ')}` });
+    }
+
+    const changes: Record<string, unknown> = {};
+    for (const key of request.keys) changes[key] = source[key];
+
+    return this.stage({ service: request.service, environment: request.to, changes }, actor);
   }
 
   /** Schema-secret keys that survived encryption as readable text. */

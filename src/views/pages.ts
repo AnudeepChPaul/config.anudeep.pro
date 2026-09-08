@@ -1,6 +1,6 @@
 import type { UnpushedCommit } from '../git/repository.js';
 import type { KeyDefinition } from '../schema/validator.js';
-import { html, type SafeHtml } from './html.js';
+import { html, raw, type SafeHtml } from './html.js';
 
 /**
  * Server-rendered pages. No client framework: the whole UI is a list, a form and a redirect,
@@ -12,6 +12,16 @@ export interface KeyRow {
   readonly definition: KeyDefinition | null;
   readonly value: unknown;
   readonly error?: string | undefined;
+  /** The published value, when this key has an unpublished edit. */
+  readonly publishedValue?: unknown;
+  readonly pending?: boolean;
+  /** What every other environment holds for this key, for the hover peek. */
+  readonly elsewhere?: ReadonlyArray<{
+    readonly environment: string;
+    readonly value: unknown;
+    readonly published?: unknown;
+    readonly pending?: boolean;
+  }>;
 }
 
 const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
@@ -63,6 +73,22 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .detail .is { color: #16181d; }
   .toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
   .ghost { background: #fff; color: #16181d; border: 1px solid #cbd0d9; }
+  input[type=number] { max-width: 12rem; font-variant-numeric: tabular-nums; }
+  select { max-width: 20rem; }
+  .chip-item { display: inline-flex; align-items: center; gap: 6px; font-size: .8125rem;
+               padding: 2px 9px; border-radius: 4px; border: 1px solid #dbe1ea; background: #f6f7f9; }
+  .switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; font-size: .875rem; }
+  .track { width: 34px; height: 20px; border-radius: 10px; background: #cbd0d9; position: relative; flex-shrink: 0; }
+  .track.on { background: #16181d; }
+  .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
+  .track.on .knob { left: 16px; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  /* Hover peek on a key name — same mechanics as the pending detail, no script. */
+  .peek { position: relative; display: inline-flex; cursor: help; border-bottom: 1px dotted #cbd0d9; }
+  .peek .detail { top: 21px; }
+  .peek:hover .detail, .peek:focus-within .detail { display: block; }
+  .detail .envname { color: #9aa0ad; font-size: .75rem; }
+  .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: .25rem; }
 </style>
 </head>
 <body><main>${body}</main></body>
@@ -85,39 +111,147 @@ function unpushedBanner(unpushed: readonly UnpushedCommit[]): SafeHtml {
   </div>`;
 }
 
+/**
+ * The control comes from the declared type, so a schema change moves the UI with it and nobody
+ * has to remember that SESSION_TTL wants a number box.
+ */
 function renderField(row: KeyRow): SafeHtml {
   const name = `key.${row.key}`;
   const error = row.error ? html`<div class="err">${row.error}</div>` : html``;
-  const hint = row.definition?.description ?? row.definition?.type ?? 'unknown key';
+  const definition = row.definition;
+  const hint = definition?.description ?? typeHint(definition);
+
+  const header = html`<div class="keyline">
+    <label for="${name}" style="margin: 0;">${peek(row)}</label>
+    <span class="hint">${hint}</span>
+    ${
+      row.pending
+        ? html`<span style="display:inline-flex;align-items:center;gap:6px;font-size:.8125rem;">
+            <span class="dot"></span>
+            <span class="was">${format(row.publishedValue)}</span>
+            <span class="arrow">→</span>
+            <span>${format(row.value)}</span>
+          </span>`
+        : html``
+    }
+  </div>`;
 
   // A secret is decrypted in this process, so it *could* be rendered — which is exactly why not
   // rendering it has to be a deliberate rule. A screenshot in a ticket or a browser cache would
   // otherwise leak it. The field sets a new value; it never shows the current one.
-  if (row.definition?.secret) {
-    return html`<div class="field">
-      <label for="${name}">${row.key} <span class="hint">secret — hidden${row.value === undefined ? '' : ', currently set'}</span></label>
-      <input type="text" id="${name}" name="${name}" value="" placeholder="leave blank to keep unchanged" autocomplete="off">
+  if (definition?.secret) {
+    return html`<div class="field">${header}
+      <input type="password" id="${name}" name="${name}" value=""
+             placeholder="leave blank to keep the current value" autocomplete="off">
       ${error}
     </div>`;
   }
 
-  if (row.definition?.type === 'enum') {
-    const options = (row.definition.values ?? []).map(
+  if (definition?.type === 'enum') {
+    const options = (definition.values ?? []).map(
       (value) =>
         html`<option value="${value}"${row.value === value ? ' selected' : ''}>${value}</option>`,
     );
-    return html`<div class="field">
-      <label for="${name}">${row.key} <span class="hint">${hint}</span></label>
+    return html`<div class="field">${header}
       <select id="${name}" name="${name}"><option value=""></option>${options}</select>
       ${error}
     </div>`;
   }
 
-  return html`<div class="field">
-    <label for="${name}">${row.key} <span class="hint">${hint}</span></label>
-    <input type="text" id="${name}" name="${name}" value="${row.value}">
+  if (definition?.type === 'int') {
+    // The schema's own bounds, so the browser refuses what the validator would refuse anyway —
+    // one round trip saved, and the constraint is visible in the control.
+    return html`<div class="field">${header}
+      <input type="number" id="${name}" name="${name}" value="${row.value}" step="1"
+             ${bounds(definition)}>
+      ${error}
+    </div>`;
+  }
+
+  if (definition?.type === 'bool') {
+    const on = row.value === true || row.value === 'true';
+    // A hidden false before the checkbox: an unchecked box submits nothing, which would read as
+    // "delete the override" rather than "set it to false".
+    return html`<div class="field">${header}
+      <input type="hidden" name="${name}" value="false">
+      <label class="switch">
+        <input type="checkbox" id="${name}" name="${name}" value="true"${on ? ' checked' : ''}>
+        <span class="track${on ? ' on' : ''}"><span class="knob"></span></span>
+        <span>${on ? 'true' : 'false'}</span>
+      </label>
+      ${error}
+    </div>`;
+  }
+
+  if (definition?.type === 'string[]') {
+    const items = Array.isArray(row.value) ? row.value : [];
+    const chips = items.map((item) => html`<span class="chip-item">${item}</span>`);
+    return html`<div class="field">${header}
+      ${items.length > 0 ? html`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:.4rem;">${chips}</div>` : html``}
+      <input type="text" id="${name}" name="${name}" value="${items.join(', ')}"
+             placeholder="comma separated">
+      ${error}
+    </div>`;
+  }
+
+  return html`<div class="field">${header}
+    <input type="${definition?.type === 'url' ? 'url' : 'text'}" id="${name}" name="${name}" value="${row.value}">
     ${error}
   </div>`;
+}
+
+/**
+ * The number box's own limits, as markup.
+ *
+ * Built with `raw` because an attribute pair is markup, not a value: interpolated as a string it
+ * would arrive escaped and the browser would ignore it — the field would look right and enforce
+ * nothing.
+ */
+function bounds(definition: KeyDefinition): SafeHtml {
+  const parts: string[] = [];
+  if (definition.min !== undefined) parts.push(`min="${Number(definition.min)}"`);
+  if (definition.max !== undefined) parts.push(`max="${Number(definition.max)}"`);
+  return raw(parts.join(' '));
+}
+
+/** The hint under a key comes from its declared type, not prose written per key. */
+function typeHint(definition: KeyDefinition | null): string {
+  if (!definition) return 'not in the schema';
+  if (definition.type === 'enum') return (definition.values ?? []).join(' | ');
+  if (definition.type === 'int') {
+    return `whole number${definition.min === undefined ? '' : `, ${definition.min}–${definition.max ?? ''}`}`;
+  }
+  if (definition.type === 'bool') return 'true or false';
+  if (definition.type === 'string[]') return 'list of values';
+  if (definition.secret) return 'secret — never displayed';
+  return definition.type;
+}
+
+const format = (value: unknown): string =>
+  value === undefined ? '(unset)' : Array.isArray(value) ? value.join(', ') : String(value);
+
+/** The key name, with what other environments hold for it on hover. */
+function peek(row: KeyRow): SafeHtml {
+  const elsewhere = row.elsewhere ?? [];
+  if (elsewhere.length === 0) return html`${row.key}`;
+
+  const lines = elsewhere.map(
+    (
+      other,
+    ) => html`<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-size:.8125rem;margin-bottom:3px;">
+      <span class="envname">${other.environment}</span>
+      ${
+        other.pending
+          ? html`<span class="was">${format(other.published)}</span><span class="arrow">→</span>`
+          : html``
+      }
+      <span style="color:#5b6070;">${format(other.value)}</span>
+    </div>`,
+  );
+
+  return html`<span class="peek" tabindex="0">${row.key}
+    <span class="detail"><h3>In other environments</h3>${lines}</span>
+  </span>`;
 }
 
 /**

@@ -349,3 +349,131 @@ withSops('the CRUD UI', () => {
     });
   });
 });
+
+describe('the controls a key renders', () => {
+  // The schema declares the type; the console must not make an operator type "true" into a text
+  // box or guess an integer's bounds. These assert the control, not the styling.
+  const TYPED_SCHEMA = `keys:
+  MFA_ENFORCEMENT:
+    type: enum
+    values: [optional, admins, all]
+  SESSION_TTL:
+    type: int
+    min: 60
+    max: 86400
+  KILL_PASSWORD_LOGIN:
+    type: bool
+  FP_COMPONENTS:
+    type: string[]
+  SMTP_PASSWORD:
+    type: string
+    secret: true
+`;
+
+  const withSops2 = hasSops() ? describe : describe.skip;
+
+  withSops2('by declared type', () => {
+    let key2: AgeKeypair;
+    let repo2: TestRepo;
+    let git2: GitRepository;
+    let app2: Awaited<ReturnType<typeof buildWebApp>>;
+
+    beforeEach(async () => {
+      key2 = generateAgeKey();
+      repo2 = await TestRepo.create();
+      await repo2.commit({
+        'schema/iam.yaml': TYPED_SCHEMA,
+        'config/iam/prod.yaml':
+          'FP_COMPONENTS: [ua, lang]\nKILL_PASSWORD_LOGIN: false\nMFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
+        'config/iam/dev.yaml': 'MFA_ENFORCEMENT: all\nSESSION_TTL: 900\n',
+        '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(SMTP_PASSWORD)$"\n    age: ${key2.recipient}\n`,
+      });
+      git2 = new GitRepository(repo2.dir);
+      const loader2 = new ConfigLoader(new SopsDecryptor(key2.secret));
+      const drafts2 = new DraftStore(`${repo2.dir}/.drafts.json`);
+      app2 = await buildWebApp({
+        repository: git2,
+        loader: loader2,
+        schemas: () => SchemaSet.fromFiles({ iam: TYPED_SCHEMA }),
+        drafts: drafts2,
+        writeService: new ConfigWriteService({
+          repository: git2,
+          loader: loader2,
+          encryptor: new SopsEncryptor(repo2.dir),
+          schemas: () => SchemaSet.fromFiles({ iam: TYPED_SCHEMA }),
+          drafts: drafts2,
+        }),
+        environment: 'dev',
+      });
+    });
+
+    afterEach(async () => {
+      await app2?.close();
+      await rm(repo2.dir, { recursive: true, force: true });
+    });
+
+    const page = async () => (await app2.inject({ method: 'GET', url: '/p/iam?env=prod' })).body;
+
+    it('renders an int as a number box carrying the schema bounds', async () => {
+      const body = await page();
+
+      expect(body).toMatch(/<input type="number"[^>]*name="key.SESSION_TTL"/);
+      expect(body).toContain('min="60"');
+      expect(body).toContain('max="86400"');
+    });
+
+    it('renders a bool as a checkbox with a hidden false beside it', async () => {
+      // Without the hidden field an unticked box posts nothing, which the write path reads as
+      // "delete the override" rather than "set it to false".
+      const body = await page();
+
+      expect(body).toContain('<input type="hidden" name="key.KILL_PASSWORD_LOGIN" value="false">');
+      expect(body).toMatch(/<input type="checkbox"[^>]*name="key.KILL_PASSWORD_LOGIN"/);
+    });
+
+    it('renders an enum as a list of its declared values', async () => {
+      const body = await page();
+
+      expect(body).toMatch(/<select[^>]*name="key.MFA_ENFORCEMENT"/);
+      for (const value of ['optional', 'admins', 'all'])
+        expect(body).toContain(`>${value}</option>`);
+    });
+
+    it('renders a list as chips over a single field', async () => {
+      const body = await page();
+
+      expect(body).toContain('class="chip-item"');
+      expect(body).toContain('value="ua, lang"');
+    });
+
+    it('renders a secret as a password field that shows nothing', async () => {
+      const body = await page();
+
+      expect(body).toMatch(/<input type="password"[^>]*name="key.SMTP_PASSWORD"/);
+    });
+
+    it('turns an unticked checkbox into false rather than a deletion', async () => {
+      await app2.inject({
+        method: 'POST',
+        url: '/p/iam/prod',
+        payload: new URLSearchParams([['key.KILL_PASSWORD_LOGIN', 'false']]).toString(),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+
+      const loader = new ConfigLoader(new SopsDecryptor(key2.secret));
+      const draft = await new DraftStore(`${repo2.dir}/.drafts.json`).get('iam/prod');
+      // Unchanged, so nothing should be staged at all.
+      expect(draft).toBeNull();
+      expect(
+        (await loader.resolve(await git2.readSources())).namespaces.get('iam/prod'),
+      ).toMatchObject({ KILL_PASSWORD_LOGIN: false });
+    });
+
+    it('shows what another environment holds for the same key', async () => {
+      const body = await page();
+
+      expect(body).toContain('In other environments');
+      expect(body).toContain('class="peek"');
+    });
+  });
+});

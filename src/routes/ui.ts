@@ -132,13 +132,21 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       const committed = tree.namespaces.get(namespace) ?? {};
       const shown = draft ? await loader.resolveOne(namespace, draft.document) : committed;
 
+      const elsewhere = environments
+        .filter((env) => env.name !== active)
+        .map((env) => ({
+          environment: env.name,
+          values: (tree.namespaces.get(env.namespace) ?? {}) as Record<string, unknown>,
+          pending: env.pending,
+        }));
+
       return reply.type('text/html; charset=utf-8').send(
         String(
           renderProduct({
             service,
             environments,
             active,
-            rows: buildRows(schemas(), service, shown),
+            rows: buildRows(schemas(), service, shown, {}, {}, { committed, elsewhere }),
             commit: sources.commit,
             ...(request.query?.notice ? { notice: request.query.notice } : {}),
           }),
@@ -155,7 +163,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     ) => {
       const { service, environment } = request.params;
       const schemaSet = schemas();
-      const submitted = collectSubmitted(request.body ?? {});
+      const submitted = collectSubmitted((request.body ?? {}) as Record<string, string | string[]>);
       const changes = coerceChanges(schemaSet, service, submitted);
       const session = request.session;
 
@@ -256,28 +264,67 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 }
 
 /** Every key the schema declares, plus any the file holds that it does not. */
+interface RowContext {
+  /** The committed values, so a staged edit can be shown as old -> new. */
+  readonly committed?: Record<string, unknown>;
+  /** Every other environment of this product: name -> its values and pending changes. */
+  readonly elsewhere?: ReadonlyArray<{
+    environment: string;
+    values: Record<string, unknown>;
+    pending: ReadonlyArray<{ key: string; from: unknown; to: unknown; secret: boolean }>;
+  }>;
+}
+
 function buildRows(
   schemas: SchemaSet,
   service: string,
   config: Record<string, unknown>,
   errors: Record<string, string> = {},
   submitted: Record<string, string> = {},
+  context: RowContext = {},
 ): KeyRow[] {
   const definitions = schemas.definitionsFor(service);
   const keys = new Set([...definitions.keys(), ...Object.keys(config)]);
+  const committed = context.committed;
 
   return [...keys].sort().map((key) => {
     const definition: KeyDefinition | null = definitions.get(key) ?? null;
     const value = key in submitted ? submitted[key] : config[key];
-    return { key, definition, value, error: errors[key] };
+    // Pending means the shown value differs from what is committed — the same comparison the
+    // write path makes, so the marker cannot disagree with what a publish would do.
+    const pending =
+      committed !== undefined && JSON.stringify(committed[key]) !== JSON.stringify(value);
+
+    return {
+      key,
+      definition,
+      value,
+      error: errors[key],
+      ...(committed ? { publishedValue: committed[key], pending } : {}),
+      elsewhere: (context.elsewhere ?? []).map((other) => {
+        const change = other.pending.find((c) => c.key === key);
+        return {
+          environment: other.environment,
+          value: change && !change.secret ? change.to : other.values[key],
+          published: other.values[key],
+          pending: Boolean(change),
+        };
+      }),
+    };
   });
 }
 
-function collectSubmitted(body: Record<string, string>): Record<string, string> {
+function collectSubmitted(body: Record<string, string | string[]>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(body)
       .filter(([name]) => name.startsWith(KEY_PREFIX))
-      .map(([name, value]) => [name.slice(KEY_PREFIX.length), value]),
+      // A checkbox is posted alongside a hidden `false`, so an unticked box still says false
+      // rather than saying nothing — which the write path would read as "delete the override".
+      // Both arrive; the later one is the checkbox's own value.
+      .map(([name, value]) => [
+        name.slice(KEY_PREFIX.length),
+        Array.isArray(value) ? (value.at(-1) ?? '') : value,
+      ]),
   );
 }
 
