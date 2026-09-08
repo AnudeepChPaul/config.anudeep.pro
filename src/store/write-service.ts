@@ -83,6 +83,12 @@ export interface StageRequest {
   readonly environment: string;
   /** Key to new value. `undefined` removes the override. */
   readonly changes: Readonly<Record<string, unknown>>;
+  /**
+   * Keys the operator ticked. A tick on a key whose value has not moved is how you say "send
+   * this one along" — to a publish, and from there to the next environment — so it is written
+   * into the draft too, or the intent is lost the moment the page is left.
+   */
+  readonly selected?: readonly string[];
 }
 
 /** Recognises a SOPS-encrypted value, to confirm the secrets really were encrypted. */
@@ -205,9 +211,16 @@ export class ConfigWriteService {
         : committed;
 
       const { next, changes } = applyChanges(base, request.changes);
-      // Nothing actually moved. Writing a draft anyway would put an empty pending marker on the
-      // environment and offer a publish with no content behind it.
-      if (changes.length === 0) {
+      // Ticked, but not edited. Recorded as itself rather than as a value moving to itself, so
+      // the change list says selected and not "optional → optional".
+      const edited = new Set(changes.map((change) => change.key));
+      const selectedOnly = (request.selected ?? []).filter(
+        (key) => !edited.has(key) && key in base,
+      );
+
+      // Nothing moved and nothing was ticked. Writing a draft anyway would put an empty pending
+      // marker on the environment and offer a publish with no content behind it.
+      if (changes.length === 0 && selectedOnly.length === 0) {
         // An existing draft with nothing in it is not a draft: it puts a pending marker on the
         // environment and offers a publish with no content behind it.
         if (existing && existing.changes.length > 0) return ok(existing);
@@ -229,7 +242,10 @@ export class ConfigWriteService {
       // the number mean nothing in particular. It is numbered from what is COMMITTED rather
       // than from the draft in hand, so a namespace edited five times before publishing arrives
       // at the next number rather than five past it.
-      next[VERSION_KEY] = bumpedVersion(committed);
+      // From the draft in hand, not from the committed file: five edits before a publish are
+      // five revisions of the document, and numbering from what is committed would collapse
+      // them into one.
+      next[VERSION_KEY] = bumpedVersion(base);
 
       const plaintext = stringifyYaml(sortKeys(next));
       const document = await this.options.encryptor.encrypt(namespace, plaintext);
@@ -252,6 +268,9 @@ export class ConfigWriteService {
 
       const recorded: DraftChange[] = [
         ...(existing?.changes ?? []).map((c) => asDraftChange(c.key, c.from, c.to)),
+        // Selected first, so an edit to the same key in this save replaces it: dedupeByKey
+        // keeps the last entry, and an edit says more than a selection does.
+        ...selectedOnly.map((key) => asDraftChange(key, base[key], base[key])),
         ...changes.map((c) => asDraftChange(c.key, c.oldValue, c.newValue)),
       ];
 

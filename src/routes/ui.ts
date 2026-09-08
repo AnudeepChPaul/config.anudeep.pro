@@ -282,6 +282,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       const schemaSet = schemas();
       const submitted = collectSubmitted((request.body ?? {}) as Record<string, string | string[]>);
       const changes = coerceChanges(schemaSet, service, submitted);
+      const body = (request.body ?? {}) as Record<string, string | string[]>;
       const session = request.session;
 
       const actor = {
@@ -289,13 +290,24 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         id: session?.id ?? 'anonymous',
         ...(session?.via ? { via: session.via } : {}),
       };
-      const result = await writeService.stage({ service, environment, changes }, actor);
+      const publishing = String(body.intent ?? '') === 'publish';
+      const result = await writeService.stage(
+        {
+          service,
+          environment,
+          changes,
+          // On a save the ticks travel with the values: a tick on a key whose value has not
+          // moved is still a statement of intent, and one the draft has to keep. On a publish
+          // they choose the scope of the commit instead — recording them as a revision would
+          // bump the counter every time anything is published.
+          ...(publishing ? {} : { selected: toList(body.select) }),
+        },
+        actor,
+      );
 
       if (result.ok) {
-        const body = (request.body ?? {}) as Record<string, string | string[]>;
-
         // Two buttons, one form: saving keeps the draft, publishing ships what is ticked.
-        if (String(body.intent ?? '') !== 'publish') {
+        if (!publishing) {
           return respond(reply, request, { service, env: environment });
         }
 

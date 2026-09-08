@@ -1017,13 +1017,36 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(staged).toContain('data-needs-ticks');
     });
 
+    it('drafts a ticked key whose value has not moved, rather than refusing', async () => {
+      // Ticking a key is how you say "send this one along". Refusing to write that down —
+      // "nothing changed, a tick on its own does not make a draft" — threw the intent away and
+      // made the button look broken.
+      const fields = new URLSearchParams([
+        ['key.MFA_ENFORCEMENT', 'optional'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['intent', 'save'],
+      ]).toString();
+
+      const swapped = await app5.inject({
+        method: 'POST',
+        url: '/p/iam/dev',
+        payload: fields,
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'hx-request': 'true' },
+      });
+
+      expect(swapped.statusCode).toBe(200);
+      expect(swapped.body).not.toMatch(/nothing changed/i);
+      // A draft exists now, so it can be published — and from there promoted.
+      expect(swapped.body).toContain('value="publish"');
+    });
+
     it('answers a save that changes nothing with a notice, not a 422', async () => {
       // A tick is not an edit. Ticking three keys and saving used to fall through the
       // validation branch and return 422 with a per-key error page that had no per-key errors
       // on it — the operator saw a red page and no cause.
+      // No edit and no tick: there is genuinely nothing to write down.
       const fields = new URLSearchParams([
         ['key.MFA_ENFORCEMENT', 'optional'],
-        ['select', 'MFA_ENFORCEMENT'],
         ['intent', 'save'],
       ]).toString();
 
@@ -1046,7 +1069,6 @@ describe('the tick and button behaviour the page depends on', () => {
       // Without htmx it is the same answer through a redirect, not an error page.
       const plain = await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'optional'],
-        ['select', 'MFA_ENFORCEMENT'],
         ['intent', 'save'],
       ]);
 
@@ -1082,6 +1104,23 @@ describe('the tick and button behaviour the page depends on', () => {
 
       expect(body).not.toContain('name="key.version"');
       expect(body).not.toContain('data-select="version"');
+    });
+
+    it('does not count a publish as a revision of its own', async () => {
+      // The publish posts the same form, ticks and all. Recording those as a selection would
+      // bump the counter on every publish, on top of the draft save that preceded it.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['intent', 'publish'],
+        ['message', 'ship it'],
+      ]);
+
+      expect(idleLine(await page())).toMatch(/revision 1/);
     });
 
     it('shows the revision in the idle line, where the rest of the file is described', async () => {

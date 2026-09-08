@@ -93,17 +93,28 @@ withSops('staging and scoped publishing', () => {
    * the one on origin was written against something that has since moved. Nothing acts on that
    * yet — this keeps the number honest so the check has something to compare when it arrives.
    */
-  describe('the document version', () => {
-    const versionOfDraft = async (namespace: string) => {
-      const draft = await drafts.get(namespace);
-      const loader = new ConfigLoader(new SopsDecryptor(key.secret));
-      return versionOf(await loader.resolveOne(namespace, draft?.document ?? ''));
-    };
+  const versionOfDraft = async (namespace: string) => {
+    const draft = await drafts.get(namespace);
+    const loader = new ConfigLoader(new SopsDecryptor(key.secret));
+    return versionOf(await loader.resolveOne(namespace, draft?.document ?? ''));
+  };
 
+  describe('the document version', () => {
     it('starts at 1 on the first draft of a file that never carried one', async () => {
       await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
 
       expect(await versionOfDraft('iam/dev')).toBe(1);
+    });
+
+    it('rises once for every draft save, not once per published state', async () => {
+      // Five edits before a publish is five revisions of the document. Numbering from the
+      // committed file instead would collapse them into one, and the counter would then say
+      // less than the drafts it is counting.
+      for (const value of ['all', 'admins', 'optional', 'all', 'admins']) {
+        await stage('iam', 'dev', { MFA_ENFORCEMENT: value });
+      }
+
+      expect(await versionOfDraft('iam/dev')).toBe(5);
     });
 
     it('rises once per draft save, not once per publish', async () => {
@@ -127,7 +138,7 @@ withSops('staging and scoped publishing', () => {
       expect(await versionOfDraft('iam/dev')).toBe(42);
     });
 
-    it('is not itself a change: a save that only bumps it stages nothing', async () => {
+    it('is not itself a change: a save with neither an edit nor a tick stages nothing', async () => {
       await repo.commit({ 'config/iam/dev.yaml': 'version: 4\nMFA_ENFORCEMENT: optional\n' });
 
       const result = await stage('iam', 'dev', { MFA_ENFORCEMENT: 'optional' });
@@ -151,6 +162,72 @@ withSops('staging and scoped publishing', () => {
       await service.publish(['iam/dev'], 'ship it', ACTOR, REQUEST);
 
       expect(await git.readFile('config/iam/dev.yaml')).toContain('version:');
+    });
+  });
+
+  describe('staging a selection with no edit in it', () => {
+    // Ticking a key whose value has not changed is how you say "send this one along" — to a
+    // publish, and from there to the next environment. It has to be possible to write that
+    // down, or the intent is lost the moment the page is left.
+    it('drafts the ticked keys even though no value moved', async () => {
+      const result = await service.stage(
+        {
+          service: 'iam',
+          environment: 'dev',
+          changes: { MFA_ENFORCEMENT: 'optional' },
+          selected: ['MFA_ENFORCEMENT'],
+        },
+        ACTOR,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.ok && result.value.changes.map((c) => c.key)).toEqual(['MFA_ENFORCEMENT']);
+      expect(await drafts.get('iam/dev')).not.toBeNull();
+    });
+
+    it('records it as unchanged, rather than as a value moving to itself', async () => {
+      const result = await service.stage(
+        {
+          service: 'iam',
+          environment: 'dev',
+          changes: { MFA_ENFORCEMENT: 'optional' },
+          selected: ['MFA_ENFORCEMENT'],
+        },
+        ACTOR,
+      );
+
+      const change = result.ok ? result.value.changes[0] : null;
+      expect(change?.from).toEqual(change?.to);
+    });
+
+    it('counts as a revision, like any other draft save', async () => {
+      await service.stage(
+        {
+          service: 'iam',
+          environment: 'dev',
+          changes: { MFA_ENFORCEMENT: 'optional' },
+          selected: ['MFA_ENFORCEMENT'],
+        },
+        ACTOR,
+      );
+
+      expect(await versionOfDraft('iam/dev')).toBe(1);
+    });
+
+    it('does not shadow a real edit to the same key', async () => {
+      const result = await service.stage(
+        {
+          service: 'iam',
+          environment: 'dev',
+          changes: { MFA_ENFORCEMENT: 'all' },
+          selected: ['MFA_ENFORCEMENT'],
+        },
+        ACTOR,
+      );
+
+      expect(result.ok && result.value.changes).toEqual([
+        { key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false },
+      ]);
     });
   });
 
