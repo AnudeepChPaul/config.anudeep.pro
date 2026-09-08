@@ -38,145 +38,212 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
 <style>
-  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #16181d; }
-  main { max-width: 52rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
-  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
-  .sub { color: #5b6070; margin: 0 0 1.5rem; font-size: .875rem; }
-  a { color: #1d4ed8; }
-  .card { background: #fff; border: 1px solid #e2e5ea; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
-  .banner { border-left: 3px solid #b45309; background: #fffbeb; }
-  .error { border-left: 3px solid #b91c1c; background: #fef2f2; }
-  label { display: block; font-weight: 600; font-size: .8125rem; margin-bottom: .25rem; }
-  .hint { color: #5b6070; font-size: .75rem; font-weight: 400; }
-  .field { margin-bottom: 1.1rem; }
-  input[type=text], select, textarea { width: 100%; padding: .45rem .6rem; border: 1px solid #cbd0d9; border-radius: 5px; font: inherit; box-sizing: border-box; }
-  .err { color: #b91c1c; font-size: .78rem; margin-top: .3rem; }
-  /* One size for every button in the console. This lived under .actionline, which set the
-     toolbar's actions at one size and left every button outside it — Sign in, the product
-     list's actions — at another, beside text of the same size. */
-  button { background: #16181d; color: #fff; border: 0; border-radius: 5px; padding: .55rem 1.1rem;
-           font: inherit; font-size: .8125rem; cursor: pointer; }
+  /* ---------------------------------------------------------------------------
+     The palette, as roles.
+     Twelve hex values used to be written inline through this file, several of them
+     near-duplicates, and nothing said what any of them meant — so a new element got whichever
+     value looked closest. A colour is a role now, and this block is the only place one is
+     written down. Five roles carry meaning; nothing else gets a colour.
+     --------------------------------------------------------------------------- */
+  :root {
+    --ground: #faf9f7;        /* the page */
+    --surface: #ffffff;       /* cards, rows, the header */
+    --ink: #1c1b19;           /* text, the active tab, a switch that is on */
+    --muted: #6b6760;         /* facts, hints, anything secondary */
+    --line: #e7e3db;          /* borders */
+    --hair: #f1ede6;          /* rules between rows */
+    --accent: #0f766e;        /* anything you can click */
+    --unpublished: #a16207;   /* drafts, pending markers, the publish action */
+    --unpublished-fill: #fdf8ec;
+    --unpublished-line: #e8d9b0;
+    --danger: #a52a2a;        /* what cannot be undone: dropping a draft, a missing schema */
+    --danger-fill: #fbf1ef;
+    --danger-line: #e6cac4;
+    --field-line: #d8d2c7;
+    --focus: #0f766e;
+
+    /* Metrics. One control height is what makes every field row line up, whatever it holds. */
+    --control-h: 34px;
+    --radius: 6px;
+    --radius-lg: 10px;
+    --type-sm: .8125rem;      /* toolbar, facts, chips, buttons */
+    --type-base: .9375rem;    /* field values, body copy */
+    --type-title: 1.15rem;    /* the page title */
+  }
+
+  body { font: var(--type-base)/1.5 system-ui, -apple-system, sans-serif; margin: 0;
+         background: var(--ground); color: var(--ink); }
+  main { max-width: 54rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+  a { color: var(--accent); }
   code { font-family: ui-monospace, monospace; font-size: .85em; }
   ul { list-style: none; padding: 0; margin: 0; }
   li + li { margin-top: .5rem; }
+
+  /* ---------------------------------------------------------------- the page header
+     Fixed row heights, rendered whether or not they hold anything, so the title sits at the
+     same place on every page and navigating does not move it. */
+  .pagehead { margin-bottom: 1.25rem; }
+  .pagehead .searchrow { display: flex; justify-content: flex-end; min-height: var(--control-h);
+                         margin-bottom: .5rem; }
+  .pagehead .crumb { min-height: 1.15rem; font-size: var(--type-sm); color: var(--muted); }
+  .pagehead .titlerow { display: flex; align-items: center; justify-content: space-between;
+                        gap: 1rem; min-height: var(--control-h); }
+  .pagehead h1 { font-size: var(--type-title); font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  .pagehead .facts { min-height: 1.25rem; font-size: var(--type-sm); color: var(--muted); }
+  .pagehead .actions-right { display: flex; align-items: center; gap: 10px; }
+
+  /* ---------------------------------------------------------------- surfaces */
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+          padding: 1rem 1.15rem; margin-bottom: 1rem; }
+  .banner { border-left: 3px solid var(--unpublished); background: var(--unpublished-fill); }
+  .error { border-left: 3px solid var(--danger); background: var(--danger-fill); }
   /* NOT overflow: hidden. That rounds the corners and also clips every hover panel a row
      contains, cutting the detail off at the card's edge. The corners are rounded on the first
      and last rows instead. */
-  .rows { background: #fff; border: 1px solid #e2e5ea; border-radius: 8px; }
-  .rows > *:first-child { border-top-left-radius: 8px; border-top-right-radius: 8px; }
-  .rows > *:last-child { border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }
-  .row { display: flex; align-items: flex-start; gap: 14px; padding: 14px 18px; }
-  .row + .row { border-top: 1px solid #eef0f3; }
-  .tabs { display: flex; gap: 4px; border-bottom: 1px solid #e2e5ea; margin-bottom: 1.5rem; }
-  .tab { display: flex; align-items: center; gap: 7px; padding: 8px 14px; font-size: .875rem;
-         border-bottom: 2px solid transparent; color: #5b6070; text-decoration: none; }
-  .tab.on { border-bottom-color: #16181d; color: #16181d; font-weight: 600; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: #b45309; display: inline-block; }
-  .chip { font-size: .6875rem; padding: 1px 7px; border-radius: 4px; border: 1px solid #e2e5ea;
-          background: #f6f7f9; color: #5b6070; }
-  .chip.wait { border-color: #f2d9a8; background: #fffbeb; color: #b45309; }
+  .rows { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+  .rows > *:first-child { border-top-left-radius: var(--radius-lg); border-top-right-radius: var(--radius-lg); }
+  .rows > *:last-child { border-bottom-left-radius: var(--radius-lg); border-bottom-right-radius: var(--radius-lg); }
+  .row { display: flex; align-items: flex-start; gap: 14px; padding: 13px 16px; }
+  .row + .row { border-top: 1px solid var(--hair); }
+
+  /* ---------------------------------------------------------------- controls
+     One height for everything a value is typed or chosen in, so rows line up whatever they
+     hold. The switch keeps its own shape — the on/off read is the point of it — inside a row
+     of the same height. */
+  label { display: block; font-weight: 600; font-size: var(--type-sm); margin-bottom: .25rem; }
+  .hint { color: var(--muted); font-size: .75rem; font-weight: 400; }
+  .field { margin-bottom: 1rem; }
+  input[type=text], input[type=password], input[type=number], input[type=search], select, textarea {
+    width: 100%; height: var(--control-h); padding: 0 .6rem; border: 1px solid var(--field-line);
+    border-radius: var(--radius); font: inherit; font-size: var(--type-base);
+    background: var(--surface); color: var(--ink); box-sizing: border-box; }
+  textarea { height: auto; padding: .5rem .6rem; }
+  input[type=number] { max-width: 12rem; font-variant-numeric: tabular-nums; }
+  select { max-width: 20rem; }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+    outline: 2px solid var(--focus); outline-offset: 1px; }
+  .err { color: var(--danger); font-size: .75rem; margin-top: .3rem; }
+
+  button { background: var(--ink); color: var(--surface); border: 0; border-radius: var(--radius);
+           height: var(--control-h); padding: 0 1rem; font: inherit; font-size: var(--type-sm);
+           cursor: pointer; }
+  .ghost { background: var(--surface); color: var(--ink); border: 1px solid var(--field-line); }
+  /* Deliberately no font shorthand: it resets font-size to the inherited value, which overrode
+     the size the base button rule sets — so a link action was one size inside the toolbar and
+     another in the drafts list, the promote card and the product list. */
+  .linkbtn { background: none; border: 0; padding: 0; height: auto; color: var(--accent);
+             text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+  .linkbtn:hover:not(:disabled) { color: var(--ink); }
+  .linkbtn:disabled { color: var(--muted); text-decoration: none; cursor: not-allowed; }
+  .linkbtn.go { color: var(--unpublished); }
+  .linkbtn.go:hover:not(:disabled) { color: var(--ink); }
+  .hidden-attr-guard {}
+  /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
+     .selection, for instance — beats it and leaves a hidden element on screen. Everything the
+     script hides is display-typed, which makes this the mechanism, not a nicety. */
+  [hidden] { display: none !important; }
+
+  /* ---------------------------------------------------------------- search */
+  .search { display: flex; gap: 8px; align-items: center; }
+  .search input[type=search] { width: 18rem; }
+
+  /* ---------------------------------------------------------------- tabs */
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 1.25rem; }
+  .tab { display: flex; align-items: center; gap: 7px; padding: 8px 14px; font-size: var(--type-sm);
+         border-bottom: 2px solid transparent; color: var(--muted); text-decoration: none; }
+  .tab.on { border-bottom-color: var(--ink); color: var(--ink); font-weight: 600; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--unpublished);
+         display: inline-block; }
+
+  /* ---------------------------------------------------------------- chips and markers */
+  .chip { font-size: .6875rem; padding: 2px 7px; border-radius: 4px; border: 1px solid var(--line);
+          background: var(--ground); color: var(--muted); }
+  .chip.wait { border-color: var(--unpublished-line); background: var(--unpublished-fill);
+               color: var(--unpublished); }
+  .chip.gone { border-color: var(--danger-line); background: var(--danger-fill); color: var(--danger); }
+  .chip-item { display: inline-flex; align-items: center; gap: 6px; font-size: var(--type-sm);
+               padding: 2px 9px; border-radius: 4px; border: 1px solid var(--line);
+               background: var(--ground); }
+
   /* Hover detail. No script: :hover and :focus-within are enough, and a keyboard reaches it. */
   .pending { position: relative; display: inline-flex; align-items: center; gap: 5px;
-             font-size: .75rem; color: #b45309; cursor: help; }
+             font-size: var(--type-sm); color: var(--unpublished); cursor: help; }
   /* Above the trigger, not below: opening downward covered the value field the panel is
      describing, which is the one thing you are looking at when you open it. */
-  .detail { display: none; position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 5; width: 320px;
-            background: #fff; border: 1px solid #e2e5ea; border-radius: 6px; padding: 10px 12px;
-            box-shadow: 0 4px 14px rgba(22,24,29,.10); color: #16181d; font-weight: 400;
+  .detail { display: none; position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 5;
+            width: 320px; background: var(--surface); border: 1px solid var(--line);
+            border-radius: var(--radius); padding: 10px 12px;
+            box-shadow: 0 6px 18px rgba(28,27,25,.10); color: var(--ink); font-weight: 400;
             cursor: default; }
   .pending:hover .detail, .pending:focus-within .detail { display: block; }
   .detail h3 { font-size: .6875rem; text-transform: uppercase; letter-spacing: .02em;
-               color: #5b6070; margin: 0 0 .5rem; }
-  .detail .was { color: #9aa0ad; text-decoration: line-through; }
-  .detail .is { color: #16181d; }
-  .toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
-  .ghost { background: #fff; color: #16181d; border: 1px solid #cbd0d9; }
-  /* The two actions belong to the sentence that states what is selected, so they are set as
-     part of it rather than as a boxed control bar sitting above the fields. */
-  /* Deliberately no font shorthand here: it resets font-size to the inherited value, which
-     overrode the size the base button rule sets — so a link action was one size inside .actions
-     and another in the drafts list, the promote card and the product list. Family and weight
-     inherit on their own; the size stays the base rule's, which is the toolbar's. */
-  .linkbtn { background: none; border: 0; padding: 0; color: #1d4ed8;
-             text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
-  .linkbtn:hover:not(:disabled) { color: #1e3fa8; }
-  .linkbtn:disabled { color: #9aa0ad; text-decoration: none; cursor: not-allowed; }
-  /* Publishing is the consequential one, and carries the same amber as everything else that
-     means "unpublished" on these pages. */
-  .linkbtn.go { color: #b45309; }
-  .linkbtn.go:hover:not(:disabled) { color: #8a4108; }
-  /* Quieter than the fields it sits above: it states what you have selected, it is not the
-     thing you came to the page to read. */
-  /* The bar's text matches its actions, which are sized with every other button above. A
-     link-styled action a step larger than the sentence it belongs to reads as a button
-     pretending to be a word. */
-  .actions { font-size: .8125rem; }
-  .actionline input, .actionline code { font-size: inherit; }
-  /* One line of .8125rem text, the card's padding and its bottom margin. */
+               color: var(--muted); margin: 0 0 .5rem; }
+  .detail .was { color: var(--muted); text-decoration: line-through; }
+  .detail .is { color: var(--ink); }
+
+  /* ---------------------------------------------------------------- the toolbar */
+  .actions { font-size: var(--type-sm); }
   .actionslot { min-height: 3.35rem; }
   .actionslot .card { margin-bottom: 0; }
   .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-  .actionline .count { color: #b45309; }
-  .actionline .idle { color: #5b6070; }
-  /* A write in flight. htmx sets .htmx-request on the element that issued the request and
-     removes it when the request ends — including when it ends by replacing that element — so
-     the running state cannot outlive its request the way a script-driven one can. */
+  .actionline input, .actionline code { font-size: inherit; }
+  .actionline .count { color: var(--unpublished); }
+  .actionline .idle { color: var(--muted); }
+  .sep { color: var(--muted); }
+  .selection { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  /* The selection count is a hover trigger like the others, but it is ordinary running text
+     rather than a marker — it states what you are about to do, not a warning. */
+  .pending.sel { color: inherit; font-size: inherit; }
+
+  /* ---------------------------------------------------------------- key rows */
+  .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: .25rem; }
+  .keyrow { display: flex; align-items: flex-start; gap: 14px; min-height: var(--control-h); }
+  .keypick { width: 16px; flex-shrink: 0; padding-top: 9px; }
+  .keypick input { width: 16px; height: 16px; accent-color: var(--ink); cursor: pointer; margin: 0; }
+  /* A tick on a value you have actually changed cannot be cleared — the change goes with the
+     draft either way. It must not look like an ordinary box that failed to respond. */
+  .keypick input.locked { accent-color: var(--unpublished); cursor: not-allowed; }
+  .keypick input:disabled { accent-color: var(--line); cursor: not-allowed; opacity: .55; }
+  /* Where a search result landed: a rule in the margin rather than a scroll nobody asked for. */
+  .found { border-left: 3px solid var(--unpublished); margin-left: -1.15rem;
+           padding-left: calc(1.15rem - 3px); }
+
+  /* The switch reflects the checkbox, not a class the server rendered: with no script on the
+     page a server-rendered state cannot move when you click it. */
+  .switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
+            font-size: var(--type-base); height: var(--control-h); }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .track { width: 34px; height: 20px; border-radius: 10px; background: var(--field-line);
+           position: relative; flex-shrink: 0; transition: background .12s ease; }
+  .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+          background: var(--surface); transition: transform .12s ease; }
+  .switch input:checked ~ .track { background: var(--ink); }
+  .switch input:checked ~ .track .knob { transform: translateX(14px); }
+  .switch input:focus-visible ~ .track { outline: 2px solid var(--focus); outline-offset: 2px; }
+  /* The word beside it is generated too, for the same reason. */
+  .switch .state::after { content: 'false'; }
+  .switch input:checked ~ .state::after { content: 'true'; }
+
+  /* Hover peek on a key name — same mechanics as the pending detail, no script. */
+  .peek { position: relative; display: inline-flex; cursor: help;
+          border-bottom: 1px dotted var(--field-line); }
+  .peek .detail { bottom: calc(100% + 6px); }
+  .peek:hover .detail, .peek:focus-within .detail { display: block; }
+  .detail .envname { color: var(--muted); font-size: .75rem; }
+
+  /* ---------------------------------------------------------------- a write in flight
+     htmx sets .htmx-request on the element that issued the request and removes it when the
+     request ends — including when it ends by replacing that element — so the running state
+     cannot outlive its request the way a script-driven one can. */
   .running { display: none; align-items: center; gap: 6px; }
   .htmx-request .resting { display: none; }
   .htmx-request .running { display: inline-flex; }
   .htmx-request { cursor: progress; }
-  .spinner { width: 11px; height: 11px; border: 2px solid currentColor; border-right-color: transparent;
-             border-radius: 50%; display: inline-block; animation: spin .6s linear infinite; }
+  .spinner { width: 11px; height: 11px; border: 2px solid currentColor;
+             border-right-color: transparent; border-radius: 50%; display: inline-block;
+             animation: spin .6s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  /* A publish is the slow one, and it is the only action whose duration is not ours to bound:
-     it runs sops, git commit and git push over SSH. */
   @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
-  .selection { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-  /* The hidden attribute is only a UA "display: none", so any author display rule — the one
-     on .selection, for instance — beats it and leaves a hidden element on screen. Everything
-     the script hides is display-typed, which makes this the mechanism, not a nicety. */
-  [hidden] { display: none !important; }
-  /* #cbd0d9 on white is under 2:1 — the dots were invisible and the facts ran together. */
-  .sep { color: #8a90a0; }
-  /* The selection count is a hover trigger like the others, but it is ordinary running text
-     rather than an amber "unpublished" marker — it states what you are about to do, not a
-     warning about the environment. */
-  .pending.sel { color: inherit; font-size: inherit; }
-  input[type=number] { max-width: 12rem; font-variant-numeric: tabular-nums; }
-  select { max-width: 20rem; }
-  .chip-item { display: inline-flex; align-items: center; gap: 6px; font-size: .8125rem;
-               padding: 2px 9px; border-radius: 4px; border: 1px solid #dbe1ea; background: #f6f7f9; }
-  /* The switch reflects the checkbox, not a class the server rendered: with no script on the
-     page, a server-rendered state cannot move when you click it — the box toggled and nothing
-     appeared to happen. These sibling rules are what make it respond. */
-  .switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; font-size: .875rem; }
-  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
-  .track { width: 34px; height: 20px; border-radius: 10px; background: #cbd0d9; position: relative;
-           flex-shrink: 0; transition: background .12s ease; }
-  .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
-          background: #fff; transition: transform .12s ease; }
-  .switch input:checked ~ .track { background: #16181d; }
-  .switch input:checked ~ .track .knob { transform: translateX(14px); }
-  .switch input:focus-visible ~ .track { outline: 2px solid #1d4ed8; outline-offset: 2px; }
-  /* The word beside it is generated too, for the same reason. */
-  .switch .state::after { content: 'false'; }
-  .switch input:checked ~ .state::after { content: 'true'; }
-  /* Hover peek on a key name — same mechanics as the pending detail, no script. */
-  .peek { position: relative; display: inline-flex; cursor: help; border-bottom: 1px dotted #cbd0d9; }
-  .peek .detail { bottom: calc(100% + 6px); }
-  .peek:hover .detail, .peek:focus-within .detail { display: block; }
-  .detail .envname { color: #9aa0ad; font-size: .75rem; }
-  .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: .25rem; }
-  .keyrow { display: flex; align-items: flex-start; gap: 14px; }
-  /* Where a search result landed. A rule beside it, in the amber this console uses for
-     "look here", rather than a scroll the reader did not ask for. */
-  .found { border-left: 3px solid #b45309; margin-left: -1.25rem; padding-left: calc(1.25rem - 3px); }
-  .keypick { width: 16px; flex-shrink: 0; padding-top: 2px; }
-  .keypick input { width: 16px; height: 16px; accent-color: #16181d; cursor: pointer; margin: 0; }
-  /* A tick on a value you have actually changed cannot be cleared — the change goes with the
-     draft either way. It must not look like an ordinary box that simply failed to respond. */
-  .keypick input.locked { accent-color: #b45309; cursor: not-allowed; }
-  .keypick input:disabled { accent-color: #cbd0d9; cursor: not-allowed; opacity: .55; }
 </style>
 </head>
 <body>

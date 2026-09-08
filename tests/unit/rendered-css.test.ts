@@ -126,14 +126,15 @@ describe('the toolbar reads as one line', () => {
     // pretending to be a word. The actions themselves are sized by the global button rule.
     const css = productPage([]);
 
-    expect(css).toMatch(/\.actions \{[^}]*font-size:\s*\.8125rem/);
+    expect(css).toMatch(/\.actions \{[^}]*font-size:\s*var\(--type-sm\)/);
   });
 
   it('gives the separator enough contrast to read as one', () => {
-    // #cbd0d9 against #fff is under 2:1 — the dots were invisible, so the facts ran together.
+    // It was a line colour, under 2:1 against white — the dots were invisible and the facts ran
+    // together. It takes the muted text role now, which is a colour meant to be read.
     const css = productPage([]);
 
-    expect(css).toMatch(/\.sep \{[^}]*color:\s*#(?!cbd0d9)[0-9a-f]{6}/);
+    expect(css).toMatch(/\.sep \{[^}]*color:\s*var\(--muted\)/);
   });
 });
 
@@ -151,8 +152,8 @@ describe('every link button matches the toolbar', () => {
     const css = productPage([]);
     const base = css.match(/\n\s*button \{[\s\S]*?\}/)?.[0] ?? '';
 
-    expect(base).toMatch(/font-size:\s*\.8125rem/);
-    expect(css).toMatch(/\.actions \{[^}]*font-size:\s*\.8125rem/);
+    expect(base).toMatch(/font-size:\s*var\(--type-sm\)/);
+    expect(css).toMatch(/\.actions \{[^}]*font-size:\s*var\(--type-sm\)/);
   });
 });
 
@@ -164,7 +165,7 @@ describe('button styling is global', () => {
     const base = css.match(/\n\s*button \{[\s\S]*?\}/)?.[0] ?? '';
 
     // Every button on every page inherits it — Sign in included, which sits outside any toolbar.
-    expect(base).toMatch(/font-size:\s*\.8125rem/);
+    expect(base).toMatch(/font-size:\s*var\(--type-sm\)/);
     expect(css).not.toMatch(/\.actionline button[^{]*\{/);
   });
 });
@@ -305,5 +306,58 @@ describe('a hidden element is actually hidden', () => {
     const css = productPage([]);
 
     expect(css).toMatch(/\.selection \{[^}]*display:/);
+  });
+});
+
+/**
+ * The palette, as named roles.
+ *
+ * Twelve hex values were written inline across this file, several near-duplicates, and nothing
+ * said what any of them meant — so a new element got whichever value looked closest. A colour is
+ * now a role with a name, and a rule that wants a colour has to pick one.
+ */
+describe('colour is a role, not a literal', () => {
+  const css = () => productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '';
+
+  it('defines every role once, at the root', () => {
+    const sheet = css();
+
+    for (const token of [
+      '--ground',
+      '--surface',
+      '--ink',
+      '--muted',
+      '--line',
+      '--hair',
+      '--accent',
+      '--unpublished',
+      '--danger',
+    ]) {
+      expect(sheet).toContain(`${token}:`);
+    }
+  });
+
+  it('carries no bare hex outside the token block', () => {
+    // The token block is the one place a colour is written down; everywhere else names a role.
+    const sheet = css();
+    const root = sheet.match(/:root \{[\s\S]*?\}/)?.[0] ?? '';
+    const outside = sheet.replace(root, '');
+
+    expect(outside.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([]);
+  });
+
+  it('sizes every control from one token, not from padding', () => {
+    const sheet = css();
+
+    expect(sheet).toMatch(/--control-h:\s*34px/);
+    expect(sheet).toMatch(/height:\s*var\(--control-h\)/);
+  });
+
+  it('keeps the type scale in tokens too', () => {
+    const sheet = css();
+
+    for (const token of ['--type-sm', '--type-base', '--type-title']) {
+      expect(sheet).toContain(`${token}:`);
+    }
   });
 });
