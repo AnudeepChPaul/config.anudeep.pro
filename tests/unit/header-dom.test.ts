@@ -67,12 +67,14 @@ describe('every page has the same header', () => {
     }
   });
 
-  it('puts the rows in one order: search, breadcrumb, title, facts', () => {
+  it('puts the rows in one order: search, title, facts', () => {
+    // No separate breadcrumb row. The title IS the trail, so there is one thing to read rather
+    // than a crumb saying where you are above a heading repeating it.
     for (const html of Object.values(pages())) {
       const head = headerOf(html);
       const order = [...head.children].map((child) => child.className.split(' ')[0]);
 
-      expect(order).toEqual(['searchrow', 'crumb', 'titlerow', 'facts']);
+      expect(order).toEqual(['searchrow', 'titlerow', 'facts']);
     }
   });
 
@@ -83,34 +85,34 @@ describe('every page has the same header', () => {
       const head = headerOf(html);
 
       expect(head.querySelector('.searchrow')).not.toBeNull();
-      expect(head.querySelector('.crumb')).not.toBeNull();
       expect(head.querySelector('.titlerow h1')).not.toBeNull();
       expect(head.querySelector('.facts')).not.toBeNull();
     }
   });
 
-  it('reads as one horizontal trail, not a stack', () => {
-    // "All products › iam", in one row, rather than a lone link sitting above the title.
+  it('makes the heading itself the trail', () => {
+    // Inside a product the heading reads "Products › iam", where Products is the link back.
     document.body.innerHTML = pages().product;
-    const crumb = document.querySelector('.pagehead .crumb') as HTMLElement;
+    const h1 = document.querySelector('.pagehead h1') as HTMLElement;
 
-    // One row, three parts in order: the link back, the separator, where you are. The spacing
-    // between them is the row's gap, not text, so this asserts the parts rather than the string.
-    expect([...crumb.children].map((child) => child.textContent)).toEqual([
-      'All products',
-      '›',
-      'iam',
-    ]);
-    expect(crumb.querySelector('a')?.getAttribute('href')).toBe('/');
-    expect(crumb.querySelector(':scope > span:last-child')?.tagName).toBe('SPAN');
+    expect([...h1.children].map((child) => child.textContent)).toEqual(['Products', '›', 'iam']);
+    expect(h1.querySelector('a')?.getAttribute('href')).toBe('/');
+  });
+
+  it('leaves the landing page a plain heading, with nothing to go back to', () => {
+    document.body.innerHTML = pages().products;
+    const h1 = document.querySelector('.pagehead h1') as HTMLElement;
+
+    expect(h1.textContent?.trim()).toBe('Products');
+    expect(h1.querySelector('a')).toBeNull();
   });
 
   it('names where you are on the drafts page too', () => {
     document.body.innerHTML = pages().drafts;
-    const crumb = document.querySelector('.pagehead .crumb') as HTMLElement;
+    const h1 = document.querySelector('.pagehead h1') as HTMLElement;
 
-    expect([...crumb.children].map((child) => child.textContent)).toEqual([
-      'All products',
+    expect([...h1.children].map((child) => child.textContent)).toEqual([
+      'Products',
       '›',
       'Unpublished drafts',
     ]);

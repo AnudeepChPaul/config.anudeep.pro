@@ -96,17 +96,18 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
      same place on every page and navigating does not move it. */
   /* Every row is a fixed HEIGHT, not a minimum, and each states the line-height its content
      will use. A floor one pixel under the line box is not a floor: the row grew on the page
-     that had a breadcrumb and stayed short on the one that did not, so the title moved as you
-     navigated between them. */
+     that had more in it, so the title moved as you navigated. */
   .pagehead { margin-bottom: 1.25rem; }
   .pagehead .searchrow { display: flex; justify-content: flex-end; align-items: center;
                          height: var(--control-h); margin-bottom: .6rem; }
-  .pagehead .crumb { height: 1.25rem; line-height: 1.25rem; font-size: var(--type-sm);
-                     color: var(--muted); display: flex; align-items: center; gap: 6px;
-                     white-space: nowrap; overflow: hidden; }
-  .pagehead .crumb-sep { color: var(--line); }
+  /* The heading IS the trail: "Products › iam", with Products the way back. A separate crumb
+     row said where you were above a heading that said it again, and cost a row of height. */
+  .pagehead h1 a { color: var(--muted); text-decoration: none; font-weight: 500; }
+  .pagehead h1 a:hover { color: var(--accent); text-decoration: underline; }
+  .pagehead .crumb-sep { color: var(--line); font-weight: 400; margin: 0 .35rem; }
   .pagehead .titlerow { display: flex; align-items: center; justify-content: space-between;
                         gap: 1rem; height: 2.25rem; }
+  .pagehead h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pagehead h1 { font-size: var(--type-title); line-height: 2.25rem; font-weight: 600; margin: 0;
                  letter-spacing: -.01em; }
   .pagehead .facts { height: 1.25rem; line-height: 1.25rem; font-size: var(--type-sm);
@@ -159,8 +160,13 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   /* Deliberately no font shorthand: it resets font-size to the inherited value, which overrode
      the size the base button rule sets — so a link action was one size inside the toolbar and
      another in the drafts list, the promote card and the product list. */
+  /* Its own size, and its own box. Without a font-size a <button> took the base button rule's
+     and an <a> inherited the body's, so Search sat beside Clear — and "Save 3 as a draft?"
+     beside "Not now" — at two sizes, on two baselines, with their underlines at two heights. */
   .linkbtn { background: none; border: 0; padding: 0; height: auto; color: var(--accent);
-             text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+             font-size: var(--type-sm); line-height: 1.4; display: inline-flex;
+             align-items: center; text-decoration: underline; text-underline-offset: 3px;
+             cursor: pointer; }
   .linkbtn:hover:not(:disabled) { color: var(--ink); }
   .linkbtn:disabled { color: var(--muted); text-decoration: none; cursor: not-allowed; }
   /* The consequential action — publishing, promoting — is heavier, not a different colour.
@@ -178,7 +184,7 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   /* One row: the field, then its actions, all centred on the same line. */
   .search { display: flex; gap: 10px; align-items: center; }
   .search input[type=search] { width: 18rem; }
-  .search .linkbtn { line-height: var(--control-h); }
+
 
   /* ---------------------------------------------------------------- tabs */
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 1.25rem; }
@@ -688,9 +694,8 @@ function writeAction(options: {
  * height in CSS, which is what keeps the title in the same place from page to page.
  */
 function pageHeader(options: {
+  /** The heading, which doubles as the trail: "Products › iam". */
   title: SafeHtml;
-  /** Where you came from. Rendered empty on the landing page rather than omitted. */
-  breadcrumb?: SafeHtml;
   /** One muted line: what this page is looking at. */
   facts?: SafeHtml;
   /** Page-level actions, right-aligned on the title row. */
@@ -700,7 +705,6 @@ function pageHeader(options: {
 }): SafeHtml {
   return html`<div class="pagehead">
     <div class="searchrow">${options.search ?? html``}</div>
-    <div class="crumb">${options.breadcrumb ?? html``}</div>
     <div class="titlerow">
       <h1>${options.title}</h1>
       <div class="actions-right">${options.actions ?? html``}</div>
@@ -710,14 +714,15 @@ function pageHeader(options: {
 }
 
 /**
- * The trail, read left to right: where you came from, then where you are.
+ * The heading of a page below the landing one, which is also the way back to it.
  *
- * A lone link above the title says how to leave but not where you are, and stacks what should be
- * one line. The last item is the current page and is not a link — there is nowhere for it to go.
+ * There is no separate breadcrumb: one said where you were directly above a heading that said it
+ * again, and cost a row of the header's height to do it. The last item is where you are and is
+ * not a link — there is nowhere for it to go.
  */
-function breadcrumb(here: string): SafeHtml {
+function trail(here: string): SafeHtml {
   return html`<a href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML"
-      hx-push-url="true">All products</a><span class="crumb-sep">›</span><span>${here}</span>`;
+      hx-push-url="true">Products</a><span class="crumb-sep">›</span><span>${here}</span>`;
 }
 
 /**
@@ -799,8 +804,7 @@ export function renderDrafts(options: {
 
   const body = html`
       ${pageHeader({
-        breadcrumb: breadcrumb('Unpublished drafts'),
-        title: html`Unpublished drafts`,
+        title: trail('Unpublished drafts'),
         facts: html`${options.drafts.length} namespace${
           options.drafts.length === 1 ? '' : 's'
         } with unpublished work`,
@@ -1014,8 +1018,7 @@ export function renderProduct(options: {
 
 
       ${pageHeader({
-        breadcrumb: breadcrumb(options.service),
-        title: html`${options.service}`,
+        title: trail(options.service),
         search: searchBox({
           action: `/p/${options.service}`,
           query: options.query ?? '',

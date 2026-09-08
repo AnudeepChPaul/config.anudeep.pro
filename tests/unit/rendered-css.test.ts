@@ -414,7 +414,8 @@ describe('nothing moves when you navigate', () => {
     // that had a breadcrumb than on the one that did not, so the title moved.
     const sheet = css();
 
-    for (const row of ['crumb', 'titlerow', 'facts', 'searchrow']) {
+    // The crumb row is gone: the heading is the trail now, so there is one row fewer to hold.
+    for (const row of ['titlerow', 'facts', 'searchrow']) {
       expect(sheet, `${row} is fixed, not floored`).toMatch(
         new RegExp(`\\.${row} \\{[^}]*\\bheight:`),
       );
@@ -424,8 +425,8 @@ describe('nothing moves when you navigate', () => {
   it('gives every reserved row a line-height, so its content cannot outgrow it', () => {
     const sheet = css();
 
-    expect(sheet).toMatch(/\.crumb \{[^}]*line-height:/);
     expect(sheet).toMatch(/\.facts \{[^}]*line-height:/);
+    expect(sheet).toMatch(/\.pagehead h1 \{[^}]*line-height:|\.pagehead h1 \{[^}]*white-space:/);
   });
 
   it('keeps the scrollbar gutter, so filtering does not slide the page sideways', () => {
@@ -481,5 +482,24 @@ describe('an action is never painted as a state', () => {
     // Where a search landed is not a state of the configuration; it is where you are looking.
     expect(rule('.found')).not.toMatch(/var\(--unpublished\)/);
     expect(rule('.found')).toMatch(/var\(--accent\)/);
+  });
+});
+
+describe('a link action is the same size whichever element it is', () => {
+  // .linkbtn set no font-size, so a <button> took 13px from the base button rule and an <a>
+  // inherited 15px from the body. Search beside Clear, and "Save 3 as a draft in prod?" beside
+  // "Not now", were a button and an anchor — two sizes, two baselines, two underline heights.
+  const rule = (selector: string) =>
+    (productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '').match(
+      new RegExp(`\\${selector} \\{[^}]*\\}`),
+    )?.[0] ?? '';
+
+  it('states its own size rather than inheriting whatever is around it', () => {
+    expect(rule('.linkbtn')).toMatch(/font-size:\s*var\(--type-sm\)/);
+  });
+
+  it('centres its text the same way in both elements', () => {
+    expect(rule('.linkbtn')).toMatch(/display:\s*inline-flex/);
+    expect(rule('.linkbtn')).toMatch(/align-items:\s*center/);
   });
 });
