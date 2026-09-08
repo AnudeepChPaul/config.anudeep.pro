@@ -15,6 +15,33 @@ import { describe, expect, it } from 'vitest';
 const definition = (over: Record<string, unknown> = {}) =>
   ({ type: 'bool', secret: false, ...over }) as unknown as KeyRow['definition'];
 
+const productsPage = (pending: number) =>
+  String(
+    renderProducts({
+      commit: 'a'.repeat(40),
+      products: [
+        {
+          name: 'iam (1002)',
+          service: 'iam',
+          keys: '4 keys',
+          environments: [
+            {
+              name: 'dev',
+              namespace: 'iam/dev',
+              drafts: pending,
+              pending: Array.from({ length: pending }, (_, i) => ({
+                key: `K${i}`,
+                from: 'a',
+                to: 'b',
+                secret: false,
+              })),
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
 const productPage = (rows: KeyRow[]) =>
   String(
     renderProduct({
@@ -222,33 +249,6 @@ describe('a write in flight says so', () => {
 describe('every publish action reads the same way', () => {
   // One idiom across the console: a link-styled question in the environment's own colour, and
   // absent rather than greyed when there is nothing behind it.
-  const productsPage = (pending: number) =>
-    String(
-      renderProducts({
-        commit: 'a'.repeat(40),
-        products: [
-          {
-            name: 'iam (1002)',
-            service: 'iam',
-            keys: '4 keys',
-            environments: [
-              {
-                name: 'dev',
-                namespace: 'iam/dev',
-                drafts: pending,
-                pending: Array.from({ length: pending }, (_, i) => ({
-                  key: `K${i}`,
-                  from: 'a',
-                  to: 'b',
-                  secret: false,
-                })),
-              },
-            ],
-          },
-        ],
-      }),
-    );
-
   it('renders the products publish as a link, phrased as a question', () => {
     // The search button comes first on the page now, so this names the publish one rather than
     // taking whichever button happens to be first.
@@ -358,6 +358,43 @@ describe('colour is a role, not a literal', () => {
 
     for (const token of ['--type-sm', '--type-base', '--type-title']) {
       expect(sheet).toContain(`${token}:`);
+    }
+  });
+});
+
+describe('nothing styles itself inline', () => {
+  // The stylesheet is where a decision about how something looks belongs. A style attribute is
+  // how the console came to have three type sizes for the same kind of text and two greys for
+  // muted — each written at the point someone needed it, none of them findable afterwards.
+  //
+  // Every page that HAS this markup: the product list's names, and a page whose hover panels
+  // carry changed values.
+  const busyPages = () => [
+    productsPage(2),
+    productPage([
+      {
+        key: 'MFA_ENFORCEMENT',
+        definition: definition({ type: 'string' }),
+        value: 'all',
+        publishedValue: 'optional',
+        pending: true,
+      },
+    ]),
+  ];
+
+  it('names no colour in a style attribute', () => {
+    for (const page of busyPages()) {
+      const markup = page.replace(/<style>[\s\S]*?<\/style>/, '');
+
+      expect(markup.match(/style="[^"]*#[0-9a-fA-F]{3,8}/g) ?? []).toEqual([]);
+    }
+  });
+
+  it('names no font-size in a style attribute', () => {
+    for (const page of busyPages()) {
+      const markup = page.replace(/<style>[\s\S]*?<\/style>/, '');
+
+      expect(markup.match(/style="[^"]*font-size/g) ?? []).toEqual([]);
     }
   });
 });

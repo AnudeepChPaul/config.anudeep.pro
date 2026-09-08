@@ -35,6 +35,21 @@ const formOf = (selector: string) =>
 
 beforeEach(() => load());
 
+describe('the search box lives in the page header', () => {
+  it('is in the header, not in the page body', () => {
+    // One box, in the same place on every page that has one — rather than a box per page,
+    // rendered wherever that page happened to put it.
+    const input = document.querySelector('input[name="q"]');
+
+    expect(input?.closest('.pagehead')).not.toBeNull();
+    expect(input?.closest('.searchrow')).not.toBeNull();
+  });
+
+  it('appears once, not once per page section', () => {
+    expect(document.querySelectorAll('input[name="q"]')).toHaveLength(1);
+  });
+});
+
 describe('the search box is its own form', () => {
   it('does not submit a publish', () => {
     // The defect: nested inside the publish form, the parser dropped the search form and every

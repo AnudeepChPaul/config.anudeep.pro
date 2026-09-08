@@ -155,6 +155,19 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--unpublished);
          display: inline-block; }
 
+  /* What a key was, and what it is about to be, beside its name. */
+  .wasnow { display: inline-flex; align-items: center; gap: 6px; font-size: var(--type-sm); }
+  .wasnow .was { color: var(--muted); text-decoration: line-through; }
+  .wasnow .arrow { color: var(--muted); }
+
+  /* A product's name on the list: the one thing on that page you are looking for. */
+  .pname { font-size: var(--type-base); font-weight: 600; }
+  /* A line in the promote offer: what would move, and what is refused. */
+  .moveline { font-size: var(--type-sm); display: flex; align-items: baseline; gap: 8px;
+              flex-wrap: wrap; }
+  .moveline strong { font-size: var(--type-base); }
+  .moveline.blocked { color: var(--muted); }
+
   /* ---------------------------------------------------------------- chips and markers */
   .chip { font-size: .6875rem; padding: 2px 7px; border-radius: 4px; border: 1px solid var(--line);
           background: var(--ground); color: var(--muted); }
@@ -199,7 +212,9 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: .25rem; }
   .keyrow { display: flex; align-items: flex-start; gap: 14px; min-height: var(--control-h); }
   .keypick { width: 16px; flex-shrink: 0; padding-top: 9px; }
-  .keypick input { width: 16px; height: 16px; accent-color: var(--ink); cursor: pointer; margin: 0; }
+  .keypick input, .pick { width: 16px; height: 16px; accent-color: var(--ink); cursor: pointer;
+                          margin: 0; }
+  .pick { margin-top: 3px; }
   /* A tick on a value you have actually changed cannot be cleared — the change goes with the
      draft either way. It must not look like an ordinary box that failed to respond. */
   .keypick input.locked { accent-color: var(--unpublished); cursor: not-allowed; }
@@ -303,7 +318,7 @@ function renderField(row: KeyRow, highlight?: string): SafeHtml {
     <span class="hint">${hint}</span>
     ${
       row.pending
-        ? html`<span style="display:inline-flex;align-items:center;gap:6px;font-size:.8125rem;">
+        ? html`<span class="wasnow">
             <span class="dot"></span>
             <span class="was">${format(row.publishedValue)}</span>
             <span class="arrow">→</span>
@@ -631,6 +646,40 @@ function writeAction(options: {
 }
 
 /**
+ * The page header, identical on every page that has one.
+ *
+ * Each page used to grow its own — an h1 in a flex row here, a breadcrumb and a separate facts
+ * line there, no facts at all on a third — so navigating moved the title down the page and
+ * across it. Every row is rendered whether or not it holds anything, and each carries a fixed
+ * height in CSS, which is what keeps the title in the same place from page to page.
+ */
+function pageHeader(options: {
+  title: SafeHtml;
+  /** Where you came from. Rendered empty on the landing page rather than omitted. */
+  breadcrumb?: SafeHtml;
+  /** One muted line: what this page is looking at. */
+  facts?: SafeHtml;
+  /** Page-level actions, right-aligned on the title row. */
+  actions?: SafeHtml;
+  /** The search box, top right. Rendered only where searching does something. */
+  search?: SafeHtml;
+}): SafeHtml {
+  return html`<div class="pagehead">
+    <div class="searchrow">${options.search ?? html``}</div>
+    <div class="crumb">${options.breadcrumb ?? html``}</div>
+    <div class="titlerow">
+      <h1>${options.title}</h1>
+      <div class="actions-right">${options.actions ?? html``}</div>
+    </div>
+    <div class="facts">${options.facts ?? html``}</div>
+  </div>`;
+}
+
+/** The link back to the product list, which every page but that one carries. */
+const allProducts = html`<a href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML"
+    hx-push-url="true">All products</a>`;
+
+/**
  * The search box.
  *
  * A plain GET form: it works with the script disabled, the address bar carries the search, and a
@@ -706,14 +755,13 @@ export function renderDrafts(options: {
   );
 
   const body = html`
-      <div class="toolbar" style="margin-bottom:1.25rem;">
-        <div>
-          <div style="font-size:.8125rem;margin-bottom:.35rem;">
-            <a href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">All products</a>
-          </div>
-          <h1>Unpublished drafts</h1>
-        </div>
-      </div>
+      ${pageHeader({
+        breadcrumb: allProducts,
+        title: html`Unpublished drafts`,
+        facts: html`${options.drafts.length} namespace${
+          options.drafts.length === 1 ? '' : 's'
+        } with unpublished work`,
+      })}
       ${options.notice ? html`<div class="card" data-transient>${options.notice}</div>` : html``}
       ${
         options.drafts.length === 0
@@ -754,18 +802,17 @@ export function renderProducts(options: {
     );
 
     return html`<div class="row">
-      <input type="checkbox" name="namespace" value="${product.service}"
-             style="width:16px;height:16px;margin:3px 0 0;accent-color:#16181d;">
+      <input type="checkbox" name="namespace" value="${product.service}" class="pick">
       <div style="display:flex;flex-direction:column;gap:4px;flex-grow:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:10px;">
           ${
             product.schemaMissing
-              ? html`<span style="font-size:.9375rem;font-weight:500;">${product.name}</span>
+              ? html`<span class="pname">${product.name}</span>
                   <span class="chip wait" title="schema/${product.service}.yaml is absent"
                     >schema is missing</span>`
               : html`<a href="/p/${product.service}" hx-get="/p/${product.service}" hx-target="#page"
                   hx-swap="innerHTML" hx-push-url="true"
-                  style="font-size:.9375rem;font-weight:500;">${product.name}</a>`
+                  class="pname">${product.name}</a>`
           }
           ${pending.length > 0 ? pendingDetail('Waiting to publish', pending) : html``}
         </div>
@@ -788,46 +835,46 @@ export function renderProducts(options: {
   });
 
   const body = html`
-      <!-- The search form is opened and closed BEFORE the publish form. A form inside another
-           form is dropped by every parser, which left its input and its button belonging to the
-           publish form — so pressing Search published whatever was ticked. -->
-      ${searchBox({ action: '/', query: options.query ?? '', placeholder: 'Find a variable' })}
+      <!-- The header is rendered OUTSIDE the publish form. A form inside another form is
+           dropped by every parser, which is how the search box came to belong to the publish
+           form and a Search click came to publish. The header's publish action reaches its form
+           by id instead, which needs no script. -->
+      ${pageHeader({
+        title: html`Products`,
+        search: searchBox({
+          action: '/',
+          query: options.query ?? '',
+          placeholder: 'Find a variable',
+        }),
+        facts: html`${
+          (options.draftCount ?? 0) > 0
+            ? html`<a href="/drafts" hx-get="/drafts" hx-target="#page" hx-swap="innerHTML"
+                  hx-push-url="true">${options.draftCount} unpublished draft${
+                    options.draftCount === 1 ? '' : 's'
+                  }</a> · `
+            : html``
+        }Serving <code>${options.commit.slice(0, 8)}</code>${
+          totalDrafts > 0
+            ? html` · ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'} to publish`
+            : html` · nothing unpublished`
+        }`,
+        actions:
+          totalDrafts > 0
+            ? writeAction({
+                className: 'linkbtn go',
+                attributes: html`form="publish-products"`,
+                resting: html`Publish selected drafts?`,
+                running: 'Publishing…',
+              })
+            : html``,
+      })}
       ${
         options.query && options.products.length === 0
           ? html`<div class="card">No key matches “${options.query}”.</div>`
           : html``
       }
-      <form method="post" action="/publish" hx-post="/publish" hx-target="#page" hx-swap="innerHTML">
-        <div class="toolbar" style="margin-bottom:1.75rem;">
-          <div>
-            <h1>Products</h1>
-            <p class="sub" style="margin:0;">
-              ${
-                (options.draftCount ?? 0) > 0
-                  ? html`<a href="/drafts" hx-get="/drafts" hx-target="#page" hx-swap="innerHTML"
-                        hx-push-url="true">${options.draftCount} unpublished draft${
-                          options.draftCount === 1 ? '' : 's'
-                        }</a> · `
-                  : html``
-              }Serving <code>${options.commit.slice(0, 8)}</code>${
-                totalDrafts > 0
-                  ? html` · ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'} to publish`
-                  : html` · nothing unpublished`
-              }
-            </p>
-          </div>
-          ${
-            // Absent when there is nothing waiting anywhere, like every other publish here: a
-            // permanently greyed action invites clicking at it to find out why.
-            totalDrafts > 0
-              ? writeAction({
-                  className: 'linkbtn go',
-                  resting: html`Publish selected drafts?`,
-                  running: 'Publishing…',
-                })
-              : html``
-          }
-        </div>
+      <form id="publish-products" method="post" action="/publish" hx-post="/publish"
+            hx-target="#page" hx-swap="innerHTML">
         ${options.notice ? html`<div class="card">${options.notice}</div>` : html``}
         ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
         ${unpushedBanner(options.unpushed ?? [])}
@@ -923,18 +970,26 @@ export function renderProduct(options: {
   const body = html`
 
 
-      <div class="toolbar" style="margin-bottom:1.25rem;">
-        <div>
-          <div style="font-size:.8125rem;margin-bottom:.35rem;">
-            <a href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">All products</a>
-          </div>
-          <h1>${options.service}</h1>
-        </div>
-        ${
+      ${pageHeader({
+        breadcrumb: allProducts,
+        title: html`${options.service}`,
+        search: searchBox({
+          action: `/p/${options.service}`,
+          query: options.query ?? '',
+          placeholder: `Find a variable in ${options.service}`,
+        }),
+        facts: html`${options.environments.length} environment${
+          options.environments.length === 1 ? '' : 's'
+        } · serving ${
+          options.repoWebUrl
+            ? html`<a href="${options.repoWebUrl}/commit/${options.commit}" target="_blank"
+                rel="noreferrer"><code>${options.commit.slice(0, 8)}</code></a>`
+            : html`<code>${options.commit.slice(0, 8)}</code>`
+        }`,
+        actions:
           productDrafts === 0
             ? html``
-            : html`<form method="post" action="/publish"
-                    style="display:flex;gap:8px;align-items:flex-start;font-size:.8125rem;">
+            : html`<form method="post" action="/publish" style="display:flex;">
                 <!-- The service, not its environments. Posting every declared environment made
                      publish() abort on the first one with nothing staged, which is the ordinary
                      case; the route resolves a bare service to the environments that actually
@@ -947,16 +1002,10 @@ export function renderProduct(options: {
                   } in ${options.service}?`,
                   running: 'Publishing…',
                 })}
-              </form>`
-        }
-      </div>
+              </form>`,
+      })}
 
       <div class="tabs">${tabs}</div>
-      ${searchBox({
-        action: `/p/${options.service}`,
-        query: options.query ?? '',
-        placeholder: `Find a variable in ${options.service}`,
-      })}
       ${
         query && shownRows.length === 0
           ? html`<div class="card">No key in ${options.service} matches “${options.query}”.</div>`
@@ -1151,10 +1200,8 @@ function promoteOffer(options: {
   if (!offer) return html``;
 
   const rows = offer.movable.map(
-    (
-      change,
-    ) => html`<div style="font-size:.8125rem;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-      <strong style="font-size:.875rem;">${change.key}</strong>
+    (change) => html`<div class="moveline">
+      <strong>${change.key}</strong>
       <span class="hint">${offer.nextEnvironment} has</span>
       <span class="was">${format(change.target)}</span>
       <span class="arrow">→</span>
@@ -1163,8 +1210,8 @@ function promoteOffer(options: {
   );
 
   const blocked = offer.blocked.map(
-    (entry) => html`<div style="font-size:.8125rem;color:#5b6070;">
-      <strong style="font-size:.875rem;color:#16181d;">${entry.key}</strong> — ${entry.reason}
+    (entry) => html`<div class="moveline blocked">
+      <strong>${entry.key}</strong> — ${entry.reason}
     </div>`,
   );
 
