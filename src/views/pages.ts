@@ -118,6 +118,12 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
           padding: 1rem 1.15rem; margin-bottom: 1rem; }
   .banner { border-left: 3px solid var(--unpublished); background: var(--unpublished-fill); }
+  /* The offer to move what was just published into the next environment: a thing to act on,
+     not a state, so it takes the accent. */
+  .offer { border-left: 3px solid var(--accent); }
+  /* A banner that fills the top of the card it sits in, rather than floating inside it. */
+  .inset { border: 0; border-left: 3px solid var(--unpublished); margin: -1rem -1.15rem 1rem;
+           padding: .75rem 1.15rem; }
   .error { border-left: 3px solid var(--danger); background: var(--danger-fill); }
   /* NOT overflow: hidden. That rounds the corners and also clips every hover panel a row
      contains, cutting the detail off at the card's edge. The corners are rounded on the first
@@ -169,8 +175,10 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   [hidden] { display: none !important; }
 
   /* ---------------------------------------------------------------- search */
-  .search { display: flex; gap: 8px; align-items: center; }
+  /* One row: the field, then its actions, all centred on the same line. */
+  .search { display: flex; gap: 10px; align-items: center; }
   .search input[type=search] { width: 18rem; }
+  .search .linkbtn { line-height: var(--control-h); }
 
   /* ---------------------------------------------------------------- tabs */
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 1.25rem; }
@@ -495,7 +503,7 @@ export function renderLogin(options: {
   const breakGlass = options.iamReachable
     ? html``
     : html`<div class="card">
-        <div class="banner" style="border: 0; border-left: 3px solid #b45309; background: #fffbeb; margin: -1rem -1.25rem 1rem; padding: .75rem 1.25rem;">
+        <div class="banner inset">
           <strong>Every attempt raises an alert.</strong>
           <span class="hint">Successful or not — this credential cannot be revoked through iam.</span>
         </div>
@@ -725,8 +733,11 @@ function searchBox(options: { action: string; query: string; placeholder: string
            aria-label="${options.placeholder}">
     ${writeAction({ resting: html`Search`, running: 'Searching…' })}
     ${
+      // The same treatment as Search beside it. It was a hint — a size smaller, muted, not
+      // underlined — so two controls on one row sat on different baselines and read as
+      // misaligned. They are both actions, so they look like actions.
       options.query
-        ? html`<a class="hint" href="${options.action}" hx-get="${options.action}"
+        ? html`<a class="linkbtn" href="${options.action}" hx-get="${options.action}"
               hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Clear</a>`
         : html``
     }
@@ -1065,7 +1076,7 @@ export function renderProduct(options: {
               ${
                 options.offerDeclined
                   ? html``
-                  : html`<div class="card" style="border-left:3px solid #b45309;">
+                  : html`<div class="card banner">
                       <div style="font-weight:600;">
                         ${options.service}/${options.active} has no file yet.
                       </div>
@@ -1081,7 +1092,7 @@ export function renderProduct(options: {
                           resting: html`Create ${options.service}/${options.active}.yaml?`,
                           running: 'Creating the draft…',
                         })}
-                        <a class="hint"
+                        <a class="linkbtn"
                            href="/p/${options.service}?env=${options.active}&create=no"
                            hx-get="/p/${options.service}?env=${options.active}&create=no"
                            hx-target="#page" hx-swap="innerHTML">Not now</a>
@@ -1251,7 +1262,7 @@ function promoteOffer(options: {
     (change) => html`<input type="hidden" name="key" value="${change.key}">`,
   );
 
-  return html`<div class="card" style="border-left: 3px solid #1d4ed8;">
+  return html`<div class="card offer">
     <div style="font-weight:600;">Published in ${options.active}.</div>
     <p class="sub" style="margin:3px 0 .85rem;">
       Move the same change to ${offer.nextEnvironment}? It is staged there for review — nothing
@@ -1273,7 +1284,7 @@ function promoteOffer(options: {
               running: 'Saving the draft…',
             })
       }
-      <a href="/p/${options.service}?env=${options.active}">Not now</a>
+      <a class="linkbtn" href="/p/${options.service}?env=${options.active}">Not now</a>
     </form>
   </div>`;
 }

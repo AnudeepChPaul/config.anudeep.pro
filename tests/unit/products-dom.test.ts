@@ -81,6 +81,31 @@ describe('the search box is its own form', () => {
   });
 });
 
+describe('the search row is one row of controls', () => {
+  // Search was a link-styled action at 13px and Clear was a hint at 12px — different sizes,
+  // different colours, different treatments, sitting side by side. They are both actions on the
+  // same row, so they are the same kind of thing and have to look like it.
+  it('gives Search and Clear the same treatment', () => {
+    load({ products: [product()], commit: 'a'.repeat(40), query: 'MFA' });
+    const row = document.querySelector('.search') as HTMLElement;
+    const controls = [...row.querySelectorAll('button, a')];
+
+    expect(controls.map((control) => control.textContent?.trim().split(/\s+/)[0])).toEqual([
+      'Search',
+      'Clear',
+    ]);
+    for (const control of controls) {
+      expect(control.className).toContain('linkbtn');
+    }
+  });
+
+  it('offers Clear only when there is something to clear', () => {
+    load();
+
+    expect(document.querySelector('.search a')).toBeNull();
+  });
+});
+
 describe('a search result links where it says', () => {
   it('names an environment the service declares, not always dev', () => {
     load({
