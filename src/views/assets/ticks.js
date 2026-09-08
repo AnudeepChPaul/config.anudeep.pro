@@ -215,7 +215,25 @@
    * swapped in, so the message field — which appears the moment a draft exists and is the only
    * thing left to supply — is focused here by hand.
    */
+  /**
+   * A confirmation says the thing you asked for happened; it has no job after that.
+   *
+   * The server renders it, so it appears with the swap and appears without this script at all.
+   * Only the removal is here, which is the half that is safe to lose: a page that keeps a
+   * completion notice too long is untidy, where a page that never shows one has swallowed the
+   * answer. Nothing else is removed — a notice about a push that did not reach the remote
+   * carries no data-transient, because it is still something to act on.
+   */
+  const clearTransientNotices = () => {
+    for (const notice of document.querySelectorAll('[data-transient]')) {
+      setTimeout(() => notice.remove(), 5000);
+    }
+  };
+
+  clearTransientNotices();
+
   document.addEventListener('htmx:afterSwap', () => {
+    clearTransientNotices();
     claimed = new Set();
     const form = currentForm();
     if (form) refresh(form);

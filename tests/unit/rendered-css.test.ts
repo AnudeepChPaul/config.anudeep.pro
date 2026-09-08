@@ -138,6 +138,55 @@ describe('the toolbar reads as one line', () => {
   });
 });
 
+describe('a write in flight says so', () => {
+  // A publish runs sops, git commit and git push over SSH — up to seconds, unbounded on a bad
+  // network. htmx swaps nothing until it returns, so without this the page is unchanged and the
+  // action looks unpressed.
+  const css = () => productPage([]);
+
+  it('keys the running state on the class htmx sets for the duration of a request', () => {
+    expect(css()).toMatch(/\.htmx-request/);
+  });
+
+  it('hides the resting label and shows the running one, and never both', () => {
+    const sheet = css();
+
+    expect(sheet).toMatch(/\.running \{[^}]*display:\s*none/);
+    expect(sheet).toMatch(/\.htmx-request .resting \{[^}]*display:\s*none/);
+    expect(sheet).toMatch(/\.htmx-request .running \{[^}]*display:\s*inline/);
+  });
+
+  it('animates the spinner, so a slow push does not look like a frozen page', () => {
+    const sheet = css();
+
+    expect(sheet).toMatch(/@keyframes/);
+    expect(sheet).toMatch(/animation:/);
+  });
+
+  it('gives every write action a resting and a running label', () => {
+    const busy = String(
+      renderProduct({
+        service: 'iam',
+        environments: [
+          {
+            name: 'dev',
+            namespace: 'iam/dev',
+            pending: [{ key: 'A', from: '1', to: '2', secret: false }],
+          },
+        ],
+        active: 'dev',
+        rows: [],
+        commit: 'a'.repeat(40),
+      }),
+    );
+
+    for (const button of busy.match(/<button[\s\S]*?<\/button>/g) ?? []) {
+      expect(button).toContain('class="resting"');
+      expect(button).toContain('class="running"');
+    }
+  });
+});
+
 describe('every publish action reads the same way', () => {
   // One idiom across the console: a link-styled question in the environment's own colour, and
   // absent rather than greyed when there is nothing behind it.
@@ -195,7 +244,9 @@ describe('every publish action reads the same way', () => {
       }),
     );
 
-    expect(busy).toMatch(/<button[^>]*class="linkbtn go"[^>]*>\s*Publish all iam \(1\)\?/);
+    expect(busy).toMatch(
+      /<button[^>]*class="linkbtn go"[\s\S]*?Publish all 1 unpublished change in iam\?/,
+    );
     expect(productPage([])).not.toContain('Publish all');
   });
 });

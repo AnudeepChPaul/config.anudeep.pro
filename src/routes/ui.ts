@@ -136,6 +136,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     service: string;
     env?: string | undefined;
     notice?: string | undefined;
+    /** A confirmation the page clears itself, as opposed to something still to act on. */
+    transientNotice?: boolean;
     published?: readonly string[];
     fragment: boolean;
   }): Promise<{ html: string; active: string } | null> => {
@@ -211,6 +213,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           // about to add to it.
           lastChange: await repository.lastChange(`config/${namespace}.yaml`),
           ...(options.notice ? { notice: options.notice } : {}),
+          ...(options.transientNotice ? { transientNotice: true } : {}),
           ...(offer ? { offer } : {}),
         }),
       ),
@@ -226,11 +229,20 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
   const respond = async (
     reply: FastifyReply,
     request: FastifyRequest,
-    options: { service: string; env: string; notice?: string; published?: readonly string[] },
+    options: {
+      service: string;
+      env: string;
+      notice?: string;
+      transientNotice?: boolean;
+      published?: readonly string[];
+    },
   ) => {
     const back =
       `/p/${options.service}?env=${encodeURIComponent(options.env)}` +
       (options.notice ? `&notice=${encodeURIComponent(options.notice)}` : '') +
+      // Survives the redirect, so the plain-browser path gets the same self-clearing
+      // confirmation as the swapped one rather than a notice that stays until the next action.
+      (options.transientNotice ? '&done=1' : '') +
       (options.published?.length
         ? `&published=${encodeURIComponent(options.published.join(','))}`
         : '');
@@ -241,6 +253,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       service: options.service,
       env: options.env,
       notice: options.notice,
+      ...(options.transientNotice ? { transientNotice: true } : {}),
       published: options.published ?? [],
       fragment: true,
     });
@@ -254,7 +267,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     async (
       request: FastifyRequest<{
         Params: { service: string };
-        Querystring: { env?: string; notice?: string; published?: string };
+        Querystring: { env?: string; notice?: string; published?: string; done?: string };
       }>,
       reply,
     ) => {
@@ -262,6 +275,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         service: request.params.service,
         env: request.query?.env,
         notice: request.query?.notice,
+        ...(request.query?.done ? { transientNotice: true } : {}),
         published: (request.query?.published ?? '').split(',').filter(Boolean),
         fragment: isHtmx(request),
       });
@@ -346,7 +360,19 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
         // The published keys are carried through so the promote offer names exactly them,
         // rather than recomputing a set that could include something not just shipped.
-        return respond(reply, request, { service, env: environment, published: keys });
+        //
+        // A publish that did not reach the remote is NOT a transient confirmation: the commit is
+        // durable and being served, but it is backed up nowhere, and a page that erases the only
+        // report of that after five seconds is worse than one that never said it.
+        return respond(reply, request, {
+          service,
+          env: environment,
+          published: keys,
+          notice: published.value.published
+            ? 'Done publishing.'
+            : 'Done publishing — not yet pushed to GitHub.',
+          ...(published.value.published ? { transientNotice: true } : {}),
+        });
       }
 
       // A tick is a statement of intent, not an edit, so ticking keys and saving is a normal
@@ -356,7 +382,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         return respond(reply, request, {
           service,
           env: environment,
-          notice: 'Nothing changed — a tick on its own does not make a draft.',
+          notice: 'Nothing to save — no value was edited and nothing was ticked.',
         });
       }
 

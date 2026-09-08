@@ -109,7 +109,19 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   .actionline .count { color: #b45309; }
   .actionline .idle { color: #5b6070; }
-  .actionline .drift { border-bottom: 1px dotted #b0b6c2; }
+  /* A write in flight. htmx sets .htmx-request on the element that issued the request and
+     removes it when the request ends — including when it ends by replacing that element — so
+     the running state cannot outlive its request the way a script-driven one can. */
+  .running { display: none; align-items: center; gap: 6px; }
+  .htmx-request .resting { display: none; }
+  .htmx-request .running { display: inline-flex; }
+  .htmx-request { cursor: progress; }
+  .spinner { width: 11px; height: 11px; border: 2px solid currentColor; border-right-color: transparent;
+             border-radius: 50%; display: inline-block; animation: spin .6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* A publish is the slow one, and it is the only action whose duration is not ours to bound:
+     it runs sops, git commit and git push over SSH. */
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
   .selection { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one
      on .selection, for instance — beats it and leaves a hidden element on screen. Everything
@@ -459,7 +471,6 @@ function idleLine(options: {
   commit: string;
   repoWebUrl?: string | null;
   revision?: number;
-  nextEnvironment?: string | null;
   lastChange?: { subject: string; author: string; at: string } | null;
 }): SafeHtml {
   const parts: SafeHtml[] = [
@@ -469,37 +480,6 @@ function idleLine(options: {
   // Absent on a file that has never been written through the console, where saying "revision 0"
   // would imply a counter that is running when none is.
   if (options.revision) parts.push(html`revision ${options.revision}`);
-
-  const next = options.nextEnvironment;
-  if (next) {
-    // Counted against what the next environment actually holds, including keys it has not got
-    // at all — those are drift too, and the ones a promotion would create.
-    const drifted = options.rows.filter((row) => {
-      const there = row.elsewhere?.find((env) => env.environment === next);
-      return !there || format(there.value) !== format(row.value);
-    });
-
-    parts.push(
-      drifted.length === 0
-        ? html`identical to ${next}`
-        : // The count alone means opening the other tab and comparing by eye, so it opens the
-          // same panel everything else on these pages uses: from what is there, to what is here.
-          html`<span class="pending sel" tabindex="0">
-            <span class="drift">${drifted.length} differ from ${next}</span>
-            ${detailPanel(
-              `Differs from ${next}`,
-              drifted.map((row) => ({
-                key: row.key,
-                from: row.definition?.secret
-                  ? undefined
-                  : format(row.elsewhere?.find((env) => env.environment === next)?.value),
-                to: row.definition?.secret ? undefined : format(row.value),
-                secret: row.definition?.secret ?? false,
-              })),
-            )}
-          </span>`,
-    );
-  }
 
   parts.push(
     options.repoWebUrl
@@ -535,6 +515,25 @@ function ago(iso: string): string {
   if (seconds >= 86_400) return `${Math.round(seconds / 86_400)}d ago`;
   if (seconds >= 3600) return `${Math.round(seconds / 3600)}h ago`;
   return `${Math.round(seconds / 60)}m ago`;
+}
+
+/**
+ * A button that performs a write, with what it says at rest and what it says while running.
+ *
+ * The two labels are siblings rather than one label the script rewrites: htmx swaps which is
+ * visible by class alone, so the running state needs no script and cannot be left behind — the
+ * element carrying it is destroyed by the swap that ends the request.
+ */
+function writeAction(options: {
+  resting: SafeHtml;
+  running: string;
+  className?: string;
+  attributes?: SafeHtml;
+}): SafeHtml {
+  return html`<button type="submit" class="${options.className ?? 'linkbtn'}" ${options.attributes ?? html``}>
+    <span class="resting">${options.resting}</span>
+    <span class="running"><span class="spinner"></span>${options.running}</span>
+  </button>`;
 }
 
 /** The panel alone, for a trigger that is not the standard "N unpublished" marker. */
@@ -589,8 +588,8 @@ export function renderProducts(options: {
             <p class="sub" style="margin:0;">
               Serving <code>${options.commit.slice(0, 8)}</code>${
                 totalPending > 0
-                  ? html` · ${totalPending} change(s) waiting to publish`
-                  : html` · nothing waiting to publish`
+                  ? html` · ${totalPending} unpublished change(s)`
+                  : html` · nothing unpublished`
               }
             </p>
           </div>
@@ -598,7 +597,11 @@ export function renderProducts(options: {
             // Absent when there is nothing waiting anywhere, like every other publish here: a
             // permanently greyed action invites clicking at it to find out why.
             totalPending > 0
-              ? html`<button type="submit" class="linkbtn go">Publish selected changes?</button>`
+              ? writeAction({
+                  className: 'linkbtn go',
+                  resting: html`Publish selected unpublished changes?`,
+                  running: 'Publishing…',
+                })
               : html``
           }
         </div>
@@ -633,6 +636,8 @@ export function renderProduct(options: {
   commit: string;
   /** Where this repository lives in a browser, for linking the commit being served. */
   repoWebUrl?: string | null;
+  /** True when the notice is a confirmation the page clears itself after a few seconds. */
+  transientNotice?: boolean;
   /** Keys the draft already holds, so the page can tell a fresh tick from a saved one. */
   drafted?: readonly string[];
   /** The document's revision counter, 0 for a file that has never carried one. */
@@ -703,16 +708,27 @@ export function renderProduct(options: {
                     html`<input type="hidden" name="namespace" value="${options.service}/${env.name}">`,
                 )}
                 <input type="hidden" name="message" value="Publish all ${options.service} changes">
-                <button type="submit" class="linkbtn go">
-                  Publish all ${options.service} (${productPending})?
-                </button>
+                ${writeAction({
+                  className: 'linkbtn go',
+                  resting: html`Publish all ${productPending} unpublished change${
+                    productPending === 1 ? '' : 's'
+                  } in ${options.service}?`,
+                  running: 'Publishing…',
+                })}
               </form>`
         }
       </div>
 
       <div class="tabs">${tabs}</div>
       ${promoteOffer(options)}
-      ${options.notice ? html`<div class="card">${options.notice}</div>` : html``}
+      ${
+        // Marked transient only when it is a confirmation. A notice reporting something still to
+        // act on — a failed write, a commit that never reached the remote — must not be erased
+        // on a timer: the page would quietly delete the only report of it.
+        options.notice
+          ? html`<div class="card" ${options.transientNotice ? raw('data-transient') : html``}>${options.notice}</div>`
+          : html``
+      }
       ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
 
       <!-- One form, opened here so the actions can sit under the tabs while the ticks and
@@ -743,16 +759,25 @@ export function renderProduct(options: {
                    as ticks move, because before a draft is saved the server has never seen the
                    edits the panel is describing. -->
               <span class="pending sel" tabindex="0">
-                <span class="count" data-label="{n} unpublished change{s}."
-                  >${ticked} unpublished change${ticked === 1 ? '' : 's'}.</span>
-                ${detailPanel('Selected', activeEnv?.pending ?? [])}
+                <!-- Two states, two words. Edited here and not yet saved is UNSAVED; written
+                     into the draft and not yet committed is UNPUBLISHED. They differ in where
+                     they live and in which action leaves them, so one word would be wrong in
+                     one of them. -->
+                <span class="count" data-label="{n} ${hasDraft ? 'unpublished' : 'unsaved'} change{s}."
+                  >${ticked} ${hasDraft ? 'unpublished' : 'unsaved'} change${ticked === 1 ? '' : 's'}.</span>
+                ${detailPanel(hasDraft ? 'Unpublished changes' : 'Unsaved changes', activeEnv?.pending ?? [])}
               </span>
               <!-- Hidden rather than absent: the script shows it again the moment something on
                    the page is not in the draft, without a round trip to find that out. -->
               <span data-draft-action ${nothingToDraft ? 'hidden' : ''}>
-                <button type="submit" name="intent" value="save" class="linkbtn"
-                        data-needs-ticks data-label="Draft {n} change{s}?"
-                        ${ticked === 0 ? 'disabled' : ''}>Draft ${ticked} change${ticked === 1 ? '' : 's'}?</button>
+                ${writeAction({
+                  attributes: html`name="intent" value="save" data-needs-ticks ${
+                    ticked === 0 ? raw('disabled') : html``
+                  }`,
+                  resting: html`<span data-label="Save {n} change{s} as draft?"
+                    >Save ${ticked} change${ticked === 1 ? '' : 's'} as draft?</span>`,
+                  running: 'Saving the draft…',
+                })}
               </span>
               ${
                 // Publishing appears only once something is actually saved. Not disabled —
@@ -760,9 +785,16 @@ export function renderProduct(options: {
                 // greyed action invites clicking at it to find out why.
                 hasDraft
                   ? html`<span class="sep" data-draft-action ${nothingToDraft ? 'hidden' : ''}>·</span>
-                      <button type="submit" name="intent" value="publish" class="linkbtn go"
-                              data-needs-ticks data-label="Publish {n} in ${options.active}?"
-                              ${ticked === 0 ? 'disabled' : ''}>Publish ${ticked} in ${options.active}?</button>`
+                      ${writeAction({
+                        className: 'linkbtn go',
+                        attributes: html`name="intent" value="publish" data-needs-ticks ${
+                          ticked === 0 ? raw('disabled') : html``
+                        }`,
+                        resting: html`<span
+                          data-label="Publish {n} unpublished change{s} in ${options.active}?"
+                          >Publish ${ticked} unpublished change${ticked === 1 ? '' : 's'} in ${options.active}?</span>`,
+                        running: 'Publishing…',
+                      })}`
                   : html``
               }
             </span>
@@ -840,7 +872,11 @@ function promoteOffer(options: {
       ${
         offer.movable.length === 0
           ? html``
-          : html`<button type="submit" class="linkbtn go">Stage ${offer.movable.length} in ${offer.nextEnvironment}?</button>`
+          : writeAction({
+              className: 'linkbtn go',
+              resting: html`Save ${offer.movable.length} as a draft in ${offer.nextEnvironment}?`,
+              running: 'Saving the draft…',
+            })
       }
       <a href="/p/${options.service}?env=${options.active}">Not now</a>
     </form>

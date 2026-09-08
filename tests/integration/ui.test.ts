@@ -589,7 +589,7 @@ describe('publishing ticked keys and promoting them', () => {
       expect(location).toContain('published=MFA_ENFORCEMENT');
 
       const page = await app3.inject({ method: 'GET', url: location });
-      expect(page.body).toMatch(/Stage \d+ in prod\?/);
+      expect(page.body).toMatch(/Save \d+ as a draft in prod\?/);
       expect(page.body).toContain('MFA_ENFORCEMENT');
       // The key that stayed staged was not published, so it is not on offer.
       expect(page.body).not.toContain('name="key" value="SESSION_TTL"');
@@ -1025,7 +1025,7 @@ describe('the tick and button behaviour the page depends on', () => {
       ]);
       const staged = await page();
 
-      expect(staged).toContain('data-label="Publish {n} in dev?"');
+      expect(staged).toContain('data-label="Publish {n} unpublished change{s} in dev?"');
       expect(staged).toContain('data-needs-ticks');
     });
 
@@ -1082,6 +1082,66 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(script).toContain('data-drafted');
     });
 
+    it('says the publish is done, and marks that notice as one to clear', async () => {
+      // A reachable remote, so the push actually happens: the confirmation is only self-clearing
+      // when there is nothing left to act on.
+      await repo5.addRemote();
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const done = await app5.inject({
+        method: 'POST',
+        url: '/p/iam/dev',
+        payload: new URLSearchParams([
+          ['key.MFA_ENFORCEMENT', 'all'],
+          ['select', 'MFA_ENFORCEMENT'],
+          ['intent', 'publish'],
+          ['message', 'ship it'],
+        ]).toString(),
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'hx-request': 'true' },
+      });
+
+      expect(done.body).toContain('Done publishing.');
+      // Rendered by the server, so it appears with the swap and appears without JavaScript too.
+      // Only its removal is script-driven, which is the half that is safe to lose.
+      expect(done.body).toMatch(/data-transient/);
+    });
+
+    it('does not mark a publish that never reached the remote as one to clear', async () => {
+      // The commit is durable and being served, but it is not backed up anywhere. A page that
+      // erases the only report of that after five seconds is worse than one that never said it.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'admins'],
+        ['intent', 'save'],
+      ]);
+      const done = await app5.inject({
+        method: 'POST',
+        url: '/p/iam/dev',
+        payload: new URLSearchParams([
+          ['key.MFA_ENFORCEMENT', 'admins'],
+          ['select', 'MFA_ENFORCEMENT'],
+          ['intent', 'publish'],
+          ['message', 'ship it'],
+        ]).toString(),
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'hx-request': 'true' },
+      });
+
+      // This repository has no remote at all, so the push cannot have happened.
+      expect(done.body).toMatch(/not yet pushed/);
+      const notice = done.body.match(
+        /<div class="card"[^>]*>[\s\S]*?not yet pushed[\s\S]*?<\/div>/,
+      );
+      expect(notice?.[0]).not.toContain('data-transient');
+    });
+
+    it('clears a transient notice after five seconds, and only a transient one', async () => {
+      const script = (await app5.inject({ method: 'GET', url: '/assets/ticks.js' })).body;
+
+      expect(script).toContain('data-transient');
+      expect(script).toContain('5000');
+    });
+
     it('drafts a ticked key whose value has not moved, rather than refusing', async () => {
       // Ticking a key is how you say "send this one along". Refusing to write that down —
       // "nothing changed, a tick on its own does not make a draft" — threw the intent away and
@@ -1127,7 +1187,7 @@ describe('the tick and button behaviour the page depends on', () => {
       });
 
       expect(swapped.statusCode).toBe(200);
-      expect(swapped.body).toMatch(/nothing changed/i);
+      expect(swapped.body).toMatch(/nothing to save/i);
       // And nothing was written down, so there is still nothing to publish.
       expect(swapped.body).not.toContain('value="publish"');
 
@@ -1141,10 +1201,35 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(plain.headers.location).toMatch(/notice=/);
     });
 
+    it('names a page-local edit unsaved and a drafted change unpublished', async () => {
+      const clean = await page();
+      expect(clean).toContain('data-label="{n} unsaved change{s}."');
+
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const drafted = await page();
+
+      expect(drafted).toContain('data-label="{n} unpublished change{s}."');
+      expect(drafted).not.toContain('data-label="{n} unsaved change{s}."');
+    });
+
+    it('says save for the draft action and publish for the publish action', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const body = await page();
+
+      expect(body).toContain('Save {n} change{s} as draft?');
+      expect(body).toContain('Publish {n} unpublished change{s} in dev?');
+    });
+
     it('states what is selected as a sentence the script can recount', async () => {
       const body = await page();
 
-      expect(body).toContain('data-label="{n} unpublished change{s}."');
+      expect(body).toContain('data-label="{n} unsaved change{s}."');
     });
 
     it('hides the selection while nothing is selected, showing where you are instead', async () => {
@@ -1212,18 +1297,6 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(line).toContain('serving');
     });
 
-    it('shows the drift key by key on hover, not just how many', async () => {
-      // The count is only useful if you can find out which keys it is talking about without
-      // opening the other tab and comparing by eye.
-      const line = idleLine(await page());
-
-      expect(line).toContain('data-detail');
-      expect(line).toContain('SESSION_TTL');
-      // dev holds 900 against prod's 3600.
-      expect(line).toContain('3600');
-      expect(line).toContain('900');
-    });
-
     it('links the commit it is serving to the commit on GitHub', async () => {
       const line = idleLine(await page());
 
@@ -1234,11 +1307,9 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(line).toContain('rel="noreferrer"');
     });
 
-    it('says how far dev has drifted from the environment it promotes into', async () => {
-      // The dev fixture has SESSION_TTL 900 against prod's 3600, and two keys prod has not got.
-      const line = idleLine(await page());
-
-      expect(line).toMatch(/differ from prod/);
+    it('says nothing about drift against the next environment', async () => {
+      // It was noise on a line whose job is to say where you are.
+      expect(idleLine(await page())).not.toMatch(/differ from/);
     });
 
     it('names the last publish, which is the entry above the one you are about to write', async () => {

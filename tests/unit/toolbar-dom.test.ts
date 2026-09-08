@@ -71,6 +71,27 @@ const drafted = (keys: string[]) =>
     ],
   });
 
+describe('the two kinds of change have two names', () => {
+  // Edited on the page and not yet saved is UNSAVED. Written into a draft and not yet committed
+  // is UNPUBLISHED. They differ in where they live, whether they survive a reload, and which
+  // action leaves them, so one word for both is wrong in one of the two states.
+  it('calls a page-local edit unsaved', () => {
+    const field = document.querySelector<HTMLInputElement>(
+      'input[data-key="MFA_ENFORCEMENT"]',
+    ) as HTMLInputElement;
+    field.value = 'all';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(count().textContent).toBe('1 unsaved change.');
+  });
+
+  it('calls a drafted change unpublished', () => {
+    load(drafted(['MFA_ENFORCEMENT']));
+
+    expect(count().textContent).toBe('1 unpublished change.');
+  });
+});
+
 describe('a page whose draft already holds everything ticked', () => {
   // Pressing Draft again would write the same document a second time and count a revision for
   // it, so the action is gone until something moves.
@@ -123,7 +144,7 @@ describe('a freshly loaded environment', () => {
     tick('MFA_ENFORCEMENT').checked = true;
     tick('MFA_ENFORCEMENT').dispatchEvent(new Event('change', { bubbles: true }));
 
-    expect(count().textContent).toBe('1 unpublished change.');
+    expect(count().textContent).toBe('1 unsaved change.');
     expect(selection().hidden).toBe(false);
     expect(idle().hidden).toBe(true);
     expect(save()?.disabled).toBe(false);
@@ -137,7 +158,7 @@ describe('a freshly loaded environment', () => {
     field.dispatchEvent(new Event('input', { bubbles: true }));
 
     expect(tick('MFA_ENFORCEMENT').checked).toBe(true);
-    expect(count().textContent).toBe('1 unpublished change.');
+    expect(count().textContent).toBe('1 unsaved change.');
   });
 
   it('still selects after an htmx swap, which replaces the form the script found', () => {
@@ -149,7 +170,7 @@ describe('a freshly loaded environment', () => {
     tick('MFA_ENFORCEMENT').checked = true;
     tick('MFA_ENFORCEMENT').dispatchEvent(new Event('change', { bubbles: true }));
 
-    expect(count().textContent).toBe('1 unpublished change.');
+    expect(count().textContent).toBe('1 unsaved change.');
     expect(selection().hidden).toBe(false);
   });
 
