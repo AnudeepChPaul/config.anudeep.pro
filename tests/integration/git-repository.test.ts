@@ -1,4 +1,5 @@
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { GitRepository } from '@config/src/git/repository.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TestRepo } from '../helpers.js';
@@ -321,5 +322,80 @@ describe('GitRepository.lastChange', () => {
     await repo.commit({ 'config/iam/dev.yaml': 'A: 1\n' });
 
     expect(await new GitRepository(repo.dir).lastChange('config/iam/nope.yaml')).toBeNull();
+  });
+});
+
+/**
+ * A commit that fails must leave nothing behind.
+ *
+ * writeAndCommit writes files and stages them before committing. When the commit failed — a
+ * hook, a missing identity, an index.lock, a full disk — the files stayed staged, and the NEXT
+ * publish of a different namespace swept them into its commit, under its message, its trailers
+ * and its actor. The audit trail is the record here; a commit that says the wrong thing about
+ * who changed what is worse than a commit that did not happen.
+ */
+describe('a failed commit', () => {
+  /** A pre-commit hook that refuses, which is the cheapest way to make git fail for real. */
+  const refuseCommits = async (repo: TestRepo) => {
+    const hook = join(repo.dir, '.git', 'hooks', 'pre-commit');
+    await writeFile(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  };
+
+  const allowCommits = async (repo: TestRepo) => {
+    await rm(join(repo.dir, '.git', 'hooks', 'pre-commit'), { force: true });
+  };
+
+  it('does not leak its files into the next commit', async () => {
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+    await refuseCommits(repo);
+
+    await expect(
+      git.writeAndCommit({ 'config/iam/prod.yaml': 'MFA: all\n' }, 'refused'),
+    ).rejects.toThrow();
+
+    await allowCommits(repo);
+    await git.writeAndCommit({ 'config/api/prod.yaml': 'RATE: 1\n' }, 'the next publish');
+
+    const changed = await repo.git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD');
+    expect(changed.split('\n').filter(Boolean)).toEqual(['config/api/prod.yaml']);
+  });
+
+  it('leaves the tree as it found it', async () => {
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+    await refuseCommits(repo);
+
+    await expect(
+      git.writeAndCommit({ 'config/iam/prod.yaml': 'MFA: all\n' }, 'refused'),
+    ).rejects.toThrow();
+
+    // Nothing staged, nothing modified, no stray file: the clone is exactly where it was.
+    expect(await repo.git('status', '--porcelain')).toBe('');
+  });
+
+  it('commits only what it wrote, whatever else is staged', async () => {
+    // The second half of the isolation, independent of the rollback: something else staged in
+    // this clone — by a crash, a hand-run git command, a future code path — cannot ride along
+    // on a publish and be recorded as part of it.
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+    await repo.write('config/other/prod.yaml', 'SOMEONE_ELSE: 1\n');
+    await repo.git('add', '--', 'config/other/prod.yaml');
+
+    await git.writeAndCommit({ 'config/iam/prod.yaml': 'MFA: all\n' }, 'mine only');
+
+    const changed = await repo.git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD');
+    expect(changed.split('\n').filter(Boolean)).toEqual(['config/iam/prod.yaml']);
+  });
+
+  it('still reports the failure rather than swallowing it', async () => {
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+    await refuseCommits(repo);
+
+    await expect(
+      git.writeAndCommit({ 'config/iam/prod.yaml': 'MFA: all\n' }, 'refused'),
+    ).rejects.toThrow(/commit/);
   });
 });

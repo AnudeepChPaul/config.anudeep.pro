@@ -339,24 +339,61 @@ export class GitRepository {
       }
     }
 
-    await this.git('add', '--', ...Object.keys(files));
+    const paths = Object.keys(files);
+    await this.git('add', '--', ...paths);
 
     // Saving a value identical to the current one is not an error, but it is not history
-    // either: an empty commit is something a reviewer has to read and rule out.
-    const staged = await this.git('diff', '--cached', '--name-only');
+    // either: an empty commit is something a reviewer has to read and rule out. Scoped to the
+    // paths this call wrote, so a leftover from an earlier failure does not make an unrelated
+    // commit look non-empty.
+    const staged = await this.git('diff', '--cached', '--name-only', '--', ...paths);
     if (!staged.trim()) return this.headCommit();
 
-    await this.commitStaged(message);
+    try {
+      await this.commitStaged(message, paths);
+    } catch (cause) {
+      // Leaving them staged is how a refused commit contaminated the next one: the following
+      // publish committed its own file and swept these along, under its message, its trailers
+      // and its actor. The audit trail is the record here, so a commit that says the wrong
+      // thing about who changed what is worse than no commit at all.
+      await this.discard(paths);
+      throw cause;
+    }
     return this.headCommit();
   }
 
-  private async commitStaged(message: string): Promise<void> {
+  /**
+   * Puts the named paths back to HEAD, in the index and in the working tree.
+   *
+   * Scoped to the paths, never the whole tree: this clone belongs to the service, but a
+   * `reset --hard` would still destroy anything else in flight, and there is no reason to
+   * touch what this call did not write.
+   */
+  private async discard(paths: readonly string[]): Promise<void> {
+    try {
+      await this.git('reset', '--quiet', 'HEAD', '--', ...paths);
+      // A path HEAD does not have cannot be checked out; removing it is what "back to HEAD"
+      // means for a file this call created.
+      for (const path of paths) {
+        const known = await this.git('ls-tree', '--name-only', 'HEAD', '--', path).catch(() => '');
+        if (known.trim()) await this.git('checkout', '--', path);
+        else await rm(join(this.dir, path), { force: true });
+      }
+    } catch {
+      // The commit failure is the interesting one and is about to be rethrown; a rollback that
+      // also fails must not replace it with a message about cleaning up.
+    }
+  }
+
+  private async commitStaged(message: string, paths: readonly string[]): Promise<void> {
     // `--file -` would need stdin, which Node's socketpair stdio makes unreliable; a temp file
     // in the repo's own .git directory avoids both that and the shell quoting that `-m` invites.
     const messageFile = join(this.dir, '.git', `COMMIT_EDITMSG_${process.pid}`);
     await writeFile(messageFile, message, 'utf8');
     try {
-      await this.git('commit', '--file', messageFile, '--cleanup=verbatim');
+      // The pathspec is the second half of the isolation: whatever else happens to be staged
+      // in this clone cannot ride along on this commit.
+      await this.git('commit', '--file', messageFile, '--cleanup=verbatim', '--', ...paths);
     } finally {
       await rm(messageFile, { force: true });
     }
