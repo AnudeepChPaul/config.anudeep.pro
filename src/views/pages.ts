@@ -48,7 +48,12 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   code { font-family: ui-monospace, monospace; font-size: .85em; }
   ul { list-style: none; padding: 0; margin: 0; }
   li + li { margin-top: .5rem; }
-  .rows { background: #fff; border: 1px solid #e2e5ea; border-radius: 8px; overflow: hidden; }
+  /* NOT overflow: hidden. That rounds the corners and also clips every hover panel a row
+     contains, cutting the detail off at the card's edge. The corners are rounded on the first
+     and last rows instead. */
+  .rows { background: #fff; border: 1px solid #e2e5ea; border-radius: 8px; }
+  .rows > *:first-child { border-top-left-radius: 8px; border-top-right-radius: 8px; }
+  .rows > *:last-child { border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }
   .row { display: flex; align-items: flex-start; gap: 14px; padding: 14px 18px; }
   .row + .row { border-top: 1px solid #eef0f3; }
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid #e2e5ea; margin-bottom: 1.5rem; }
@@ -77,12 +82,21 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   select { max-width: 20rem; }
   .chip-item { display: inline-flex; align-items: center; gap: 6px; font-size: .8125rem;
                padding: 2px 9px; border-radius: 4px; border: 1px solid #dbe1ea; background: #f6f7f9; }
+  /* The switch reflects the checkbox, not a class the server rendered: with no script on the
+     page, a server-rendered state cannot move when you click it — the box toggled and nothing
+     appeared to happen. These sibling rules are what make it respond. */
   .switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; font-size: .875rem; }
-  .track { width: 34px; height: 20px; border-radius: 10px; background: #cbd0d9; position: relative; flex-shrink: 0; }
-  .track.on { background: #16181d; }
-  .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
-  .track.on .knob { left: 16px; }
   .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .track { width: 34px; height: 20px; border-radius: 10px; background: #cbd0d9; position: relative;
+           flex-shrink: 0; transition: background .12s ease; }
+  .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+          background: #fff; transition: transform .12s ease; }
+  .switch input:checked ~ .track { background: #16181d; }
+  .switch input:checked ~ .track .knob { transform: translateX(14px); }
+  .switch input:focus-visible ~ .track { outline: 2px solid #1d4ed8; outline-offset: 2px; }
+  /* The word beside it is generated too, for the same reason. */
+  .switch .state::after { content: 'false'; }
+  .switch input:checked ~ .state::after { content: 'true'; }
   /* Hover peek on a key name — same mechanics as the pending detail, no script. */
   .peek { position: relative; display: inline-flex; cursor: help; border-bottom: 1px dotted #cbd0d9; }
   .peek .detail { top: 21px; }
@@ -191,8 +205,8 @@ function renderField(row: KeyRow): SafeHtml {
       ${explicitFalse}
       <label class="switch">
         <input type="checkbox" id="${name}" name="${name}" value="true"${on ? ' checked' : ''}>
-        <span class="track${on ? ' on' : ''}"><span class="knob"></span></span>
-        <span>${on ? 'true' : 'false'}</span>
+        <span class="track"><span class="knob"></span></span>
+        <span class="state"></span>
       </label>
       ${error}
     </div></div>`;
