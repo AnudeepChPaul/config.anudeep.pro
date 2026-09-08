@@ -16,6 +16,12 @@ export class ConfigLoadError extends Error {}
 export class ConfigLoader {
   constructor(private readonly decryptor: SopsDecryptor) {}
 
+  /** One namespace's document, decrypted and parsed — for reading back a staged draft. */
+  async resolveOne(namespace: Namespace, source: string): Promise<RawConfig> {
+    const path = `config/${namespace}.yaml`;
+    return parseConfig(path, await this.decryptor.decrypt(path, source));
+  }
+
   async resolve(sources: ConfigSources): Promise<ConfigTree> {
     const namespaces = new Map<Namespace, RawConfig>();
 
