@@ -18,6 +18,18 @@ grep -q '^CONFIG_SESSION_SECRET=' .env 2>/dev/null || {
 }
 # iam does not exist locally. Pointing the health check at a dead port makes it unreachable,
 # which is what opens the break-glass sign-in — the only way in without an identity provider.
+# Where publishes go. Both are left empty by default: a local registry that pushes nowhere is a
+# working registry, and pointing a sample repository at a real remote by default is not something
+# a dev script gets to decide. Fill these in .env to turn pushing on:
+#
+#   CONFIG_GIT_REMOTE=git@github.com:AnudeepChPaul/config.bare.anudeep.pro.git
+#   CONFIG_DEPLOY_KEY=$HOME/.ssh/config-deploy-key
+#
+# The key should be a deploy key on that one repository, not a personal key: it is write-scoped
+# and revocable on its own.
+grep -q '^CONFIG_GIT_REMOTE=' .env 2>/dev/null || printf 'CONFIG_GIT_REMOTE=\n' >> .env
+grep -q '^CONFIG_DEPLOY_KEY=' .env 2>/dev/null || printf 'CONFIG_DEPLOY_KEY=\n' >> .env
+
 grep -q '^CONFIG_IAM_HEALTH_URL=' .env 2>/dev/null || {
   printf 'CONFIG_IAM_HEALTH_URL=http://127.0.0.1:1/healthz\n' >> .env
 }

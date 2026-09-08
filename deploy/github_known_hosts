@@ -1,0 +1,13 @@
+# github.com's SSH host key, pinned.
+#
+# StrictHostKeyChecking stays on for pushes, so the container needs this to know what it is
+# talking to. Disabling the check is the usual shortcut and it removes the only thing standing
+# between a push and handing this repository's entire history to an impostor of github.com.
+#
+# Verify before trusting: the fingerprint below must equal the one GitHub publishes at
+# https://docs.github.com/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+#
+#   SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU  (ED25519)
+#
+# Check a copy with:  ssh-keygen -lf deploy/github_known_hosts
+github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl

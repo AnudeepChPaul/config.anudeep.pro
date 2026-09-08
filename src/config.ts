@@ -13,6 +13,10 @@ const required = (name: string): string => {
 export interface ServiceConfig {
   readonly environment: string;
   readonly repoDir: string;
+  /** Where published commits go. Null is a deliberately local registry with no off-host copy. */
+  readonly gitRemote: string | null;
+  /** The deploy key git pushes with. Null means whatever ssh the host provides — or none. */
+  readonly ssh: { readonly keyPath: string; readonly knownHostsPath?: string } | null;
   readonly socketPath: string;
   readonly snapshotPath: string;
   readonly draftsPath: string;
@@ -41,6 +45,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
   return {
     environment,
     repoDir: env.CONFIG_REPO_DIR ?? '/var/lib/config/repo',
+    // The repository is created locally, by the seed script or a first boot, and nothing in git
+    // carries a remote across that. Unset, every publish is durable and pushed nowhere.
+    gitRemote: env.CONFIG_GIT_REMOTE ?? null,
+    // All or nothing: a key without the rest is still a working ssh invocation, but a
+    // known_hosts without a key leaves git free to offer whatever key the box holds and
+    // authenticate as somebody else.
+    ssh: env.CONFIG_GIT_SSH_KEY
+      ? {
+          keyPath: env.CONFIG_GIT_SSH_KEY,
+          ...(env.CONFIG_GIT_KNOWN_HOSTS ? { knownHostsPath: env.CONFIG_GIT_KNOWN_HOSTS } : {}),
+        }
+      : null,
     socketPath: env.CONFIG_SOCKET_PATH ?? '/run/config/config.sock',
     snapshotPath: env.CONFIG_SNAPSHOT_PATH ?? '/var/lib/config/snapshot.json',
     draftsPath: env.CONFIG_DRAFTS_PATH ?? '/var/lib/config/drafts.json',

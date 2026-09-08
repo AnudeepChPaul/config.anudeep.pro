@@ -23,8 +23,20 @@ services:
       # How reachability is decided. Unset means "iam is up", which keeps break-glass shut;
       # point it at a dead port locally to exercise the emergency path.
       CONFIG_IAM_HEALTH_URL: ${CONFIG_IAM_HEALTH_URL:-}
+      # Where publishes are pushed. Unset, the registry is local-only: every publish commits and
+      # is served, and the console says so — "not yet pushed to GitHub" — rather than pretending.
+      CONFIG_GIT_REMOTE: ${CONFIG_GIT_REMOTE:-}
+      # A deploy key for that one repository, write-scoped and revocable in a click. Set
+      # CONFIG_DEPLOY_KEY to its path on the host; the mount below is what puts it in here.
+      CONFIG_GIT_SSH_KEY: ${CONFIG_GIT_REMOTE:+/run/secrets/deploy_key}
+      CONFIG_GIT_KNOWN_HOSTS: /app/deploy/github_known_hosts
     volumes:
       - ./src:/app/src:ro
+      - ./deploy:/app/deploy:ro
+      # Read-only, and the default is a path that does not exist — with no remote configured
+      # nothing reads it. Docker creates a directory for a missing source, which ssh rejects as
+      # a key file, so an unset CONFIG_DEPLOY_KEY fails at the push and not silently.
+      - ${CONFIG_DEPLOY_KEY:-./deploy/no-deploy-key}:/run/secrets/deploy_key:ro
       - ./tsconfig.json:/app/tsconfig.json:ro
       - config_repo:/var/lib/config
       - config_socket:/run/config

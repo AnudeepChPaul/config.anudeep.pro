@@ -98,6 +98,32 @@ export class GitRepository {
   }
 
   /**
+   * Points `origin` at `url`, adding it or moving it. Never throws.
+   *
+   * The repository is created locally — by the seed script, or by a first boot on a fresh host
+   * — and nothing in git carries the remote across that. Without this step push answers "no
+   * remote is configured" for the life of the deployment and every publish reports itself as
+   * not pushed, which is durable but is not backed up anywhere.
+   *
+   * A null url is a deliberately local registry and must stay one.
+   */
+  async ensureRemote(url: string | null): Promise<void> {
+    if (!url) return;
+
+    try {
+      const current = (await this.git('remote', 'get-url', 'origin').catch(() => '')).trim();
+      if (current === url) return;
+      // set-url on a remote that does not exist fails, and add on one that does; which applies
+      // depends on how this host was brought up, so both are tried.
+      if (current) await this.git('remote', 'set-url', 'origin', url);
+      else await this.git('remote', 'add', 'origin', url);
+    } catch {
+      // Boot must not depend on this. A push will report the real reason soon enough, on a
+      // page an operator is actually looking at.
+    }
+  }
+
+  /**
    * Publishes local commits. Never throws.
    *
    * A GitHub outage must not become a 500 on a save that already succeeded locally, so the
@@ -109,6 +135,43 @@ export class GitRepository {
       // Saying "pushed" here would be a lie the UI would render as published, on a repository
       // that has no off-host copy at all.
       return { pushed: false, reason: 'no remote is configured' };
+    }
+
+    try {
+      await this.git('push', remote, 'HEAD:main');
+      return { pushed: true };
+    } catch (cause) {
+      return this.rebaseAndPush(remote, cause as Error);
+    }
+  }
+
+  /**
+   * The second attempt, after a rejected push.
+   *
+   * Two hosts editing one registry both commit locally, and whoever pushes second is rejected
+   * as non-fast-forward. Rebasing keeps both sets of commits. Forcing would keep only ours,
+   * which on a configuration registry means deleting a change somebody else has already
+   * published and is being served.
+   *
+   * Anything that fails here — the remote is down rather than ahead, or the rebase conflicts —
+   * leaves the local commit exactly where it was and reports why.
+   */
+  private async rebaseAndPush(remote: string, first: Error): Promise<PushResult> {
+    try {
+      await this.git('fetch', remote, 'main');
+    } catch {
+      // Not a divergence: the remote is unreachable. Report the original push failure, which
+      // says so more precisely than a fetch error would.
+      return { pushed: false, reason: first.message };
+    }
+
+    try {
+      await this.git('rebase', 'FETCH_HEAD');
+    } catch (cause) {
+      // A half-finished rebase leaves a detached HEAD and a dirty tree, and the next read is
+      // served from HEAD. Abandoning it puts the branch back exactly as it was.
+      await this.git('rebase', '--abort').catch(() => {});
+      return { pushed: false, reason: `remote has diverged: ${(cause as Error).message}` };
     }
 
     try {

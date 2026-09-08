@@ -33,7 +33,11 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const log = pino({ level: config.logLevel });
 
-  const repository = new GitRepository(config.repoDir);
+  const repository = new GitRepository(config.repoDir, config.ssh ?? undefined);
+  // Before anything is served, and never fatal: a registry that cannot reach its remote still
+  // serves what it has, and the push failure shows up where an operator will see it.
+  await repository.ensureRemote(config.gitRemote);
+  if (config.gitRemote) log.info({ remote: config.gitRemote }, 'publishing to remote');
   const decryptor = new SopsDecryptor(config.ageKey);
   const loader = new ConfigLoader(decryptor);
   const cache = new ConfigCache();

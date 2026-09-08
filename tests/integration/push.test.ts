@@ -26,7 +26,100 @@ afterEach(async () => {
   await Promise.all(repos.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+describe('GitRepository.ensureRemote', () => {
+  // Without this the seeded repository has no remote at all, push returns "no remote is
+  // configured", and every publish reports "not yet pushed to GitHub" forever — which is
+  // exactly how the running console behaved.
+  it('adds the remote when the repository has none', async () => {
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+
+    await git.ensureRemote('git@github.com:AnudeepChPaul/config.bare.anudeep.pro.git');
+
+    expect(await repo.git('remote', 'get-url', 'origin')).toContain('config.bare.anudeep.pro');
+  });
+
+  it('moves an existing remote that points somewhere else', async () => {
+    const repo = await newRepo();
+    repos.push(await repo.addRemote());
+    const git = new GitRepository(repo.dir);
+
+    await git.ensureRemote('git@github.com:AnudeepChPaul/other.git');
+
+    expect(await repo.git('remote', 'get-url', 'origin')).toContain('other.git');
+  });
+
+  it('does nothing at all when no remote is configured, leaving a local repo local', async () => {
+    const repo = await newRepo();
+    const git = new GitRepository(repo.dir);
+
+    await git.ensureRemote(null);
+
+    expect((await repo.git('remote')).trim()).toBe('');
+  });
+
+  it('never throws: a bad remote must not stop the service booting', async () => {
+    const git = new GitRepository('/nowhere/at/all');
+
+    await expect(git.ensureRemote('git@github.com:x/y.git')).resolves.toBeUndefined();
+  });
+});
+
 describe('GitRepository.push', () => {
+  it('rebases onto the remote and pushes again when the remote has moved ahead', async () => {
+    // Two hosts editing the same registry: whoever pushes second is rejected as non-fast-
+    // forward. Rebasing keeps both sets of commits; a force push would delete the other one's.
+    const repo = await newRepo();
+    const remote = await repo.addRemote();
+    repos.push(remote);
+
+    // Someone else's commit, made through a second clone of the same remote.
+    const other = await newRepo();
+    await other.git('remote', 'add', 'origin', remote);
+    await other.git('fetch', 'origin');
+    await other.git('reset', '--hard', 'origin/main');
+    const theirs = (await other.commit({ 'config/iam/prod.yaml': 'THEIRS: 1\n' }, 'theirs')).trim();
+    await other.git('push', 'origin', 'HEAD:main');
+
+    const git = new GitRepository(repo.dir);
+    const mine = await git.writeAndCommit({ 'config/iam/dev.yaml': 'MINE: 1\n' }, 'mine');
+
+    const result = await git.push();
+
+    expect(result.pushed).toBe(true);
+    const head = await repo.git('ls-remote', remote, 'refs/heads/main');
+    // Both commits survive, and mine is on top — its sha changed, so it is found by subject.
+    expect(head).not.toContain(mine);
+    expect(await repo.git('log', '--format=%s', '-3')).toContain('theirs');
+    expect(await repo.git('log', '--format=%s', '-3')).toContain('mine');
+    expect(await repo.git('rev-list', '--count', `${theirs}..HEAD`)).toContain('1');
+  });
+
+  it('reports the rejection rather than forcing when the rebase cannot be done', async () => {
+    // A conflicting edit to the same key. Forcing here would discard the other host's commit.
+    const repo = await newRepo();
+    const remote = await repo.addRemote();
+    repos.push(remote);
+
+    const other = await newRepo();
+    await other.git('remote', 'add', 'origin', remote);
+    await other.git('fetch', 'origin');
+    await other.git('reset', '--hard', 'origin/main');
+    await other.commit({ 'config/iam/dev.yaml': 'A: theirs\n' }, 'theirs');
+    await other.git('push', 'origin', 'HEAD:main');
+
+    const git = new GitRepository(repo.dir);
+    const mine = await git.writeAndCommit({ 'config/iam/dev.yaml': 'A: mine\n' }, 'mine');
+
+    const result = await git.push();
+
+    expect(result.pushed).toBe(false);
+    expect(result.reason).toBeTruthy();
+    // Still durable locally, and the tree is not left mid-rebase.
+    expect(await repo.git('rev-parse', 'HEAD')).toContain(mine);
+    expect(await repo.git('status', '--porcelain')).toBe('');
+  });
+
   it('publishes local commits to the remote', async () => {
     const repo = await newRepo();
     const remote = await repo.addRemote();
