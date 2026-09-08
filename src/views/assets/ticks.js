@@ -61,11 +61,20 @@
 
     // The count belongs wherever it is stated — the running sentence and the actions both — so
     // the number you are about to act on is the number you are looking at.
+    const total = form.querySelectorAll('input[name="select"]').length;
     for (const el of form.querySelectorAll('[data-label]')) {
-      const zero = el.getAttribute('data-zero');
-      const label = ticked === 0 && zero !== null ? zero : el.getAttribute('data-label');
-      el.textContent = label.replace('{n}', String(ticked)).replace('{s}', ticked === 1 ? '' : 's');
+      el.textContent = el
+        .getAttribute('data-label')
+        .replace('{n}', String(ticked))
+        .replace('{t}', String(total))
+        .replace('{s}', ticked === 1 ? '' : 's');
     }
+
+    // Nothing ticked and nothing written down: there is nothing to say and nothing to press,
+    // and an empty bar above the fields is a control that never does anything. A saved draft
+    // keeps it, because a draft is publishable whatever the ticks say.
+    const actions = form.querySelector('[data-actions]');
+    if (actions) actions.hidden = ticked === 0 && actions.getAttribute('data-has-draft') === null;
   };
 
   /**

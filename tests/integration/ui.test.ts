@@ -1007,6 +1007,7 @@ describe('the tick and button behaviour the page depends on', () => {
       const staged = await page();
 
       expect(staged).toContain('data-label="Publish {n} in dev?"');
+      expect(staged).toContain('data-label="Draft {n} change{s}?"');
       expect(staged).toContain('data-needs-ticks');
     });
 
@@ -1050,8 +1051,33 @@ describe('the tick and button behaviour the page depends on', () => {
     it('states what is selected as a sentence the script can recount', async () => {
       const body = await page();
 
-      expect(body).toContain('data-label="{n} unpublished change{s} selected."');
-      expect(body).toContain('data-zero=');
+      expect(body).toContain('data-label="{n} of {t} unpublished changes."');
+    });
+
+    it('renders no toolbar at all when nothing is selected and nothing is drafted', async () => {
+      // Not an empty bar above the fields: with nothing ticked it has nothing to say and
+      // nothing to press.
+      expect(await page()).toContain('data-actions hidden');
+    });
+
+    it('holds the toolbar height whether or not the toolbar is there', async () => {
+      // Appearing on the first tick would otherwise push every field down the page, under a
+      // cursor that is aimed at one of them.
+      const body = await page();
+
+      expect(body).toContain('class="actionslot"');
+      expect(body).toMatch(/\.actionslot \{ min-height:/);
+    });
+
+    it('keeps the toolbar once a draft exists, which is publishable either way', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const body = await page();
+
+      expect(body).toContain('data-has-draft');
+      expect(body.match(/<div class="card actions"[^>]*>/)?.[0]).not.toContain('hidden');
     });
 
     it('renders the actions as links in the sentence, not as boxed buttons', async () => {

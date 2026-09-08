@@ -13,15 +13,17 @@ const source = readFileSync(join(process.cwd(), 'src/views/assets/ticks.js'), 'u
 
 const markup = `
   <form data-keys>
+    <div data-actions hidden>
     <input type="checkbox" name="select" value="A" data-select="A">
     <input type="text" name="key.A" value="one" data-key="A" data-original="one">
     <input type="checkbox" name="select" value="B" data-select="B">
     <input type="checkbox" name="key.B" data-key="B" data-original="false">
     <span class="pending" tabindex="0">
-      <span data-label="{n} unpublished change{s} selected." data-zero="No changes selected.">No changes selected.</span>
+        <span data-label="{n} of {t} unpublished changes.">0 of 2 unpublished changes.</span>
       <span class="detail" data-detail><h3>Selected</h3></span>
     </span>
     <button type="submit" name="intent" value="save" data-needs-ticks data-label="Save {n}" disabled>Save 0</button>
+    </div>
   </form>
 `;
 
@@ -32,6 +34,7 @@ const field = (key: string) =>
 const button = () => document.querySelector('button') as HTMLButtonElement;
 const sentence = () => document.querySelector('span[data-label]') as HTMLSpanElement;
 const detail = () => document.querySelector('[data-detail]') as HTMLElement;
+const actions = () => document.querySelector('[data-actions]') as HTMLElement;
 
 /** What a person doing it with a mouse does: the click both toggles and fires `change`. */
 const clickTick = (key: string) => {
@@ -129,19 +132,41 @@ describe('ticks you set by hand', () => {
 });
 
 describe('the running sentence', () => {
-  it('names nothing while nothing is ticked', () => {
-    expect(sentence().textContent).toBe('No changes selected.');
-  });
-
-  it('counts, and says "change" of one', () => {
+  it('counts the ticked against every key on the tab', () => {
     type('A', 'two');
-    expect(sentence().textContent).toBe('1 unpublished change selected.');
+    expect(sentence().textContent).toBe('1 of 2 unpublished changes.');
   });
 
-  it('says "changes" of more than one', () => {
+  it('recounts as more are ticked', () => {
     type('A', 'two');
     clickTick('B');
-    expect(sentence().textContent).toBe('2 unpublished changes selected.');
+    expect(sentence().textContent).toBe('2 of 2 unpublished changes.');
+  });
+});
+
+describe('the toolbar itself', () => {
+  // With nothing selected there is nothing to say and nothing to press, and an empty card
+  // above the fields is just a bar that never does anything.
+  it('is not shown at all while nothing is ticked', () => {
+    expect(actions().hidden).toBe(true);
+  });
+
+  it('appears the moment something is', () => {
+    type('A', 'two');
+    expect(actions().hidden).toBe(false);
+  });
+
+  it('goes away again when the last tick does', () => {
+    type('A', 'two');
+    type('A', 'one');
+    expect(actions().hidden).toBe(true);
+  });
+
+  it('stays put when a draft exists, which is publishable with nothing ticked', () => {
+    document.body.innerHTML = markup.replace('data-actions hidden', 'data-actions data-has-draft');
+    new Function(source)();
+
+    expect(actions().hidden).toBe(false);
   });
 });
 

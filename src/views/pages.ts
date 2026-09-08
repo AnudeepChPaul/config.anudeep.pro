@@ -89,15 +89,22 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .ghost { background: #fff; color: #16181d; border: 1px solid #cbd0d9; }
   /* The two actions belong to the sentence that states what is selected, so they are set as
      part of it rather than as a boxed control bar sitting above the fields. */
-  .linkbtn { background: none; border: 0; padding: 0; font: inherit; font-weight: 600;
-             color: #1d4ed8; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+  .linkbtn { background: none; border: 0; padding: 0; font: inherit; color: #1d4ed8;
+             text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
   .linkbtn:hover:not(:disabled) { color: #1e3fa8; }
   .linkbtn:disabled { color: #9aa0ad; text-decoration: none; cursor: not-allowed; }
   /* Publishing is the consequential one, and carries the same amber as everything else that
      means "unpublished" on these pages. */
   .linkbtn.go { color: #b45309; }
   .linkbtn.go:hover:not(:disabled) { color: #8a4108; }
-  .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: .875rem; }
+  /* Quieter than the fields it sits above: it states what you have selected, it is not the
+     thing you came to the page to read. */
+  .actions, .actionline { font-size: .8125rem; }
+  /* One line of .8125rem text, the card's padding and its bottom margin. */
+  .actionslot { min-height: 3.35rem; }
+  .actionslot .card { margin-bottom: 0; }
+  .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .actionline .count { color: #b45309; }
   .actionline .sep { color: #cbd0d9; }
   /* The selection count is a hover trigger like the others, but it is ordinary running text
      rather than an amber "unpublished" marker — it states what you are about to do, not a
@@ -576,23 +583,25 @@ export function renderProduct(options: {
       <form method="post" action="/p/${options.service}/${options.active}"
             hx-post="/p/${options.service}/${options.active}" hx-target="#page" hx-swap="innerHTML"
             data-keys>
-        <div class="card" style="padding:.85rem 1.25rem;">
+        <!-- The slot holds the toolbar's height whether or not the toolbar is in it. Showing
+             it on the first tick would otherwise push every field down the page, under a
+             cursor that is aimed at one of them. -->
+        <div class="actionslot">
+        <div class="card actions" style="padding:.7rem 1.25rem;" data-actions${
+          hasDraft ? html` data-has-draft` : html``
+        }${ticked === 0 && !hasDraft ? html` hidden` : html``}>
           <div class="actionline">
             <!-- The count says how many; hovering it says which. The script rebuilds the panel
                  as ticks move, because before a draft is saved the server has never seen the
                  edits the panel is describing. -->
             <span class="pending sel" tabindex="0">
-              <span data-label="{n} unpublished change{s} selected."
-                    data-zero="No changes selected.">${
-                      ticked === 0
-                        ? html`No changes selected.`
-                        : html`${ticked} unpublished change${ticked === 1 ? '' : 's'} selected.`
-                    }</span>
+              <span class="count" data-label="{n} of {t} unpublished changes."
+                >${ticked} of ${options.rows.length} unpublished changes.</span>
               ${detailPanel('Selected', activeEnv?.pending ?? [])}
             </span>
             <button type="submit" name="intent" value="save" class="linkbtn"
-                    data-needs-ticks data-label="Save {n} as draft?"
-                    ${ticked === 0 ? 'disabled' : ''}>Save ${ticked} as draft?</button>
+                    data-needs-ticks data-label="Draft {n} change{s}?"
+                    ${ticked === 0 ? 'disabled' : ''}>Draft ${ticked} change${ticked === 1 ? '' : 's'}?</button>
             ${
               // Publishing appears only once something is actually saved. Not disabled —
               // absent: you cannot publish what has not been written down, and a permanently
@@ -609,7 +618,7 @@ export function renderProduct(options: {
             // The message comes with the publish action, and takes focus when it arrives: it is
             // the only thing left to supply, and it is required.
             hasDraft
-              ? html`<div class="field" style="margin:.85rem 0 0;">
+              ? html`<div class="field" style="margin:.7rem 0 0;">
                   <label for="message">Publish message
                     <span class="hint">becomes the commit subject; the ticks choose what goes</span>
                   </label>
@@ -617,6 +626,7 @@ export function renderProduct(options: {
                 </div>`
               : html``
           }
+        </div>
         </div>
 
         <div class="card" style="padding:.5rem 1.25rem 1rem;">${fields}</div>
