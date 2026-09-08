@@ -30,6 +30,10 @@ services:
       # CONFIG_DEPLOY_KEY to its path on the host; the mount below is what puts it in here.
       CONFIG_GIT_SSH_KEY: ${CONFIG_GIT_REMOTE:+/run/secrets/deploy_key}
       CONFIG_GIT_KNOWN_HOSTS: /app/deploy/github_known_hosts
+      # Where the repository lives in a browser, for linking the commit being served. Derived
+      # from the remote when one is set; settable alone, since linking is a read and needs
+      # neither a key nor a push.
+      CONFIG_REPO_WEB_URL: ${CONFIG_REPO_WEB_URL:-}
     volumes:
       - ./src:/app/src:ro
       - ./deploy:/app/deploy:ro

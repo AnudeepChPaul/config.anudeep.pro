@@ -91,7 +91,10 @@
    * assembling this as markup would let a value close a tag.
    */
   const refreshDetail = () => {
-    const panel = form.querySelector('[data-detail]');
+    // Scoped to the selection: the idle line carries a panel of its own — what differs from
+    // the next environment — and it renders first, so "the first panel in the form" wrote the
+    // selection into that one and left this one showing the drift.
+    const panel = form.querySelector('[data-selection] [data-detail]');
     if (!panel) return;
 
     const heading = panel.querySelector('h3');

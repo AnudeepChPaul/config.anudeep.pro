@@ -32,6 +32,28 @@ describe('the git remote', () => {
     });
   });
 
+  it('takes the browser address from the remote, so a link needs no second setting', () => {
+    const config = loadConfig({
+      CONFIG_GIT_REMOTE: 'git@github.com:AnudeepChPaul/config.bare.anudeep.pro.git',
+    });
+
+    expect(config.repoWebUrl).toBe('https://github.com/AnudeepChPaul/config.bare.anudeep.pro');
+  });
+
+  it('can be told the browser address on its own, for a registry that pushes nowhere yet', () => {
+    // Linking the commit is a read; it does not need a deploy key or a configured push.
+    const config = loadConfig({
+      CONFIG_REPO_WEB_URL: 'https://github.com/AnudeepChPaul/config.bare.anudeep.pro',
+    });
+
+    expect(config.gitRemote).toBeNull();
+    expect(config.repoWebUrl).toBe('https://github.com/AnudeepChPaul/config.bare.anudeep.pro');
+  });
+
+  it('is null when neither is set, and the console renders the sha as plain text', () => {
+    expect(loadConfig({}).repoWebUrl).toBeNull();
+  });
+
   it('has no ssh options at all without a key, rather than half of them', () => {
     // Half-configured ssh is worse than none: git would fall back to whatever key the box
     // happens to hold and authenticate as somebody else.

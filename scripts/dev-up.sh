@@ -29,6 +29,9 @@ grep -q '^CONFIG_SESSION_SECRET=' .env 2>/dev/null || {
 # and revocable on its own.
 grep -q '^CONFIG_GIT_REMOTE=' .env 2>/dev/null || printf 'CONFIG_GIT_REMOTE=\n' >> .env
 grep -q '^CONFIG_DEPLOY_KEY=' .env 2>/dev/null || printf 'CONFIG_DEPLOY_KEY=\n' >> .env
+# Linking the served commit needs only this, not a key or a configured push.
+grep -q '^CONFIG_REPO_WEB_URL=' .env 2>/dev/null || \
+  printf 'CONFIG_REPO_WEB_URL=https://github.com/AnudeepChPaul/config.bare.anudeep.pro\n' >> .env
 
 grep -q '^CONFIG_IAM_HEALTH_URL=' .env 2>/dev/null || {
   printf 'CONFIG_IAM_HEALTH_URL=http://127.0.0.1:1/healthz\n' >> .env

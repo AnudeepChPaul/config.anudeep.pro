@@ -14,8 +14,11 @@ const source = readFileSync(join(process.cwd(), 'src/views/assets/ticks.js'), 'u
 const markup = `
   <form data-keys>
     <div data-actions>
-      <span class="idle">12 variables in dev</span>
+      <span class="idle">12 variables in dev
+        <span class="detail" data-detail><h3>Differs from prod</h3><div>UNTOUCHED</div></span>
+      </span>
       <span class="selection" data-selection hidden>
+        <span class="detail" data-detail><h3>Selected</h3></span>
     <input type="checkbox" name="select" value="A" data-select="A">
     <input type="text" name="key.A" value="one" data-key="A" data-original="one">
     <input type="checkbox" name="select" value="B" data-select="B">
@@ -36,7 +39,8 @@ const field = (key: string) =>
   document.querySelector<HTMLInputElement>(`input[data-key="${key}"]`) as HTMLInputElement;
 const button = () => document.querySelector('button') as HTMLButtonElement;
 const sentence = () => document.querySelector('span[data-label]') as HTMLSpanElement;
-const detail = () => document.querySelector('[data-detail]') as HTMLElement;
+const detail = () => document.querySelector('[data-selection] [data-detail]') as HTMLElement;
+const driftDetail = () => document.querySelector('.idle [data-detail]') as HTMLElement;
 const selection = () => document.querySelector('[data-selection]') as HTMLElement;
 const idle = () => document.querySelector('.idle') as HTMLElement;
 
@@ -181,6 +185,17 @@ describe('the toolbar itself', () => {
 });
 
 describe('the hover panel on the sentence', () => {
+  // The idle line carries a panel of its own — what differs from the next environment — and it
+  // renders first. Rewriting "the first panel in the form" put the selection into it and left
+  // the selection's own panel showing the drift.
+  it("writes into the selection's panel, not the first one on the page", () => {
+    type('A', 'two');
+
+    expect(driftDetail().textContent).toContain('UNTOUCHED');
+    expect(driftDetail().textContent).not.toContain('two');
+    expect(detail().textContent).toContain('two');
+  });
+
   // The count says how many; this says which. Before a draft is saved the server has never seen
   // these edits, so the panel is built from the page itself.
   it('names each ticked key, with what it was and what it now is', () => {

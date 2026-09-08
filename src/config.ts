@@ -1,3 +1,5 @@
+import { webUrlFor } from './git/repository.js';
+
 /**
  * Configuration for the config service itself, which by principle 4 comes from the environment.
  *
@@ -15,6 +17,12 @@ export interface ServiceConfig {
   readonly repoDir: string;
   /** Where published commits go. Null is a deliberately local registry with no off-host copy. */
   readonly gitRemote: string | null;
+  /**
+   * Where this repository lives in a browser, for linking the commit being served. Derived from
+   * the remote when there is one; settable on its own, because linking a commit is a read and
+   * needs neither a deploy key nor a configured push.
+   */
+  readonly repoWebUrl: string | null;
   /** The deploy key git pushes with. Null means whatever ssh the host provides — or none. */
   readonly ssh: { readonly keyPath: string; readonly knownHostsPath?: string } | null;
   readonly socketPath: string;
@@ -48,6 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     // The repository is created locally, by the seed script or a first boot, and nothing in git
     // carries a remote across that. Unset, every publish is durable and pushed nowhere.
     gitRemote: env.CONFIG_GIT_REMOTE ?? null,
+    repoWebUrl: env.CONFIG_REPO_WEB_URL ?? webUrlFor(env.CONFIG_GIT_REMOTE ?? null),
     // All or nothing: a key without the rest is still a working ssh invocation, but a
     // known_hosts without a key leaves git free to offer whatever key the box holds and
     // authenticate as somebody else.
