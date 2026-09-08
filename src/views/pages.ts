@@ -52,8 +52,17 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
     --muted: #6b6760;         /* facts, hints, anything secondary */
     --line: #e7e3db;          /* borders */
     --hair: #f1ede6;          /* rules between rows */
-    --accent: #0f766e;        /* anything you can click */
-    --unpublished: #a16207;   /* drafts, pending markers, the publish action */
+    /* Anything you can press or follow, inline: links, link-styled actions, the marker showing
+       where a search landed. Two things deliberately do NOT take it, and this is the place that
+       says so rather than leaving the next reader to "fix" them:
+         - a solid button carries its affordance in its shape, so it stays ink;
+         - tabs show position, not pressability, so the current one is ink and the rest muted.
+       Nothing else may borrow it, and no ACTION may take a state colour instead. */
+    --accent: #0f766e;
+    /* A state, never an action: the count, the tab's dot, the waiting chip, a tick that cannot
+       be cleared. The publish action used to take this, which made an action and the fact beside
+       it the same colour while Save — equally an action — was another. */
+    --unpublished: #a16207;
     --unpublished-fill: #fdf8ec;
     --unpublished-line: #e8d9b0;
     --danger: #a52a2a;        /* what cannot be undone: dropping a draft, a missing schema */
@@ -148,8 +157,11 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
              text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
   .linkbtn:hover:not(:disabled) { color: var(--ink); }
   .linkbtn:disabled { color: var(--muted); text-decoration: none; cursor: not-allowed; }
-  .linkbtn.go { color: var(--unpublished); }
-  .linkbtn.go:hover:not(:disabled) { color: var(--ink); }
+  /* The consequential action — publishing, promoting — is heavier, not a different colour.
+     Colour says what a thing IS: --accent is anything you can press, --unpublished is a state.
+     Painting this one in the state colour made the publish action and the count it sits beside
+     look like the same kind of thing, while Save, equally an action, looked like another. */
+  .linkbtn.go { font-weight: 600; }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
      .selection, for instance — beats it and leaves a hidden element on screen. Everything the
@@ -232,8 +244,9 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
      draft either way. It must not look like an ordinary box that failed to respond. */
   .keypick input.locked { accent-color: var(--unpublished); cursor: not-allowed; }
   .keypick input:disabled { accent-color: var(--line); cursor: not-allowed; opacity: .55; }
-  /* Where a search result landed: a rule in the margin rather than a scroll nobody asked for. */
-  .found { border-left: 3px solid var(--unpublished); margin-left: -1.15rem;
+  /* Where a search result landed: a rule in the margin rather than a scroll nobody asked for.
+     In the accent, because it marks where you are looking — it is not a state of the file. */
+  .found { border-left: 3px solid var(--accent); margin-left: -1.15rem;
            padding-left: calc(1.15rem - 3px); }
 
   /* The switch reflects the checkbox, not a class the server rendered: with no script on the

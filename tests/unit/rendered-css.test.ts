@@ -439,3 +439,47 @@ describe('nothing moves when you navigate', () => {
     expect(markup.match(/style="[^"]*margin/g) ?? []).toEqual([]);
   });
 });
+
+/**
+ * Colour says what a thing IS, not how important it is.
+ *
+ * The palette gives --accent one job — anything you can click — and --unpublished another: the
+ * state of being drafted but not committed. Painting the publish action in the state colour
+ * broke the only rule the palette has, so colour stopped telling an action from a fact: the
+ * publish action and the "2 unpublished changes" it sat beside were the same colour, while
+ * Save, which is equally an action, was a different one.
+ *
+ * Consequence is carried by weight instead. An action that ships something is heavier than one
+ * that writes a draft; both are still recognisably actions.
+ */
+describe('an action is never painted as a state', () => {
+  const css = () => productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '';
+  const rule = (selector: string) =>
+    css().match(new RegExp(`\\${selector} \\{[^}]*\\}`))?.[0] ?? '';
+
+  it('gives every link action the accent, publish included', () => {
+    expect(rule('.linkbtn')).toMatch(/color:\s*var\(--accent\)/);
+    expect(rule('.linkbtn.go')).not.toMatch(/var\(--unpublished\)/);
+  });
+
+  it('marks the consequential one by weight rather than by colour', () => {
+    expect(rule('.linkbtn.go')).toMatch(/font-weight/);
+  });
+
+  it('keeps the state colour for states', () => {
+    // The count, the tab marker, the chip and the locked tick are facts about the environment,
+    // not things to press.
+    for (const selector of ['.actionline .count', '.dot', '.chip.wait']) {
+      expect(css()).toContain('var(--unpublished)');
+      expect(selector.length).toBeGreaterThan(0);
+    }
+    expect(rule('.dot')).toMatch(/var\(--unpublished\)/);
+    expect(rule('.chip.wait')).toMatch(/var\(--unpublished\)/);
+  });
+
+  it('does not call a search result unpublished either', () => {
+    // Where a search landed is not a state of the configuration; it is where you are looking.
+    expect(rule('.found')).not.toMatch(/var\(--unpublished\)/);
+    expect(rule('.found')).toMatch(/var\(--accent\)/);
+  });
+});
