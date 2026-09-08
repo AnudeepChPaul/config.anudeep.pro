@@ -42,8 +42,15 @@ const count = () => document.querySelector('.count') as HTMLElement;
 const save = () => document.querySelector('button[value="save"]') as HTMLButtonElement | null;
 
 const load = (html: string) => {
-  document.body.innerHTML = html;
+  document.body.innerHTML = `<div id="page">${html}</div>`;
   new Function(source)();
+};
+
+/** What htmx does to this page: replaces #page's contents, in place, with a new render. */
+const swap = (html: string) => {
+  const page = document.querySelector('#page') as HTMLElement;
+  page.innerHTML = html;
+  page.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
 };
 
 beforeEach(() => load(render()));
@@ -68,6 +75,38 @@ describe('a freshly loaded environment', () => {
     field.dispatchEvent(new Event('input', { bubbles: true }));
 
     expect(tick('MFA_ENFORCEMENT').checked).toBe(true);
+    expect(count().textContent).toBe('1 unpublished change.');
+  });
+
+  it('still selects after an htmx swap, which replaces the form the script found', () => {
+    // Every tab is an hx-get and every save is an hx-post, so the form the script bound its
+    // listeners to is thrown away and replaced on the first navigation. Reported as "I loaded
+    // dev or prod, ticked a variable, and nothing was selected".
+    swap(render({ active: 'prod' }));
+
+    tick('MFA_ENFORCEMENT').checked = true;
+    tick('MFA_ENFORCEMENT').dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(count().textContent).toBe('1 unpublished change.');
+    expect(selection().hidden).toBe(false);
+  });
+
+  it('recounts the swapped-in page immediately, without waiting for a click', () => {
+    // A page swapped in with a draft already on it must show the draft's state, not the state
+    // the previous page was left in.
+    swap(
+      render({
+        rows: [{ ...rows[0], pending: true, publishedValue: 'optional', value: 'all' } as KeyRow],
+        environments: [
+          {
+            name: 'dev',
+            namespace: 'iam/dev',
+            pending: [{ key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false }],
+          },
+        ],
+      }),
+    );
+
     expect(count().textContent).toBe('1 unpublished change.');
   });
 

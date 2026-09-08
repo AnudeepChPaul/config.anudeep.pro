@@ -14,28 +14,36 @@
  * accepted and then silently lost. If you do not want the change, undo the change.
  */
 (() => {
-  const form = document.querySelector('form[data-keys]');
-  if (!form) return;
+  /**
+   * The form is looked up per event, never held.
+   *
+   * htmx replaces the contents of #page on every tab click and every save, so a form captured
+   * once is detached on the first navigation — along with any listener bound to it. The page
+   * then looks alive and does nothing: ticking a box changed no count and selected nothing.
+   * Listening on the document survives every swap, because the document is the one node htmx
+   * never replaces.
+   */
+  const currentForm = () => document.querySelector('form[data-keys]');
 
   /** Keys whose tick the person set themselves; the comparison leaves those alone. */
-  const claimed = new Set();
+  let claimed = new Set();
 
   const currentValue = (control) =>
     control.type === 'checkbox' ? String(control.checked) : String(control.value);
 
   const isDirty = (control) => currentValue(control) !== control.getAttribute('data-original');
 
-  const controlFor = (key) => form.querySelector(`[data-key="${CSS.escape(key)}"]`);
-  const tickFor = (key) => form.querySelector(`input[data-select="${CSS.escape(key)}"]`);
+  const controlFor = (form, key) => form.querySelector(`[data-key="${CSS.escape(key)}"]`);
+  const tickFor = (form, key) => form.querySelector(`input[data-select="${CSS.escape(key)}"]`);
 
   const LOCKED =
     'This value was changed, so it goes with the draft. Put the old value back to drop it.';
 
-  const syncTick = (control) => {
+  const syncTick = (form, control) => {
     const key = control.getAttribute('data-key');
     if (!key) return;
 
-    const tick = tickFor(key);
+    const tick = tickFor(form, key);
     if (!tick) return;
 
     const dirty = isDirty(control);
@@ -54,7 +62,7 @@
     if (!claimed.has(key)) tick.checked = false;
   };
 
-  const refreshButtons = () => {
+  const refreshButtons = (form) => {
     const ticked = form.querySelectorAll('input[name="select"]:checked').length;
 
     for (const el of form.querySelectorAll('button[data-needs-ticks]')) el.disabled = ticked === 0;
@@ -90,7 +98,7 @@
    * it is built from the page. Text nodes throughout: a config value is arbitrary text, and
    * assembling this as markup would let a value close a tag.
    */
-  const refreshDetail = () => {
+  const refreshDetail = (form) => {
     // Scoped to the selection: the idle line carries a panel of its own — what differs from
     // the next environment — and it renders first, so "the first panel in the form" wrote the
     // selection into that one and left this one showing the drift.
@@ -114,7 +122,7 @@
 
     for (const tick of form.querySelectorAll('input[name="select"]:checked')) {
       const key = tick.value;
-      const control = controlFor(key);
+      const control = controlFor(form, key);
       if (!control) continue;
 
       if (tick.getAttribute('data-secret') !== null) {
@@ -145,38 +153,55 @@
     }
   };
 
-  form.addEventListener('input', (event) => {
-    const control = event.target.closest('[data-key]');
-    if (!control) return;
-    syncTick(control);
-    refreshButtons();
-    refreshDetail();
+  const refresh = (form) => {
+    refreshButtons(form);
+    refreshDetail(form);
+  };
+
+  document.addEventListener('input', (event) => {
+    const form = event.target.closest?.('form[data-keys]');
+    const control = event.target.closest?.('[data-key]');
+    if (!form || !control) return;
+    syncTick(form, control);
+    refresh(form);
   });
 
-  form.addEventListener('change', (event) => {
+  document.addEventListener('change', (event) => {
+    const form = event.target.closest?.('form[data-keys]');
+    if (!form) return;
+
     const control = event.target.closest('[data-key]');
-    if (control) syncTick(control);
+    if (control) syncTick(form, control);
 
     if (event.target.name === 'select') {
-      const owner = controlFor(event.target.value);
+      const owner = controlFor(form, event.target.value);
       // Refusing the click rather than disabling the box: a disabled checkbox is not submitted,
       // which would drop the very key it is meant to hold.
       if (owner && isDirty(owner)) event.target.checked = true;
       else claimed.add(event.target.value);
     }
 
-    refreshButtons();
-    refreshDetail();
+    refresh(form);
   });
 
-  refreshButtons();
+  const initial = currentForm();
+  if (initial) refresh(initial);
 
   /**
-   * htmx replaces the page body, and a browser only honours `autofocus` when it parses a
-   * document — not when an element is swapped in. So the message field, which appears the
-   * moment a draft exists and is the only thing left to supply, is focused by hand.
+   * A swap brings a different page, or the same page rebuilt by the server.
+   *
+   * Its counts have to be recomputed rather than inherited — the state it was rendered with is
+   * the server's, and the ticks a person set by hand on the page that was just thrown away do
+   * not apply to the keys on this one.
+   *
+   * `autofocus` is honoured only when a browser parses a document, never when an element is
+   * swapped in, so the message field — which appears the moment a draft exists and is the only
+   * thing left to supply — is focused here by hand.
    */
-  document.body.addEventListener('htmx:afterSwap', () => {
+  document.addEventListener('htmx:afterSwap', () => {
+    claimed = new Set();
+    const form = currentForm();
+    if (form) refresh(form);
     document.querySelector('[autofocus]')?.focus();
   });
 })();
