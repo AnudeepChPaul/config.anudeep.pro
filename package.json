@@ -20,6 +20,7 @@
     "check": "biome check . && tsc --noEmit && vitest run"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
     "@fastify/formbody": "^9.0.0",
     "fastify": "5.12.3",
     "koffi": "^3.2.1",

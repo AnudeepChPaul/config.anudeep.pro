@@ -116,6 +116,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         return reRender(422, 'An audit message is required — it becomes the commit subject.');
       }
 
+      const session = request.session;
       const result = await writeService.save(
         {
           service,
@@ -124,7 +125,13 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           changes,
           message,
         },
-        { email: 'unauthenticated@localhost', id: 'anonymous' },
+        // An unauthenticated app has no session; prod refuses to run that way, and the
+        // placeholder makes it obvious in the trail when dev does.
+        {
+          email: session?.email ?? 'unauthenticated@localhost',
+          id: session?.id ?? 'anonymous',
+          via: session?.via,
+        },
         { id: request.id, sourceIp: request.ip },
       );
 

@@ -79,7 +79,9 @@ async function main(): Promise<void> {
       schemas: () => currentSchemas,
     }),
     environment: config.environment,
-    authenticated: config.authenticated,
+    // Slice 10 wires iam OIDC in here. Until CONFIG_SESSION_SECRET and a break-glass record
+    // exist, the app runs unguarded — which buildWebApp refuses to do in prod.
+    auth: undefined,
     logger: log,
   });
   await web.listen({ host: config.httpHost, port: config.httpPort });

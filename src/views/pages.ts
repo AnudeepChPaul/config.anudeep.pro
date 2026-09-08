@@ -147,3 +147,55 @@ function renderField(row: KeyRow): SafeHtml {
     ${error}
   </div>`;
 }
+
+/**
+ * The sign-in page.
+ *
+ * The break-glass form is rendered only while iam is unreachable. Showing it the rest of the
+ * time would invite people to spend one-time codes against a form that always refuses, and
+ * would advertise a second way in that is meant to be unremarkable.
+ */
+export function renderLogin(options: {
+  iamReachable: boolean;
+  iamLoginUrl: string;
+  error?: string;
+}): SafeHtml {
+  const breakGlass = options.iamReachable
+    ? html``
+    : html`<div class="card">
+        <div class="banner" style="border: 0; border-left: 3px solid #b45309; background: #fffbeb; margin: -1rem -1.25rem 1rem; padding: .75rem 1.25rem;">
+          <strong>Every attempt raises an alert.</strong>
+          <span class="hint">Successful or not — this credential cannot be revoked through iam.</span>
+        </div>
+        <form method="post" action="/login/break-glass">
+          <div class="field">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" autocomplete="off" required>
+          </div>
+          <div class="field">
+            <label for="code">Authenticator code <span class="hint">6 digits, single use</span></label>
+            <input type="text" id="code" name="code" inputmode="numeric" autocomplete="off" required>
+          </div>
+          <button type="submit">Sign in</button>
+        </form>
+      </div>`;
+
+  const primary = options.iamReachable
+    ? html`<div class="card">
+        <p class="sub" style="margin: 0 0 1rem;">Sign in with iam to continue.</p>
+        <a href="${options.iamLoginUrl}">Sign in with iam</a>
+      </div>`
+    : html`<div class="card">
+        <p class="sub" style="margin: 0;">iam is unreachable, so break-glass sign-in is available.</p>
+      </div>`;
+
+  return layout(
+    'Sign in',
+    html`
+      <h1>Sign in</h1>
+      <p class="sub">config.anudeep.pro</p>
+      ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
+      ${primary} ${breakGlass}
+    `,
+  );
+}

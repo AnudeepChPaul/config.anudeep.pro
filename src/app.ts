@@ -1,7 +1,9 @@
 import { stat, unlink } from 'node:fs/promises';
 import net from 'node:net';
+import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { type AuthOptions, registerAuthRoutes } from './routes/auth.js';
 import { type InternalRouteOptions, registerInternalRoutes } from './routes/internal.js';
 import { registerUiRoutes, type UiRouteOptions } from './routes/ui.js';
 
@@ -111,8 +113,13 @@ export async function buildReadApi(options: ReadApiOptions): Promise<ReadApi> {
 
 export interface WebAppOptions extends UiRouteOptions {
   readonly environment: string;
-  /** Whether an authentication layer is in front of these routes. */
-  readonly authenticated: boolean;
+  /**
+   * Sign-in and the guard. Absent means the editor runs open, which prod refuses.
+   *
+   * Its presence *is* the authentication, rather than a separate boolean saying so — a flag and
+   * a guard can disagree, and the way they disagree is that the flag says protected.
+   */
+  readonly auth?: AuthOptions;
   readonly logger?: FastifyInstance['log'];
 }
 
@@ -127,14 +134,17 @@ export class UnprotectedUiError extends Error {}
  * yet is not a state worth leaving reachable, and a warning in a log is not a control.
  */
 export async function buildWebApp(options: WebAppOptions): Promise<FastifyInstance> {
-  if (options.environment === 'prod' && !options.authenticated) {
+  if (options.environment === 'prod' && !options.auth) {
     throw new UnprotectedUiError(
       'refusing to serve the configuration UI in prod without authentication',
     );
   }
 
   const app = Fastify(options.logger ? { loggerInstance: options.logger } : { logger: false });
+  await app.register(cookie);
   await app.register(formbody);
+  // Before the UI routes, so its onRequest guard runs ahead of every handler they add.
+  if (options.auth) registerAuthRoutes(app, options.auth, options.environment);
   registerUiRoutes(app, options);
   await app.ready();
   return app;

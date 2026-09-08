@@ -1,5 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { buildWebApp } from '@config/src/app.js';
+import { BreakGlass } from '@config/src/auth/break-glass.js';
+import { SessionCodec } from '@config/src/auth/session.js';
 import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
@@ -40,6 +42,19 @@ withSops('the CRUD UI', () => {
   let app: Awaited<ReturnType<typeof buildWebApp>>;
 
   const start = async (options: { environment?: string; authenticated?: boolean } = {}) => {
+    // `auth` present IS authentication; these cases only care whether prod refuses to run
+    // without it, so a minimal stand-in is enough to say "something is in front".
+    const auth = options.authenticated
+      ? ({
+          codec: new SessionCodec('y'.repeat(64)),
+          breakGlass: new BreakGlass({
+            record: null,
+            isIamReachable: async () => true,
+            alert: () => {},
+          }),
+          isIamReachable: async () => true,
+        } as const)
+      : undefined;
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
     app = await buildWebApp({
       repository: git,
@@ -52,7 +67,7 @@ withSops('the CRUD UI', () => {
         schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
       }),
       environment: options.environment ?? 'dev',
-      authenticated: options.authenticated ?? false,
+      auth,
     });
     return app;
   };

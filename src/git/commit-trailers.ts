@@ -13,6 +13,14 @@ import { createHash } from 'node:crypto';
 export interface Actor {
   readonly email: string;
   readonly id: string;
+  /**
+   * Which credential signed this actor in.
+   *
+   * Recorded because a change made under break-glass was made while the identity provider was
+   * down and nobody could be checked against it. That belongs in the record, not only in the
+   * alert that fired at the time.
+   */
+  readonly via?: 'iam' | 'break-glass' | undefined;
 }
 
 export interface RequestContext {
@@ -55,6 +63,8 @@ export class CommitTrailerBuilder {
       `Service: ${change.service}`,
       `Environment: ${change.environment}`,
     ];
+
+    if (actor.via) trailers.splice(2, 0, `Signed-In-With: ${actor.via}`);
 
     for (const { key, oldValue, newValue } of change.keys) {
       trailers.push(
