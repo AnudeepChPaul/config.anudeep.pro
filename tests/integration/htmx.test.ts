@@ -194,4 +194,34 @@ withSops('htmx as progressive enhancement', () => {
       expect(response.headers['hx-push-url']).toBe('/p/iam?env=prod');
     });
   });
+
+  /**
+   * A swap must never bring the page frame with it.
+   *
+   * htmx replaces the CONTENTS of #page. A response that carries its own <main id="page"> puts one
+   * inside the other, so the frame's padding and max-width apply twice — the header moves inward
+   * and down, and again on the next navigation. Every route that htmx can reach has to answer
+   * with a fragment, and the only way to be sure is to ask each of them.
+   */
+  describe('every response a swap can receive', () => {
+    const reachable = ['/', '/p/iam', '/p/iam?env=prod', '/drafts'];
+
+    for (const url of reachable) {
+      it(`answers ${url} without the page frame`, async () => {
+        const swapped = await get(url, { 'hx-request': 'true' });
+
+        expect(swapped.statusCode).toBe(200);
+        expect(swapped.body).not.toContain('<!doctype html>');
+        expect(swapped.body).not.toContain('id="page"');
+        expect(swapped.body).not.toContain('<main');
+      });
+
+      it(`still answers ${url} with a whole document for a plain browser`, async () => {
+        const full = await get(url);
+
+        expect(full.body).toContain('<!doctype html>');
+        expect(full.body).toContain('id="page"');
+      });
+    }
+  });
 });

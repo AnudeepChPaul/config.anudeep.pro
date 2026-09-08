@@ -256,9 +256,16 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         };
       });
 
+      // htmx swaps the CONTENTS of #page, so a response that carries its own frame puts one
+      // <main id="page"> inside another and applies the frame's padding and width twice — the
+      // page moved inward and down on every navigation back to this list, and again on the next.
+      if (isHtmx(request))
+        reply.header('hx-push-url', query ? `/?q=${encodeURIComponent(query)}` : '/');
+
       return reply.type('text/html; charset=utf-8').send(
         String(
           renderProducts({
+            fragment: isHtmx(request),
             // A search shows only what matched; without one, everything declared.
             products: query
               ? products.filter((product) => (product.matched ?? []).length > 0)
