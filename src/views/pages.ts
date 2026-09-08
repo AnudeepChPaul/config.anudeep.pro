@@ -419,6 +419,8 @@ export interface PendingChange {
 }
 
 export interface EnvironmentSummary {
+  /** How many presses of Save are waiting here. One draft is one save, not one key. */
+  readonly drafts?: number;
   readonly name: string;
   readonly namespace: string;
   readonly pending: readonly PendingChange[];
@@ -678,6 +680,8 @@ export function renderProduct(options: {
   // Everything ticked is already in the draft, so there is nothing left to write down. Pressing
   // Draft again would rewrite the same document and count a revision for it.
   const drafted = options.drafted ?? [];
+  // One press of Save is one draft, so this is a count of saves and not of keys.
+  const drafts = activeEnv?.drafts ?? 0;
   const tickedKeys = options.rows.filter((row) => row.pending).map((row) => row.key);
   // Unticking a drafted key narrows what a publish would ship; it does not create something new
   // to write down. So the action is about what is ticked and NOT yet drafted.
@@ -780,37 +784,28 @@ export function renderProduct(options: {
                 })}
               </span>
               ${
-                // Publishing appears only once something is actually saved. Not disabled —
-                // absent: you cannot publish what has not been written down, and a permanently
-                // greyed action invites clicking at it to find out why.
+                // Publishing appears only once something is actually saved, and withdraws again
+                // the moment the page holds something the draft does not: two states competing
+                // for one toolbar, where offering a publish beside unsaved edits invites
+                // publishing a draft that leaves out what is on the screen.
+                //
+                // Hidden rather than absent, so the script can bring it back without a round
+                // trip. The draft count is the SERVER's — publishing ships whole drafts, so it
+                // has nothing to do with what is ticked.
                 hasDraft
-                  ? html`<span class="sep" data-draft-action ${nothingToDraft ? 'hidden' : ''}>·</span>
-                      ${writeAction({
-                        className: 'linkbtn go',
-                        attributes: html`name="intent" value="publish" data-needs-ticks ${
-                          ticked === 0 ? raw('disabled') : html``
-                        }`,
-                        resting: html`<span
-                          data-label="Publish {n} unpublished change{s} in ${options.active}?"
-                          >Publish ${ticked} unpublished change${ticked === 1 ? '' : 's'} in ${options.active}?</span>`,
-                        running: 'Publishing…',
-                      })}`
+                  ? html`<span class="sep" data-publish-action ${nothingToDraft ? '' : 'hidden'}>·</span>
+                      <span data-publish-action ${nothingToDraft ? '' : 'hidden'}>
+                        ${writeAction({
+                          className: 'linkbtn go',
+                          attributes: html`name="intent" value="publish"`,
+                          resting: html`Publish ${drafts} draft${drafts === 1 ? '' : 's'} in ${options.active}?`,
+                          running: 'Publishing…',
+                        })}
+                      </span>`
                   : html``
               }
             </span>
           </div>
-          ${
-            // The message comes with the publish action, and takes focus when it arrives: it is
-            // the only thing left to supply, and it is required.
-            hasDraft
-              ? html`<div class="field" style="margin:.7rem 0 0;">
-                  <label for="message">Publish message
-                    <span class="hint">becomes the commit subject; the ticks choose what goes</span>
-                  </label>
-                  <input type="text" id="message" name="message" value="${options.message ?? ''}" autofocus>
-                </div>`
-              : html``
-          }
         </div>
         </div>
 

@@ -76,13 +76,18 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     const pendingByNamespace = new Map<string, PendingChange[]>(
       staged.map((draft) => [draft.namespace, [...draft.changes]]),
     );
-    return { sources, tree, pendingByNamespace };
+    // One press of Save is one draft, so what the console counts is saves, not keys.
+    const draftsByNamespace = new Map<string, number>(
+      staged.map((draft) => [draft.namespace, draft.saves.length]),
+    );
+    return { sources, tree, pendingByNamespace, draftsByNamespace };
   };
 
   const environmentsOf = (
     service: string,
     namespaces: Iterable<string>,
     pending: Map<string, PendingChange[]>,
+    draftSaves: Map<string, number> = new Map(),
   ): EnvironmentSummary[] =>
     [...namespaces]
       .filter((namespace) => namespace.startsWith(`${service}/`))
@@ -91,14 +96,20 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         name: namespace.slice(service.length + 1),
         namespace,
         pending: pending.get(namespace) ?? [],
+        drafts: draftSaves.get(namespace) ?? 0,
       }));
 
   app.get('/', async (request: FastifyRequest<{ Querystring: { notice?: string } }>, reply) => {
-    const { sources, tree, pendingByNamespace } = await readState();
+    const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
 
     const services = [...new Set([...sources.sources.keys()].map((ns) => ns.split('/')[0] ?? ''))];
     const products: ProductSummary[] = services.sort().map((service) => {
-      const environments = environmentsOf(service, sources.sources.keys(), pendingByNamespace);
+      const environments = environmentsOf(
+        service,
+        sources.sources.keys(),
+        pendingByNamespace,
+        draftsByNamespace,
+      );
       // The union across environments, not the first one's. Taking the first showed dev's keys
       // as if they were the product's, which is wrong whenever the environments differ — and
       // they usually do, since that is what having environments is for.
@@ -142,8 +153,13 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     fragment: boolean;
   }): Promise<{ html: string; active: string } | null> => {
     const { service } = options;
-    const { sources, tree, pendingByNamespace } = await readState();
-    const environments = environmentsOf(service, sources.sources.keys(), pendingByNamespace);
+    const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
+    const environments = environmentsOf(
+      service,
+      sources.sources.keys(),
+      pendingByNamespace,
+      draftsByNamespace,
+    );
     if (environments.length === 0) return null;
 
     const active =
@@ -386,7 +402,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         });
       }
 
-      const { sources, tree, pendingByNamespace } = await readState();
+      const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
       const perKey = Object.fromEntries(
         (result.error.errors ?? []).map((error) => [error.key, error.message]),
       );
@@ -397,7 +413,12 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           String(
             renderProduct({
               service,
-              environments: environmentsOf(service, sources.sources.keys(), pendingByNamespace),
+              environments: environmentsOf(
+                service,
+                sources.sources.keys(),
+                pendingByNamespace,
+                draftsByNamespace,
+              ),
               active: environment,
               // Submitted values, not stored ones: retyping a form mid-incident is how the
               // wrong value gets entered the second time.
@@ -460,11 +481,11 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
       // A product checkbox on the index selects the product; the namespaces it stands for are
       // resolved here rather than posted, so a hand-edited form cannot name someone else's.
-      const { sources, pendingByNamespace } = await readState();
+      const { sources, pendingByNamespace, draftsByNamespace } = await readState();
       const namespaces = selected.flatMap((entry) =>
         entry.includes('/')
           ? [entry]
-          : environmentsOf(entry, sources.sources.keys(), pendingByNamespace)
+          : environmentsOf(entry, sources.sources.keys(), pendingByNamespace, draftsByNamespace)
               .filter((env) => env.pending.length > 0)
               .map((env) => env.namespace),
       );

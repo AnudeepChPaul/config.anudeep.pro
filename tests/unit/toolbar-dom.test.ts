@@ -92,6 +92,54 @@ describe('the two kinds of change have two names', () => {
   });
 });
 
+const publish = () => document.querySelector('button[value="publish"]') as HTMLButtonElement | null;
+const publishOffered = () =>
+  [...document.querySelectorAll('[data-publish-action]')].every(
+    (el) => !(el as HTMLElement).hidden,
+  );
+
+describe('unsaved changes outrank a draft', () => {
+  // Two states competing for one toolbar. Offering a publish beside unsaved edits invites
+  // publishing a draft that does not include what is on the screen.
+  beforeEach(() => load(drafted(['MFA_ENFORCEMENT'])));
+
+  it('offers the publish while the page holds nothing unsaved', () => {
+    expect(publish()).not.toBeNull();
+    expect(publishOffered()).toBe(true);
+  });
+
+  it('withdraws it the moment a value is edited', () => {
+    const field = document.querySelector<HTMLInputElement>(
+      'input[data-key="SESSION_TTL"]',
+    ) as HTMLInputElement;
+    field.value = '1200';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(publishOffered()).toBe(false);
+    expect(draftOffered()).toBe(true);
+  });
+
+  it('withdraws it when a key the draft does not hold is ticked', () => {
+    tick('SESSION_TTL').checked = true;
+    tick('SESSION_TTL').dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(publishOffered()).toBe(false);
+  });
+
+  it('brings it back when the page matches the draft again', () => {
+    const field = document.querySelector<HTMLInputElement>(
+      'input[data-key="SESSION_TTL"]',
+    ) as HTMLInputElement;
+    field.value = '1200';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.value = '900';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(publishOffered()).toBe(true);
+    expect(draftOffered()).toBe(false);
+  });
+});
+
 describe('a page whose draft already holds everything ticked', () => {
   // Pressing Draft again would write the same document a second time and count a revision for
   // it, so the action is gone until something moves.

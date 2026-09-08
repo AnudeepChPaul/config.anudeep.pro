@@ -92,7 +92,11 @@
         ) ||
         [...form.querySelectorAll('[data-key]')].some((control) => isDirty(control));
 
+      // Two states, one toolbar, and unsaved wins: while the page holds anything the draft does
+      // not, publishing is withdrawn. Offering it here invites publishing a draft that leaves
+      // out what is on the screen.
       for (const el of form.querySelectorAll('[data-draft-action]')) el.hidden = !somethingNew;
+      for (const el of form.querySelectorAll('[data-publish-action]')) el.hidden = somethingNew;
     }
 
     // Nothing ticked and nothing written down: the toolbar has nothing to act on, so it shows

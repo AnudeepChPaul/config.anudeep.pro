@@ -779,9 +779,9 @@ describe('the environment tab offers the controls its routes accept', () => {
       expect(await page()).toContain('name="message"');
     });
 
-    it('keeps the ticks in the same form as the publish button', async () => {
-      // In separate forms the ticks are simply not submitted, and every publish would silently
-      // ship the whole draft instead of the selection.
+    it('keeps the ticks in the same form as the actions', async () => {
+      // In separate forms the ticks are simply not submitted, and a publish would then offer
+      // nothing for promotion — the one job the tick still has at publish time.
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
@@ -792,7 +792,7 @@ describe('the environment tab offers the controls its routes accept', () => {
 
       expect(form).toContain('name="select"');
       expect(form).toContain('name="intent" value="publish"');
-      expect(form).toContain('name="message"');
+      expect(form).toContain('name="intent" value="save"');
     });
 
     it('does not render publishing when there is nothing staged', async () => {
@@ -996,22 +996,21 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(body.match(/<button[^>]*value="publish"[^>]*>/)?.[0]).not.toContain('disabled');
     });
 
-    it('puts focus on the message the moment it appears', async () => {
-      // It is the only thing left to supply and it is required, so landing anywhere else costs
-      // a click for no reason.
+    it('never asks for a message, since every commit message is generated', async () => {
+      // An operator mid-incident has better things to do than compose a subject line.
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
       ]);
 
-      expect((await page()).match(/<input[^>]*id="message"[^>]*>/)?.[0]).toContain('autofocus');
+      expect(await page()).not.toContain('id="message"');
     });
 
-    it('focuses it after an htmx swap too, which autofocus alone does not do', async () => {
+    it('recounts a swapped-in page rather than inheriting the previous one', async () => {
       const script = (await app5.inject({ method: 'GET', url: '/assets/ticks.js' })).body;
 
       expect(script).toContain('htmx:afterSwap');
-      expect(script).toContain('[autofocus]');
+      expect(script).toContain('data-publish-action');
     });
 
     it('gives the buttons a label the script can recount', async () => {
@@ -1024,7 +1023,9 @@ describe('the tick and button behaviour the page depends on', () => {
       ]);
       const staged = await page();
 
-      expect(staged).toContain('data-label="Publish {n} unpublished change{s} in dev?"');
+      // The publish label is not recounted from ticks: publishing ships whole drafts, so its
+      // number is the server's count of saves.
+      expect(staged).toMatch(/Publish 1 draft in dev\?/);
       expect(staged).toContain('data-needs-ticks');
     });
 
@@ -1222,7 +1223,7 @@ describe('the tick and button behaviour the page depends on', () => {
       const body = await page();
 
       expect(body).toContain('Save {n} change{s} as draft?');
-      expect(body).toContain('Publish {n} unpublished change{s} in dev?');
+      expect(body).toMatch(/Publish 1 draft in dev\?/);
     });
 
     it('states what is selected as a sentence the script can recount', async () => {
