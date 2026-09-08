@@ -19,7 +19,15 @@ export interface ServiceConfig {
   readonly httpHost: string;
   readonly httpPort: number;
   readonly logLevel: string;
-  readonly authenticated: boolean;
+  readonly sessionSecret: string;
+  readonly iam: {
+    issuer: string;
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+  } | null;
+  readonly iamHealthUrl: string | null;
+  readonly breakGlassPath: string;
   readonly pushRetryIntervalMs: number;
   readonly pollIntervalMs: number;
 }
@@ -39,8 +47,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     httpHost: env.CONFIG_HTTP_HOST ?? '127.0.0.1',
     httpPort: Number(env.CONFIG_HTTP_PORT ?? 8200),
     logLevel: env.CONFIG_LOG_LEVEL ?? 'info',
-    // Slice 10 sets this once iam OIDC and break-glass exist.
-    authenticated: env.CONFIG_AUTHENTICATED === 'true',
+    // Signing key for the session cookie. Required in prod: without it the editor cannot be
+    // guarded, and buildWebApp refuses to serve it unguarded there anyway.
+    sessionSecret:
+      environment === 'prod'
+        ? required('CONFIG_SESSION_SECRET')
+        : (env.CONFIG_SESSION_SECRET ?? ''),
+    iam:
+      env.CONFIG_IAM_ISSUER && env.CONFIG_IAM_CLIENT_ID && env.CONFIG_IAM_CLIENT_SECRET
+        ? {
+            issuer: env.CONFIG_IAM_ISSUER,
+            clientId: env.CONFIG_IAM_CLIENT_ID,
+            clientSecret: env.CONFIG_IAM_CLIENT_SECRET,
+            redirectUri: env.CONFIG_IAM_REDIRECT_URI ?? 'https://config.anudeep.pro/login/callback',
+          }
+        : null,
+    // How reachability is decided. Break-glass opens only when this fails, so an unset value
+    // must mean "reachable" — never "assume down and open the emergency door".
+    iamHealthUrl: env.CONFIG_IAM_HEALTH_URL ?? null,
+    breakGlassPath: env.CONFIG_BREAK_GLASS_PATH ?? 'break-glass.yaml',
     pushRetryIntervalMs: Number(env.CONFIG_PUSH_RETRY_INTERVAL_MS ?? 60_000),
     pollIntervalMs: Number(env.CONFIG_POLL_INTERVAL_MS ?? 60_000),
   };

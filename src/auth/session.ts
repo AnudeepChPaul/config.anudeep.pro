@@ -45,8 +45,29 @@ export class SessionCodec {
   }
 
   sign(session: Session): string {
-    const payload = Buffer.from(JSON.stringify(session), 'utf8').toString('base64url');
+    return this.signValue(session);
+  }
+
+  /**
+   * Signs any short-lived value the browser will hand back — the in-progress login flow, for
+   * one. Same signature, same guarantee: what comes back is what went out.
+   */
+  signValue(value: unknown): string {
+    const payload = Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
     return `${payload}.${this.mac(payload)}`;
+  }
+
+  /** The counterpart to signValue. Null on anything that does not verify or does not parse. */
+  verifyValue<T>(cookie: string): T | null {
+    const [payload, signature, ...rest] = cookie.split('.');
+    if (!payload || !signature || rest.length > 0) return null;
+    if (!equals(signature, this.mac(payload))) return null;
+
+    try {
+      return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as T;
+    } catch {
+      return null;
+    }
   }
 
   /** The session, or null. Every failure is the same null: a bad cookie is simply not a session. */

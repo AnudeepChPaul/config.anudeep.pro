@@ -1,6 +1,10 @@
 import pino from 'pino';
+import { parse as parseYaml } from 'yaml';
 import { buildReadApi, buildWebApp } from './app.js';
-import { loadConfig } from './config.js';
+import { BreakGlass, type BreakGlassRecord } from './auth/break-glass.js';
+import { OidcClient } from './auth/oidc.js';
+import { SessionCodec } from './auth/session.js';
+import { loadConfig, type ServiceConfig } from './config.js';
 import { GitRepository } from './git/repository.js';
 import { GitSyncer } from './git/syncer.js';
 import { AccessGuard } from './identity/access-guard.js';
@@ -79,9 +83,18 @@ async function main(): Promise<void> {
       schemas: () => currentSchemas,
     }),
     environment: config.environment,
-    // Slice 10 wires iam OIDC in here. Until CONFIG_SESSION_SECRET and a break-glass record
-    // exist, the app runs unguarded — which buildWebApp refuses to do in prod.
-    auth: undefined,
+    auth: config.sessionSecret
+      ? {
+          codec: new SessionCodec(config.sessionSecret),
+          breakGlass: new BreakGlass({
+            record: await readBreakGlassRecord(repository, decryptor, config, log),
+            isIamReachable: () => isIamReachable(config),
+            alert: (entry) => log.warn({ ...entry, event: 'break_glass' }),
+          }),
+          isIamReachable: () => isIamReachable(config),
+          ...(config.iam ? { oidc: new OidcClient(config.iam) } : {}),
+        }
+      : undefined,
     logger: log,
   });
   await web.listen({ host: config.httpHost, port: config.httpPort });
@@ -119,6 +132,59 @@ async function main(): Promise<void> {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+}
+
+/**
+ * Whether iam is answering.
+ *
+ * With no health URL configured the answer is "yes". Defaulting the other way would leave
+ * break-glass permanently open on any instance that forgot to set it, which is precisely the
+ * failure this gate exists to prevent.
+ */
+async function isIamReachable(config: ServiceConfig): Promise<boolean> {
+  if (!config.iamHealthUrl) return true;
+  try {
+    const response = await fetch(config.iamHealthUrl, { signal: AbortSignal.timeout(2_000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The break-glass record, read from the config repository and decrypted in memory.
+ *
+ * Not circular: this reads the repository directly rather than through this service's own
+ * socket API, so it still works during the iam outage the credential exists for.
+ */
+async function readBreakGlassRecord(
+  repository: GitRepository,
+  decryptor: SopsDecryptor,
+  config: ServiceConfig,
+  log: { warn: (o: object, m: string) => void },
+): Promise<BreakGlassRecord | null> {
+  try {
+    const source = await repository.readFile(config.breakGlassPath);
+    const parsed = parseYaml(
+      await decryptor.decrypt(config.breakGlassPath, source),
+    ) as Partial<BreakGlassRecord>;
+    if (!parsed?.passwordHash || !parsed.totpSecret || !parsed.actorEmail) {
+      throw new Error('the break-glass record is missing fields');
+    }
+    return {
+      passwordHash: parsed.passwordHash,
+      totpSecret: parsed.totpSecret,
+      actorEmail: parsed.actorEmail,
+    };
+  } catch (error) {
+    // Absent is a legitimate state, and BreakGlass refuses every attempt when the record is
+    // null — so a missing file locks the door rather than leaving it open.
+    log.warn(
+      { err: error },
+      'no break-glass record; break-glass sign-in will refuse every attempt',
+    );
+    return null;
+  }
 }
 
 /** The grant table. Absent means no service may read anything, which fails closed. */

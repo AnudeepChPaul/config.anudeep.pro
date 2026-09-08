@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { buildWebApp } from '@config/src/app.js';
 import { decodeBase32 } from '@config/src/auth/base32.js';
 import { BreakGlass, hashPassword } from '@config/src/auth/break-glass.js';
+import { OidcClient } from '@config/src/auth/oidc.js';
 import { SessionCodec } from '@config/src/auth/session.js';
 import { generateTotp, totpCounter } from '@config/src/auth/totp.js';
 import { GitRepository } from '@config/src/git/repository.js';
@@ -10,6 +12,8 @@ import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
 import { ConfigWriteService } from '@config/src/store/write-service.js';
+import formbody from '@fastify/formbody';
+import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.js';
 
@@ -40,10 +44,12 @@ withSops('the editor behind authentication', () => {
   let app: Awaited<ReturnType<typeof buildWebApp>>;
   let iamReachable: boolean;
   let alert: ReturnType<typeof vi.fn>;
+  let issuer: FastifyInstance;
+  let issuerUrl: string;
 
   const codec = new SessionCodec(SECRET);
 
-  const start = async () => {
+  const start = async (withOidc = true) => {
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
     alert = vi.fn();
     app = await buildWebApp({
@@ -69,6 +75,18 @@ withSops('the editor behind authentication', () => {
           alert: alert as unknown as (a: { outcome: string; at: number }) => void,
         }),
         isIamReachable: async () => iamReachable,
+        // A stub issuer that would happily complete the exchange. That is the point: if the
+        // callback's guard were removed, these requests would succeed rather than fail for an
+        // unrelated reason, so the tests below distinguish "refused by the guard" from
+        // "refused because iam was unreachable".
+        oidc: withOidc
+          ? new OidcClient({
+              issuer: issuerUrl,
+              clientId: 'config',
+              clientSecret: 'shh',
+              redirectUri: 'http://localhost/login/callback',
+            })
+          : undefined,
       },
     });
     return app;
@@ -102,8 +120,42 @@ withSops('the editor behind authentication', () => {
       },
     });
 
+  /** Answers discovery and the token exchange the way iam would, for a valid flow. */
+  const startIssuer = async () => {
+    issuer = Fastify({ logger: false });
+    await issuer.register(formbody);
+    const probe = await issuer.listen({ host: '127.0.0.1', port: 0 });
+    await issuer.close();
+    issuerUrl = probe;
+
+    issuer = Fastify({ logger: false });
+    await issuer.register(formbody);
+    issuer.get('/.well-known/openid-configuration', async () => ({
+      issuer: issuerUrl,
+      authorization_endpoint: `${issuerUrl}/authorize`,
+      token_endpoint: `${issuerUrl}/token`,
+    }));
+    issuer.post('/token', async () => {
+      const part = (o: unknown) => Buffer.from(JSON.stringify(o), 'utf8').toString('base64url');
+      return {
+        access_token: 'at',
+        token_type: 'Bearer',
+        id_token: `${part({ alg: 'none' })}.${part({
+          iss: issuerUrl,
+          aud: 'config',
+          sub: '7f3a1c9e',
+          email: 'me@anudeep.pro',
+          nonce: 'the-nonce',
+          exp: Math.floor(Date.now() / 1000) + 300,
+        })}.`,
+      };
+    });
+    await issuer.listen({ host: '127.0.0.1', port: Number(new URL(issuerUrl).port) });
+  };
+
   beforeEach(async () => {
     iamReachable = true;
+    await startIssuer();
     key = generateAgeKey();
     repo = await TestRepo.create();
     await repo.commit({
@@ -117,6 +169,7 @@ withSops('the editor behind authentication', () => {
 
   afterEach(async () => {
     await app?.close();
+    await issuer?.close();
     await rm(repo.dir, { recursive: true, force: true });
   });
 
@@ -266,6 +319,97 @@ withSops('the editor behind authentication', () => {
       );
 
       expect(await repo.git('log', '-1', '--format=%B')).toContain('Signed-In-With: break-glass');
+    });
+  });
+
+  describe('the iam callback', () => {
+    // A full OIDC exchange is covered in oidc.test.ts against a real issuer. These cases are
+    // about the callback route's own guard: what it accepts before it ever calls iam.
+    const flowCookie = (overrides: Record<string, unknown> = {}) =>
+      `config_login=${codec.signValue({
+        state: 'the-state',
+        nonce: 'the-nonce',
+        verifier: 'v'.repeat(43),
+        expiresAt: Date.now() + 600_000,
+        ...overrides,
+      })}`;
+
+    it('sends a challenge derived from the verifier it stored', async () => {
+      // These two are minted together and must agree. Deriving the challenge from a fresh
+      // verifier looks correct, redirects correctly, and then iam refuses every exchange —
+      // a failure that only shows up against a real issuer. I wrote exactly that bug.
+      const response = await get('/login/iam');
+      const challenge = new URL(String(response.headers.location)).searchParams.get(
+        'code_challenge',
+      );
+      const cookie = String(response.headers['set-cookie']).match(/config_login=([^;]+)/)?.[1];
+      const flow = codec.verifyValue<{ verifier: string }>(decodeURIComponent(cookie ?? ''));
+
+      expect(flow).not.toBeNull();
+      expect(challenge).toBe(
+        createHash('sha256')
+          .update(flow?.verifier ?? '')
+          .digest('base64url'),
+      );
+    });
+
+    it('completes a sign-in when the flow matches', async () => {
+      // The control for every case below: with a valid flow this callback really does sign in,
+      // so a rejection in the other cases is the guard doing its job and not iam being absent.
+      const response = await get('/login/callback?code=abc&state=the-state', flowCookie());
+
+      expect(response.statusCode).toBe(303);
+      expect(String(response.headers['set-cookie'])).toContain('config_session=');
+    });
+
+    it('refuses a callback with no flow cookie', async () => {
+      // Nothing started this sign-in in this browser, which is what CSRF on the callback is.
+      const response = await get('/login/callback?code=abc&state=the-state');
+
+      expect(response.statusCode).toBe(400);
+      expect(String(response.headers['set-cookie'] ?? '')).not.toContain('config_session=');
+    });
+
+    it('refuses a callback whose state does not match the flow', async () => {
+      const response = await get('/login/callback?code=abc&state=someone-elses', flowCookie());
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('refuses a callback for a flow that has expired', async () => {
+      const response = await get(
+        '/login/callback?code=abc&state=the-state',
+        flowCookie({ expiresAt: Date.now() - 1 }),
+      );
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('refuses a flow cookie that was edited', async () => {
+      const forged = `config_login=${Buffer.from(
+        JSON.stringify({ state: 'mine', nonce: 'n', verifier: 'v', expiresAt: Date.now() + 1000 }),
+      ).toString('base64url')}.nope`;
+
+      expect((await get('/login/callback?code=abc&state=mine', forged)).statusCode).toBe(400);
+    });
+
+    it('refuses a callback carrying no code', async () => {
+      expect((await get('/login/callback?state=the-state', flowCookie())).statusCode).toBe(400);
+    });
+
+    it('is not reachable when iam sign-in is not configured', async () => {
+      // An instance with no OIDC client must not pretend the route is a sign-in.
+      await app.close();
+      await start(false);
+
+      expect((await get('/login/iam')).statusCode).toBe(404);
+    });
+
+    it('says so on the sign-in page rather than offering a dead link', async () => {
+      await app.close();
+      await start(false);
+
+      expect((await get('/login')).body).toMatch(/not configured/i);
     });
   });
 

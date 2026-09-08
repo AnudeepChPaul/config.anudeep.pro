@@ -157,6 +157,7 @@ function renderField(row: KeyRow): SafeHtml {
  */
 export function renderLogin(options: {
   iamReachable: boolean;
+  iamConfigured?: boolean;
   iamLoginUrl: string;
   error?: string;
 }): SafeHtml {
@@ -183,7 +184,11 @@ export function renderLogin(options: {
   const primary = options.iamReachable
     ? html`<div class="card">
         <p class="sub" style="margin: 0 0 1rem;">Sign in with iam to continue.</p>
-        <a href="${options.iamLoginUrl}">Sign in with iam</a>
+        ${
+          options.iamConfigured === false
+            ? html`<span class="hint">iam sign-in is not configured on this instance.</span>`
+            : html`<a href="${options.iamLoginUrl}">Sign in with iam</a>`
+        }
       </div>`
     : html`<div class="card">
         <p class="sub" style="margin: 0;">iam is unreachable, so break-glass sign-in is available.</p>
