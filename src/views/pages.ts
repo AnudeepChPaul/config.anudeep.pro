@@ -164,6 +164,9 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .detail .envname { color: #9aa0ad; font-size: .75rem; }
   .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: .25rem; }
   .keyrow { display: flex; align-items: flex-start; gap: 14px; }
+  /* Where a search result landed. A rule beside it, in the amber this console uses for
+     "look here", rather than a scroll the reader did not ask for. */
+  .found { border-left: 3px solid #b45309; margin-left: -1.25rem; padding-left: calc(1.25rem - 3px); }
   .keypick { width: 16px; flex-shrink: 0; padding-top: 2px; }
   .keypick input { width: 16px; height: 16px; accent-color: #16181d; cursor: pointer; margin: 0; }
   /* A tick on a value you have actually changed cannot be cleared — the change goes with the
@@ -202,8 +205,11 @@ function unpushedBanner(unpushed: readonly UnpushedCommit[]): SafeHtml {
  * The control comes from the declared type, so a schema change moves the UI with it and nobody
  * has to remember that SESSION_TTL wants a number box.
  */
-function renderField(row: KeyRow): SafeHtml {
+function renderField(row: KeyRow, highlight?: string): SafeHtml {
   const name = `key.${row.key}`;
+  // The key a search result arrived for. A marker rather than a scroll: the page is short, and
+  // an unknown key marks nothing rather than erroring.
+  const found = highlight === row.key ? ' found' : '';
   const error = row.error ? html`<div class="err">${row.error}</div>` : html``;
   const definition = row.definition;
   const hint = definition?.description ?? typeHint(definition);
@@ -240,7 +246,7 @@ function renderField(row: KeyRow): SafeHtml {
   // rendering it has to be a deliberate rule. A screenshot in a ticket or a browser cache would
   // otherwise leak it. The field sets a new value; it never shows the current one.
   if (definition?.secret) {
-    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
+    return html`<div class="field keyrow${found}">${pick}<div style="flex-grow:1;min-width:0;">${header}
       <input type="password" id="${name}" name="${name}" value="" data-key="${row.key}"
              data-original="" placeholder="leave blank to keep the current value" autocomplete="off">
       ${error}
@@ -252,7 +258,7 @@ function renderField(row: KeyRow): SafeHtml {
       (value) =>
         html`<option value="${value}"${row.value === value ? ' selected' : ''}>${value}</option>`,
     );
-    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
+    return html`<div class="field keyrow${found}">${pick}<div style="flex-grow:1;min-width:0;">${header}
       <select id="${name}" name="${name}" data-key="${row.key}" data-original="${row.value}"><option value=""></option>${options}</select>
       ${error}
     </div></div>`;
@@ -261,7 +267,7 @@ function renderField(row: KeyRow): SafeHtml {
   if (definition?.type === 'int') {
     // The schema's own bounds, so the browser refuses what the validator would refuse anyway —
     // one round trip saved, and the constraint is visible in the control.
-    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
+    return html`<div class="field keyrow${found}">${pick}<div style="flex-grow:1;min-width:0;">${header}
       <input type="number" id="${name}" name="${name}" value="${row.value}" step="1"
              data-key="${row.key}" data-original="${row.value}" ${bounds(definition)}>
       ${error}
@@ -277,7 +283,7 @@ function renderField(row: KeyRow): SafeHtml {
     // opening a page.
     const explicitFalse =
       row.value === undefined ? html`` : html`<input type="hidden" name="${name}" value="false">`;
-    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
+    return html`<div class="field keyrow${found}">${pick}<div style="flex-grow:1;min-width:0;">${header}
       ${explicitFalse}
       <label class="switch">
         <input type="checkbox" id="${name}" name="${name}" value="true"${on ? ' checked' : ''}
@@ -292,7 +298,7 @@ function renderField(row: KeyRow): SafeHtml {
   if (definition?.type === 'string[]') {
     const items = Array.isArray(row.value) ? row.value : [];
     const chips = items.map((item) => html`<span class="chip-item">${item}</span>`);
-    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
+    return html`<div class="field keyrow${found}">${pick}<div style="flex-grow:1;min-width:0;">${header}
       ${items.length > 0 ? html`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:.4rem;">${chips}</div>` : html``}
       <input type="text" id="${name}" name="${name}" value="${items.join(', ')}"
              data-key="${row.key}" data-original="${items.join(', ')}" placeholder="comma separated">
@@ -300,7 +306,7 @@ function renderField(row: KeyRow): SafeHtml {
     </div></div>`;
   }
 
-  return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
+  return html`<div class="field keyrow${found}">${pick}<div style="flex-grow:1;min-width:0;">${header}
     <input type="${definition?.type === 'url' ? 'url' : 'text'}" id="${name}" name="${name}"
            value="${row.value}" data-key="${row.key}" data-original="${row.value}">
     ${error}
@@ -434,6 +440,8 @@ export interface EnvironmentSummary {
 }
 
 export interface ProductSummary {
+  /** The keys a search matched, replacing the usual summary when one is running. */
+  readonly matched?: readonly string[];
   /** No schema file for this service: it cannot be edited, so the list says so and stops here. */
   readonly schemaMissing?: boolean;
   /** What the reader sees: "iam (1002)". The uid decides which process may read this product. */
@@ -551,6 +559,28 @@ function writeAction(options: {
   </button>`;
 }
 
+/**
+ * The search box.
+ *
+ * A plain GET form: it works with the script disabled, the address bar carries the search, and a
+ * result can be linked to. `hx-get` makes it a swap when the script is there.
+ */
+function searchBox(options: { action: string; query: string; placeholder: string }): SafeHtml {
+  return html`<form method="get" action="${options.action}" hx-get="${options.action}"
+        hx-target="#page" hx-swap="innerHTML" hx-push-url="true"
+        style="display:flex;gap:8px;align-items:center;margin:0 0 1.25rem;">
+    <input type="search" name="q" value="${options.query}" placeholder="${options.placeholder}"
+           style="max-width:22rem;" aria-label="${options.placeholder}">
+    ${writeAction({ resting: html`Search`, running: 'Searching…' })}
+    ${
+      options.query
+        ? html`<a class="hint" href="${options.action}" hx-get="${options.action}"
+              hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Clear</a>`
+        : html``
+    }
+  </form>`;
+}
+
 /** The panel alone, for a trigger that is not the standard "N unpublished" marker. */
 function detailPanel(title: string, changes: readonly PendingChange[]): SafeHtml {
   return html`<span class="detail" data-detail><h3>${title}</h3>${changeLines(changes)}</span>`;
@@ -629,6 +659,8 @@ export function renderProducts(options: {
   products: readonly ProductSummary[];
   commit: string;
   unpushed?: readonly UnpushedCommit[];
+  /** What was searched for, if anything. Matching is on key names only. */
+  query?: string;
   /** How many presses of Save are waiting across every product, for the link to the draft list. */
   draftCount?: number;
   notice?: string;
@@ -666,7 +698,15 @@ export function renderProducts(options: {
           }
           ${pending.length > 0 ? pendingDetail('Waiting to publish', pending) : html``}
         </div>
-        <div class="hint">${product.keys}</div>
+        <div class="hint">${
+          product.matched && product.matched.length > 0
+            ? html`${product.matched.map(
+                (key) => html`<a href="/p/${product.service}?env=dev&hl=${key}"
+                    hx-get="/p/${product.service}?env=dev&hl=${key}" hx-target="#page"
+                    hx-swap="innerHTML" hx-push-url="true">${key}</a> `,
+              )}`
+            : html`${product.keys}`
+        }</div>
         <div style="display:flex;gap:6px;margin-top:2px;">${chips}</div>
       </div>
     </div>`;
@@ -707,10 +747,12 @@ export function renderProducts(options: {
         ${options.notice ? html`<div class="card">${options.notice}</div>` : html``}
         ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
         ${unpushedBanner(options.unpushed ?? [])}
-        <div class="card" style="padding:.85rem 1.25rem;">
-          <label for="message">Publish message <span class="hint">becomes the commit subject</span></label>
-          <input type="text" id="message" name="message" value="">
-        </div>
+        ${searchBox({ action: '/', query: options.query ?? '', placeholder: 'Find a variable' })}
+        ${
+          options.query && options.products.length === 0
+            ? html`<div class="card">No key matches “${options.query}”.</div>`
+            : html``
+        }
         <div class="rows">${rows}</div>
       </form>
     `;
@@ -737,6 +779,10 @@ export function renderProduct(options: {
   repoWebUrl?: string | null;
   /** True when the notice is a confirmation the page clears itself after a few seconds. */
   transientNotice?: boolean;
+  /** What was searched for inside this product, if anything. */
+  query?: string;
+  /** The key a search result linked to, marked so the eye lands on it. */
+  highlight?: string;
   /** True when this environment is declared but has no file yet: nothing is editable until it
    *  exists, and the page offers to create it from the schema's defaults. */
   missingFile?: boolean;
@@ -770,7 +816,11 @@ export function renderProduct(options: {
 }</a>`,
   );
 
-  const fields = options.rows.map((row) => renderField(row));
+  const query = (options.query ?? '').trim().toLowerCase();
+  const shownRows = query
+    ? options.rows.filter((row) => row.key.toLowerCase().includes(query))
+    : options.rows;
+  const fields = shownRows.map((row) => renderField(row, options.highlight));
   // The buttons follow the TICKS, not what happens to be staged: a tick is the statement of
   // intent, and the script keeps the count in step as values change.
   const ticked = options.rows.filter((row) => row.pending).length;
@@ -824,6 +874,16 @@ export function renderProduct(options: {
       </div>
 
       <div class="tabs">${tabs}</div>
+      ${searchBox({
+        action: `/p/${options.service}`,
+        query: options.query ?? '',
+        placeholder: `Find a variable in ${options.service}`,
+      })}
+      ${
+        query && shownRows.length === 0
+          ? html`<div class="card">No key in ${options.service} matches “${options.query}”.</div>`
+          : html``
+      }
       ${promoteOffer(options)}
       ${
         // Marked transient only when it is a confirmation. A notice reporting something still to

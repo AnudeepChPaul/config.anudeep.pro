@@ -1284,6 +1284,65 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(body).not.toMatch(/data-select="MFA_ENFORCEMENT"[^>]*checked/);
     });
 
+    it('filters the product list to products holding a matching key', async () => {
+      const found = (await app5.inject({ method: 'GET', url: '/?q=SESSION' })).body;
+
+      expect(found).toContain('iam (1002)');
+      expect(found).toContain('SESSION_TTL');
+      // api declares RATE_LIMIT and nothing matching, so it is not in the list.
+      expect(found).not.toContain('api (1003)');
+    });
+
+    it('matches without regard to case, and says when nothing matched', async () => {
+      expect((await app5.inject({ method: 'GET', url: '/?q=session' })).body).toContain(
+        'SESSION_TTL',
+      );
+      expect((await app5.inject({ method: 'GET', url: '/?q=zzz' })).body).toMatch(/no key/i);
+    });
+
+    it('links a match to that product at dev, with the key marked', async () => {
+      const found = (await app5.inject({ method: 'GET', url: '/?q=SESSION' })).body;
+
+      expect(found).toContain('/p/iam?env=dev&hl=SESSION_TTL');
+    });
+
+    it('marks the key a link arrived for, and marks nothing for a key that is not there', async () => {
+      const marked = (await app5.inject({ method: 'GET', url: '/p/iam?env=dev&hl=SESSION_TTL' }))
+        .body;
+
+      expect(marked).toMatch(/class="[^"]*found[^"]*"/);
+      expect(marked).toContain('.found');
+
+      const nothing = (await app5.inject({ method: 'GET', url: '/p/iam?env=dev&hl=NOPE' })).body;
+      expect(nothing).not.toMatch(/class="[^"]*found[^"]*"/);
+    });
+
+    it('filters the fields inside a product, and navigates nowhere', async () => {
+      const filtered = (await app5.inject({ method: 'GET', url: '/p/iam?env=dev&q=SESSION' })).body;
+
+      expect(filtered).toContain('name="key.SESSION_TTL"');
+      expect(filtered).not.toContain('name="key.MFA_ENFORCEMENT"');
+      // Still the product page, not a results page.
+      expect(filtered).toContain('class="tabs"');
+    });
+
+    it('offers the search as a plain form, so it works without the script', async () => {
+      const body = await page();
+
+      expect(body).toMatch(/<form[^>]*method="get"[^>]*>[\s\S]*?name="q"/);
+    });
+
+    it('shows key names and no values at all, secrets included', async () => {
+      // Search reads key NAMES from the schema. Searching values over a registry that holds
+      // secrets becomes a way to confirm one by guessing, so no value is matched or rendered.
+      const found = (await app5.inject({ method: 'GET', url: '/?q=SESSION' })).body;
+
+      expect(found).toContain('SESSION_TTL');
+      // dev holds 900 and prod 3600; neither belongs in a list of key names.
+      expect(found).not.toContain('>900<');
+      expect(found).not.toContain('>3600<');
+    });
+
     it('lists every unpublished draft, with what each save changed', async () => {
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],

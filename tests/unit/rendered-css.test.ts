@@ -238,7 +238,9 @@ describe('every publish action reads the same way', () => {
   });
 
   it('offers no products publish at all when nothing is waiting', () => {
-    expect(productsPage(0)).not.toContain('<button');
+    // The search button remains: it changes nothing, so it is not a publish action.
+    expect(productsPage(0)).not.toContain('value="publish"');
+    expect(productsPage(0)).not.toContain('Publish selected');
   });
 
   it('renders the whole-product publish as a link, and not at all when idle', () => {

@@ -210,51 +210,68 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     },
   );
 
-  app.get('/', async (request: FastifyRequest<{ Querystring: { notice?: string } }>, reply) => {
-    const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
+  app.get(
+    '/',
+    async (request: FastifyRequest<{ Querystring: { notice?: string; q?: string } }>, reply) => {
+      const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
 
-    // Declared, not discovered: a product is listed because services.yaml says it exists.
-    const declared = await declaredServices();
-    const environmentNames = await declaredEnvironments();
-    const products: ProductSummary[] = declared.map((service) => {
-      const environments = environmentsOf(
-        service.name,
-        environmentNames,
-        pendingByNamespace,
-        draftsByNamespace,
-      );
-      // The union across environments, not the first one's. Taking the first showed dev's keys
-      // as if they were the product's, which is wrong whenever the environments differ — and
-      // they usually do, since that is what having environments is for.
-      const keys = [
-        ...new Set(
-          environments.flatMap((env) => Object.keys(tree.namespaces.get(env.namespace) ?? {})),
+      // Declared, not discovered: a product is listed because services.yaml says it exists.
+      const declared = await declaredServices();
+      // Key NAMES only, from the schema. Searching values over a registry that holds secrets
+      // becomes a way to confirm one by guessing, and "no match" is as informative as a match.
+      const query = (request.query?.q ?? '').trim().toLowerCase();
+      const environmentNames = await declaredEnvironments();
+      const products: ProductSummary[] = declared.map((service) => {
+        const environments = environmentsOf(
+          service.name,
+          environmentNames,
+          pendingByNamespace,
+          draftsByNamespace,
+        );
+        // The union across environments, not the first one's. Taking the first showed dev's keys
+        // as if they were the product's, which is wrong whenever the environments differ — and
+        // they usually do, since that is what having environments is for.
+        const keys = [
+          ...new Set(
+            environments.flatMap((env) => Object.keys(tree.namespaces.get(env.namespace) ?? {})),
+          ),
+        ].sort();
+        const matched = query
+          ? [...schemas().definitionsFor(service.name).keys()]
+              .filter((key) => key.toLowerCase().includes(query))
+              .sort()
+          : [];
+
+        return {
+          ...(query ? { matched } : {}),
+          // The uid is what the read API authenticates against, so it belongs beside the name:
+          // it is the fact that decides which process may read this product's configuration.
+          name: `${service.name} (${service.uid})`,
+          service: service.name,
+          // A product with no schema cannot be edited at all: validate() refuses an unknown
+          // service, so every save would fail at the last step, after the values were typed.
+          schemaMissing: !schemas().has(service.name),
+          keys: keys.slice(0, 3).join(', ') + (keys.length > 3 ? ` +${keys.length - 3}` : ''),
+          environments,
+        };
+      });
+
+      return reply.type('text/html; charset=utf-8').send(
+        String(
+          renderProducts({
+            // A search shows only what matched; without one, everything declared.
+            products: query
+              ? products.filter((product) => (product.matched ?? []).length > 0)
+              : products,
+            ...(request.query?.q ? { query: request.query.q } : {}),
+            commit: sources.commit,
+            draftCount: [...draftsByNamespace.values()].reduce((total, n) => total + n, 0),
+            ...(request.query?.notice ? { notice: request.query.notice } : {}),
+          }),
         ),
-      ].sort();
-      return {
-        // The uid is what the read API authenticates against, so it belongs beside the name:
-        // it is the fact that decides which process may read this product's configuration.
-        name: `${service.name} (${service.uid})`,
-        service: service.name,
-        // A product with no schema cannot be edited at all: validate() refuses an unknown
-        // service, so every save would fail at the last step, after the values were typed.
-        schemaMissing: !schemas().has(service.name),
-        keys: keys.slice(0, 3).join(', ') + (keys.length > 3 ? ` +${keys.length - 3}` : ''),
-        environments,
-      };
-    });
-
-    return reply.type('text/html; charset=utf-8').send(
-      String(
-        renderProducts({
-          products,
-          commit: sources.commit,
-          draftCount: [...draftsByNamespace.values()].reduce((total, n) => total + n, 0),
-          ...(request.query?.notice ? { notice: request.query.notice } : {}),
-        }),
-      ),
-    );
-  });
+      );
+    },
+  );
 
   /**
    * The product page, however it was asked for.
@@ -269,6 +286,10 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     notice?: string | undefined;
     /** The create-this-environment offer was declined; the action stays, the prompt goes. */
     offerDeclined?: boolean;
+    /** Filters the fields to those whose key matches. Navigates nowhere. */
+    query?: string | undefined;
+    /** The key a search result linked to, marked so the eye lands on it. */
+    highlight?: string | undefined;
     /** A confirmation the page clears itself, as opposed to something still to act on. */
     transientNotice?: boolean;
     published?: readonly string[];
@@ -361,6 +382,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           // there is one, since that is the document on screen.
           revision: versionOf(shown),
           ...(missingFile ? { missingFile: true } : {}),
+          ...(options.query ? { query: options.query } : {}),
+          ...(options.highlight ? { highlight: options.highlight } : {}),
           ...(options.offerDeclined ? { offerDeclined: true } : {}),
           // The audit trail's latest entry for this namespace, shown where the operator is
           // about to add to it.
@@ -426,6 +449,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           published?: string;
           done?: string;
           create?: string;
+          q?: string;
+          hl?: string;
         };
       }>,
       reply,
@@ -436,6 +461,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         notice: request.query?.notice,
         ...(request.query?.done ? { transientNotice: true } : {}),
         ...(request.query?.create === 'no' ? { offerDeclined: true } : {}),
+        query: request.query?.q,
+        highlight: request.query?.hl,
         published: (request.query?.published ?? '').split(',').filter(Boolean),
         fragment: isHtmx(request),
       });

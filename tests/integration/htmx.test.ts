@@ -125,7 +125,9 @@ withSops('htmx as progressive enhancement', () => {
       const body = (await get('/p/iam?env=dev')).body;
 
       for (const form of body.match(/<form[^>]*>/g) ?? []) {
-        expect(form).toMatch(/method="post"/);
+        // Search is a GET — it asks for a page rather than changing anything — and everything
+        // else is a POST. Both submit on their own with no script present.
+        expect(form).toMatch(/method="(post|get)"/);
         expect(form).toMatch(/action="\//);
       }
     });
