@@ -22,6 +22,11 @@ services:
     namespaces: [api/prod]
 YAML
 
+cat > "$REPO/environments.yaml" <<'YAML'
+# Which environment promotes into which, lowest first. Absent means no promotion is offered.
+order: [dev, prod]
+YAML
+
 cat > "$REPO/schema/iam.yaml" <<YAML
 keys:
   REGISTRATION_MODE:

@@ -207,7 +207,10 @@ export class ConfigWriteService {
       // Nothing actually moved. Writing a draft anyway would put an empty pending marker on the
       // environment and offer a publish with no content behind it.
       if (changes.length === 0) {
-        if (existing) return ok(existing);
+        // An existing draft with nothing in it is not a draft: it puts a pending marker on the
+        // environment and offers a publish with no content behind it.
+        if (existing && existing.changes.length > 0) return ok(existing);
+        if (existing) await drafts.remove([namespace]);
         return err({ code: 'nothing_staged', detail: 'nothing changed' });
       }
 

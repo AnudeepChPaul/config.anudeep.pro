@@ -5,6 +5,7 @@ import { SessionCodec } from '@config/src/auth/session.js';
 import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
 import { DraftStore } from '@config/src/store/draft-store.js';
+import { EnvironmentOrder } from '@config/src/store/environment-order.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
@@ -474,6 +475,200 @@ describe('the controls a key renders', () => {
 
       expect(body).toContain('In other environments');
       expect(body).toContain('class="peek"');
+    });
+  });
+});
+
+describe('publishing ticked keys and promoting them', () => {
+  const SCHEMA2 = `keys:
+  MFA_ENFORCEMENT:
+    type: enum
+    values: [optional, admins, all]
+  SESSION_TTL:
+    type: int
+    min: 60
+    max: 86400
+  KILL_PASSWORD_LOGIN:
+    type: bool
+  SMTP_PASSWORD:
+    type: string
+    secret: true
+`;
+
+  const withSops3 = hasSops() ? describe : describe.skip;
+
+  withSops3('from the environment tab', () => {
+    let key3: AgeKeypair;
+    let repo3: TestRepo;
+    let git3: GitRepository;
+    let app3: Awaited<ReturnType<typeof buildWebApp>>;
+
+    const post = (url: string, fields: Array<[string, string]>) =>
+      app3.inject({
+        method: 'POST',
+        url,
+        payload: new URLSearchParams(fields).toString(),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+
+    const served = async (namespace: string) =>
+      (
+        await new ConfigLoader(new SopsDecryptor(key3.secret)).resolve(await git3.readSources())
+      ).namespaces.get(namespace);
+
+    beforeEach(async () => {
+      key3 = generateAgeKey();
+      repo3 = await TestRepo.create();
+      await repo3.commit({
+        'schema/iam.yaml': SCHEMA2,
+        'environments.yaml': 'order: [dev, prod]\n',
+        'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
+        'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
+        '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(SMTP_PASSWORD)$"\n    age: ${key3.recipient}\n`,
+      });
+      git3 = new GitRepository(repo3.dir);
+      const loader3 = new ConfigLoader(new SopsDecryptor(key3.secret));
+      const drafts3 = new DraftStore(`${repo3.dir}/.drafts.json`);
+      app3 = await buildWebApp({
+        repository: git3,
+        loader: loader3,
+        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA2 }),
+        drafts: drafts3,
+        environmentOrder: async () =>
+          EnvironmentOrder.fromYaml(await git3.readFile('environments.yaml')),
+        writeService: new ConfigWriteService({
+          repository: git3,
+          loader: loader3,
+          encryptor: new SopsEncryptor(repo3.dir),
+          schemas: () => SchemaSet.fromFiles({ iam: SCHEMA2 }),
+          drafts: drafts3,
+        }),
+        environment: 'dev',
+      });
+    });
+
+    afterEach(async () => {
+      await app3?.close();
+      await rm(repo3.dir, { recursive: true, force: true });
+    });
+
+    it('publishes only the ticked key', async () => {
+      const response = await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['key.SESSION_TTL', '600'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['message', 'Tighten MFA in dev'],
+        ['intent', 'publish'],
+      ]);
+
+      expect(response.statusCode).toBe(303);
+      expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'all', SESSION_TTL: 900 });
+    });
+
+    it('saves without publishing when that is the intent', async () => {
+      const before = await git3.headCommit();
+
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+
+      expect(await git3.headCommit()).toBe(before);
+    });
+
+    it('offers to promote exactly what was published', async () => {
+      const response = await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['key.SESSION_TTL', '600'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['message', 'Tighten MFA'],
+        ['intent', 'publish'],
+      ]);
+
+      const location = String(response.headers.location);
+      expect(location).toContain('published=MFA_ENFORCEMENT');
+
+      const page = await app3.inject({ method: 'GET', url: location });
+      expect(page.body).toContain('Stage in prod');
+      expect(page.body).toContain('MFA_ENFORCEMENT');
+      // The key that stayed staged was not published, so it is not on offer.
+      expect(page.body).not.toContain('name="key" value="SESSION_TTL"');
+    });
+
+    it('stages the promoted key in the next environment without publishing it', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['message', 'Tighten MFA'],
+        ['intent', 'publish'],
+      ]);
+
+      const response = await post('/promote', [
+        ['service', 'iam'],
+        ['from', 'dev'],
+        ['to', 'prod'],
+        ['key', 'MFA_ENFORCEMENT'],
+      ]);
+
+      expect(response.statusCode).toBe(303);
+      expect(String(response.headers.location)).toContain('env=prod');
+      // Staged, not published.
+      expect(await served('iam/prod')).toMatchObject({ MFA_ENFORCEMENT: 'optional' });
+      expect((await new DraftStore(`${repo3.dir}/.drafts.json`).get('iam/prod'))?.changes).toEqual([
+        { key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false },
+      ]);
+    });
+
+    it('does not post a false for a bool that has no override', async () => {
+      // The hidden `false` beside a checkbox makes an unticked box mean false rather than
+      // "delete the override" — but for a key with NO value it made `false` look like an edit,
+      // so merely opening the page and saving staged every unset boolean on the product.
+      //
+      // The guarantee is in what the form emits, so that is what this asserts: a hand-made post
+      // could carry anything and would prove nothing about the page.
+      const body = (await app3.inject({ method: 'GET', url: '/p/iam?env=dev' })).body;
+
+      expect(body).toMatch(/name="key.KILL_PASSWORD_LOGIN"/);
+      expect(body).not.toContain(
+        '<input type="hidden" name="key.KILL_PASSWORD_LOGIN" value="false">',
+      );
+    });
+
+    it('counts what a promotion actually staged, not what was asked', async () => {
+      // dev and prod already agree on SESSION_TTL, so promoting both keys moves one. Reporting
+      // two would send the operator looking for a change that is not there.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['message', 'Tighten MFA'],
+        ['intent', 'publish'],
+      ]);
+
+      const response = await post('/promote', [
+        ['service', 'iam'],
+        ['from', 'dev'],
+        ['to', 'prod'],
+        ['key', 'MFA_ENFORCEMENT'],
+        ['key', 'SESSION_TTL'],
+      ]);
+
+      expect(decodeURIComponent(String(response.headers.location))).toContain('Staged 1 change');
+    });
+
+    it('offers nothing to promote from the last environment', async () => {
+      await post('/p/iam/prod', [
+        ['key.MFA_ENFORCEMENT', 'admins'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['message', 'Change prod'],
+        ['intent', 'publish'],
+      ]);
+
+      const page = await app3.inject({
+        method: 'GET',
+        url: '/p/iam?env=prod&published=MFA_ENFORCEMENT',
+      });
+
+      expect(page.body).not.toContain('Stage in');
     });
   });
 });

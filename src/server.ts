@@ -13,6 +13,7 @@ import { ServiceRegistry } from './identity/registry.js';
 import { SchemaSet } from './schema/validator.js';
 import { ConfigCache } from './store/cache.js';
 import { DraftStore } from './store/draft-store.js';
+import { EnvironmentOrder } from './store/environment-order.js';
 import { ConfigLoader } from './store/loader.js';
 import { SnapshotStore } from './store/snapshot.js';
 import { SopsDecryptor } from './store/sops.js';
@@ -80,6 +81,15 @@ async function main(): Promise<void> {
     loader,
     schemas: () => currentSchemas,
     drafts,
+    // Read per request, so declaring an order takes effect without a restart. Absent means
+    // promotion is not offered at all rather than inferred from environment names.
+    environmentOrder: async () => {
+      try {
+        return EnvironmentOrder.fromYaml(await repository.readFile('environments.yaml'));
+      } catch {
+        return EnvironmentOrder.none();
+      }
+    },
     writeService: new ConfigWriteService({
       repository,
       loader,

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { GitRepository } from '../git/repository.js';
 import type { KeyDefinition, SchemaSet } from '../schema/validator.js';
 import type { DraftStore } from '../store/draft-store.js';
+import { EnvironmentOrder } from '../store/environment-order.js';
 import type { ConfigLoader } from '../store/loader.js';
 import type { ConfigWriteService } from '../store/write-service.js';
 import {
@@ -26,6 +27,11 @@ export interface UiRouteOptions {
   readonly schemas: () => SchemaSet;
   readonly writeService: ConfigWriteService;
   readonly drafts: DraftStore;
+  /**
+   * Which environment promotes into which. Read per request so a change to
+   * `environments.yaml` takes effect without a restart; absent means promotion is not offered.
+   */
+  readonly environmentOrder?: () => Promise<EnvironmentOrder>;
 }
 
 interface NamespaceParams {
@@ -38,6 +44,7 @@ const KEY_PREFIX = 'key.';
 
 export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions): void {
   const { repository, loader, schemas, writeService, drafts } = options;
+  const readOrder = options.environmentOrder ?? (async () => EnvironmentOrder.none());
 
   /**
    * What the console renders from: the committed tree, plus whatever is staged on top of it.
@@ -106,7 +113,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     async (
       request: FastifyRequest<{
         Params: { service: string };
-        Querystring: { env?: string; notice?: string };
+        Querystring: { env?: string; notice?: string; published?: string };
       }>,
       reply,
     ) => {
@@ -140,15 +147,42 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           pending: env.pending,
         }));
 
+      // The offer names exactly the keys that were just published, carried across the redirect
+      // rather than recomputed — anything else could offer to move a change the operator did
+      // not make.
+      const published: string[] = (request.query?.published ?? '').split(',').filter(Boolean);
+      const nextEnvironment = (await readOrder()).next(active);
+      const schemaSet = schemas();
+      const targetValues = nextEnvironment
+        ? ((tree.namespaces.get(`${service}/${nextEnvironment}`) ?? {}) as Record<string, unknown>)
+        : {};
+
+      const offer =
+        nextEnvironment && published.length > 0
+          ? {
+              nextEnvironment,
+              movable: published
+                .filter((key) => !schemaSet.isSecret(service, key))
+                .map((key) => ({ key, value: committed[key], target: targetValues[key] })),
+              blocked: published
+                .filter((key) => schemaSet.isSecret(service, key))
+                .map((key) => ({
+                  key,
+                  reason: `secret — set it directly in ${nextEnvironment}`,
+                })),
+            }
+          : undefined;
+
       return reply.type('text/html; charset=utf-8').send(
         String(
           renderProduct({
             service,
             environments,
             active,
-            rows: buildRows(schemas(), service, shown, {}, {}, { committed, elsewhere }),
+            rows: buildRows(schemaSet, service, shown, {}, {}, { committed, elsewhere }),
             commit: sources.commit,
             ...(request.query?.notice ? { notice: request.query.notice } : {}),
+            ...(offer ? { offer } : {}),
           }),
         ),
       );
@@ -158,7 +192,10 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
   app.post(
     '/p/:service/:environment',
     async (
-      request: FastifyRequest<{ Params: NamespaceParams; Body: Record<string, string> }>,
+      request: FastifyRequest<{
+        Params: NamespaceParams;
+        Body: Record<string, string | string[]>;
+      }>,
       reply,
     ) => {
       const { service, environment } = request.params;
@@ -167,19 +204,47 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       const changes = coerceChanges(schemaSet, service, submitted);
       const session = request.session;
 
-      const result = await writeService.stage(
-        { service, environment, changes },
-        {
-          email: session?.email ?? 'unauthenticated@localhost',
-          id: session?.id ?? 'anonymous',
-          ...(session?.via ? { via: session.via } : {}),
-        },
-      );
+      const actor = {
+        email: session?.email ?? 'unauthenticated@localhost',
+        id: session?.id ?? 'anonymous',
+        ...(session?.via ? { via: session.via } : {}),
+      };
+      const result = await writeService.stage({ service, environment, changes }, actor);
 
       if (result.ok) {
+        const body = (request.body ?? {}) as Record<string, string | string[]>;
+        const back = `/p/${service}?env=${encodeURIComponent(environment)}`;
+
+        // Two buttons, one form: saving keeps the draft, publishing ships what is ticked.
+        if (String(body.intent ?? '') !== 'publish') {
+          return reply.code(303).header('location', back).send();
+        }
+
+        // Only ticks that are still staged. A stale tick — a key published from another tab
+        // meanwhile — must not fail the whole publish.
+        const staged = result.value.changes.map((change) => change.key);
+        const ticked = toList(body.select).filter((key) => staged.includes(key));
+        const keys = ticked.length > 0 ? ticked : staged;
+
+        const published = await writeService.publish(
+          [{ namespace: `${service}/${environment}`, keys }],
+          String(body.message ?? '').trim() || `Publish ${service}/${environment}`,
+          actor,
+          { id: request.id, sourceIp: request.ip },
+        );
+
+        if (!published.ok) {
+          return reply
+            .code(303)
+            .header('location', `${back}&notice=${encodeURIComponent(published.error.detail)}`)
+            .send();
+        }
+
+        // The published keys ride the redirect so the promote offer names exactly them, rather
+        // than recomputing a set that could include something the operator did not just ship.
         return reply
           .code(303)
-          .header('location', `/p/${service}?env=${encodeURIComponent(environment)}`)
+          .header('location', `${back}&published=${encodeURIComponent(keys.join(','))}`)
           .send();
       }
 
@@ -214,11 +279,48 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
   );
 
   app.post(
+    '/promote',
+    async (request: FastifyRequest<{ Body: Record<string, string | string[]> }>, reply) => {
+      const body = request.body ?? {};
+      const service = String(body.service ?? '');
+      const from = String(body.from ?? '');
+      const to = String(body.to ?? '');
+      const keys = toList(body.key);
+      const session = request.session;
+
+      const result = await writeService.promote(
+        { service, from, to, keys },
+        {
+          email: session?.email ?? 'unauthenticated@localhost',
+          id: session?.id ?? 'anonymous',
+          ...(session?.via ? { via: session.via } : {}),
+        },
+      );
+
+      // What actually landed, not what was asked for: a key whose value the target already
+      // holds stages nothing, and claiming otherwise sends the operator looking for a change
+      // that is not there.
+      const notice = result.ok
+        ? `Staged ${result.value.changes.length} change(s) in ${to}. Nothing is published there yet.`
+        : `Nothing to promote: ${result.error.detail}`;
+
+      // Lands on the target environment: the change is there to review, and that is where the
+      // next decision is made.
+      return reply
+        .code(303)
+        .header(
+          'location',
+          `/p/${service}?env=${encodeURIComponent(result.ok ? to : from)}&notice=${encodeURIComponent(notice)}`,
+        )
+        .send();
+    },
+  );
+
+  app.post(
     '/publish',
     async (request: FastifyRequest<{ Body: Record<string, string | string[]> }>, reply) => {
       const body = request.body ?? {};
-      const raw = body.namespace;
-      const selected = (Array.isArray(raw) ? raw : raw ? [raw] : []).map(String);
+      const selected = toList(body.namespace);
       const message = String(body.message ?? '').trim();
       const session = request.session;
 
@@ -261,6 +363,12 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         .send();
     },
   );
+}
+
+/** One form field that may arrive once, many times, or not at all. */
+function toList(value: string | string[] | undefined): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  return value ? [String(value)] : [];
 }
 
 /** Every key the schema declares, plus any the file holds that it does not. */

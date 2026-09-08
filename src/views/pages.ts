@@ -89,6 +89,9 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .peek:hover .detail, .peek:focus-within .detail { display: block; }
   .detail .envname { color: #9aa0ad; font-size: .75rem; }
   .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: .25rem; }
+  .keyrow { display: flex; align-items: flex-start; gap: 14px; }
+  .keypick { width: 16px; flex-shrink: 0; padding-top: 2px; }
+  .keypick input { width: 16px; height: 16px; accent-color: #16181d; cursor: pointer; margin: 0; }
 </style>
 </head>
 <body><main>${body}</main></body>
@@ -121,6 +124,13 @@ function renderField(row: KeyRow): SafeHtml {
   const definition = row.definition;
   const hint = definition?.description ?? typeHint(definition);
 
+  // A checkbox only where there is something to publish: an unchanged key cannot be shipped, so
+  // a control there would be a dead one.
+  const pick = row.pending
+    ? html`<span class="keypick"><input type="checkbox" name="select" value="${row.key}" checked
+             title="Include in the next publish"></span>`
+    : html`<span class="keypick"></span>`;
+
   const header = html`<div class="keyline">
     <label for="${name}" style="margin: 0;">${peek(row)}</label>
     <span class="hint">${hint}</span>
@@ -140,11 +150,11 @@ function renderField(row: KeyRow): SafeHtml {
   // rendering it has to be a deliberate rule. A screenshot in a ticket or a browser cache would
   // otherwise leak it. The field sets a new value; it never shows the current one.
   if (definition?.secret) {
-    return html`<div class="field">${header}
+    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
       <input type="password" id="${name}" name="${name}" value=""
              placeholder="leave blank to keep the current value" autocomplete="off">
       ${error}
-    </div>`;
+    </div></div>`;
   }
 
   if (definition?.type === 'enum') {
@@ -161,43 +171,48 @@ function renderField(row: KeyRow): SafeHtml {
   if (definition?.type === 'int') {
     // The schema's own bounds, so the browser refuses what the validator would refuse anyway —
     // one round trip saved, and the constraint is visible in the control.
-    return html`<div class="field">${header}
+    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
       <input type="number" id="${name}" name="${name}" value="${row.value}" step="1"
              ${bounds(definition)}>
       ${error}
-    </div>`;
+    </div></div>`;
   }
 
   if (definition?.type === 'bool') {
     const on = row.value === true || row.value === 'true';
-    // A hidden false before the checkbox: an unchecked box submits nothing, which would read as
-    // "delete the override" rather than "set it to false".
-    return html`<div class="field">${header}
-      <input type="hidden" name="${name}" value="false">
+    // A hidden false before the checkbox, so an unticked box means false rather than "delete the
+    // override" — but ONLY where an override already exists. For a key with no value, `false`
+    // would look like an edit, and merely opening the page would stage every unset boolean.
+    // The cost is that adding a first `false` override needs the file; that is rarer than
+    // opening a page.
+    const explicitFalse =
+      row.value === undefined ? html`` : html`<input type="hidden" name="${name}" value="false">`;
+    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
+      ${explicitFalse}
       <label class="switch">
         <input type="checkbox" id="${name}" name="${name}" value="true"${on ? ' checked' : ''}>
         <span class="track${on ? ' on' : ''}"><span class="knob"></span></span>
         <span>${on ? 'true' : 'false'}</span>
       </label>
       ${error}
-    </div>`;
+    </div></div>`;
   }
 
   if (definition?.type === 'string[]') {
     const items = Array.isArray(row.value) ? row.value : [];
     const chips = items.map((item) => html`<span class="chip-item">${item}</span>`);
-    return html`<div class="field">${header}
+    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
       ${items.length > 0 ? html`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:.4rem;">${chips}</div>` : html``}
       <input type="text" id="${name}" name="${name}" value="${items.join(', ')}"
              placeholder="comma separated">
       ${error}
-    </div>`;
+    </div></div>`;
   }
 
-  return html`<div class="field">${header}
+  return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
     <input type="${definition?.type === 'url' ? 'url' : 'text'}" id="${name}" name="${name}" value="${row.value}">
     ${error}
-  </div>`;
+  </div></div>`;
 }
 
 /**
@@ -421,6 +436,14 @@ export function renderProducts(options: {
 }
 
 /** Inside a product: environments as tabs, each flagged when it holds unpublished changes. */
+export interface PromoteOffer {
+  readonly nextEnvironment: string;
+  /** What was just published and can move, with the target's current value. */
+  readonly movable: ReadonlyArray<{ key: string; value: unknown; target: unknown }>;
+  /** Published, but not movable — a secret cannot cross environments. */
+  readonly blocked: ReadonlyArray<{ key: string; reason: string }>;
+}
+
 export function renderProduct(options: {
   service: string;
   environments: readonly EnvironmentSummary[];
@@ -430,6 +453,7 @@ export function renderProduct(options: {
   message?: string;
   notice?: string;
   error?: string;
+  offer?: PromoteOffer;
 }): SafeHtml {
   const activeEnv = options.environments.find((env) => env.name === options.active);
   const productPending = options.environments.reduce((n, env) => n + env.pending.length, 0);
@@ -466,6 +490,7 @@ export function renderProduct(options: {
       </div>
 
       <div class="tabs">${tabs}</div>
+      ${promoteOffer(options)}
       ${options.notice ? html`<div class="card">${options.notice}</div>` : html``}
       ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
 
@@ -492,4 +517,60 @@ export function renderProduct(options: {
       </form>
     `,
   );
+}
+
+/**
+ * The offer to move what was just published into the next environment.
+ *
+ * It appears only after a publish and names exactly those keys — so the two environments stay
+ * separate by default, and nothing moves that the operator did not just deliberately ship.
+ */
+function promoteOffer(options: {
+  service: string;
+  active: string;
+  offer?: PromoteOffer;
+}): SafeHtml {
+  const offer = options.offer;
+  if (!offer) return html``;
+
+  const rows = offer.movable.map(
+    (
+      change,
+    ) => html`<div style="font-size:.8125rem;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+      <strong style="font-size:.875rem;">${change.key}</strong>
+      <span class="hint">${offer.nextEnvironment} has</span>
+      <span class="was">${format(change.target)}</span>
+      <span class="arrow">→</span>
+      <span>${format(change.value)}</span>
+    </div>`,
+  );
+
+  const blocked = offer.blocked.map(
+    (entry) => html`<div style="font-size:.8125rem;color:#5b6070;">
+      <strong style="font-size:.875rem;color:#16181d;">${entry.key}</strong> — ${entry.reason}
+    </div>`,
+  );
+
+  const hidden = offer.movable.map(
+    (change) => html`<input type="hidden" name="key" value="${change.key}">`,
+  );
+
+  return html`<div class="card" style="border-left: 3px solid #1d4ed8;">
+    <div style="font-weight:600;">Published in ${options.active}.</div>
+    <p class="sub" style="margin:3px 0 .85rem;">
+      Move the same change to ${offer.nextEnvironment}? It is staged there for review — nothing
+      is published in ${offer.nextEnvironment}.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:7px;margin-bottom:1rem;">${rows}${blocked}</div>
+    <form method="post" action="/promote" style="display:flex;align-items:center;gap:12px;">
+      <input type="hidden" name="service" value="${options.service}">
+      <input type="hidden" name="from" value="${options.active}">
+      <input type="hidden" name="to" value="${offer.nextEnvironment}">
+      ${hidden}
+      <button type="submit" ${offer.movable.length === 0 ? 'disabled' : ''}>
+        Stage in ${offer.nextEnvironment}
+      </button>
+      <a href="/p/${options.service}?env=${options.active}">Not now</a>
+    </form>
+  </div>`;
 }

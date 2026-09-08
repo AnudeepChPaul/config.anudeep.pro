@@ -1,0 +1,6 @@
+# Which environment promotes into which, lowest first.
+#
+# Nothing in a namespace name says dev comes before prod, and a wrong guess would promote
+# production into development. With this file absent, the console offers no promotion at all —
+# an undeclared order is different from an obvious one.
+order: [dev, prod]
