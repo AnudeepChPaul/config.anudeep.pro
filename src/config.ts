@@ -6,8 +6,8 @@ import { webUrlFor } from './git/repository.js';
  * This service cannot read its own registry to find out where its registry is.
  */
 
-const required = (name: string): string => {
-  const value = process.env[name];
+const required = (name: string, env: NodeJS.ProcessEnv = process.env): string => {
+  const value = env[name];
   if (!value) throw new Error(`${name} is required`);
   return value;
 };
@@ -33,6 +33,8 @@ export interface ServiceConfig {
   readonly httpPort: number;
   readonly logLevel: string;
   readonly sessionSecret: string;
+  /** True only where the operator explicitly gave up the secure cookie, and never in prod. */
+  readonly insecureCookie: boolean;
   readonly iam: {
     issuer: string;
     clientId: string;
@@ -47,8 +49,21 @@ export interface ServiceConfig {
   readonly pollIntervalMs: number;
 }
 
+/** The environments this service knows how to be. Anything else is a misconfiguration. */
+const ENVIRONMENTS = ['dev', 'staging', 'prod'] as const;
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig {
+  // Unset means dev, which is the documented default for someone running it locally. Anything
+  // else must be one of the three: an empty string — what an unset compose interpolation
+  // produces — used to be neither dev nor prod, and every production guard hung off that one
+  // comparison. A value nobody recognises is a misconfiguration, and this is the one place that
+  // can still say so out loud.
   const environment = env.CONFIG_ENVIRONMENT ?? 'dev';
+  if (!ENVIRONMENTS.includes(environment as (typeof ENVIRONMENTS)[number])) {
+    throw new Error(
+      `CONFIG_ENVIRONMENT must be one of ${ENVIRONMENTS.join(', ')}; got '${environment}'`,
+    );
+  }
 
   return {
     environment,
@@ -69,19 +84,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     socketPath: env.CONFIG_SOCKET_PATH ?? '/run/config/config.sock',
     snapshotPath: env.CONFIG_SNAPSHOT_PATH ?? '/var/lib/config/snapshot.json',
     draftsPath: env.CONFIG_DRAFTS_PATH ?? '/var/lib/config/drafts.json',
-    // Needed to decrypt anything, including the last-known-good snapshot at boot.
-    ageKey: environment === 'prod' ? required('CONFIG_AGE_KEY') : (env.CONFIG_AGE_KEY ?? ''),
+    // Needed to decrypt anything, including the last-known-good snapshot at boot — in every
+    // environment, not only prod. Required here rather than gated on the environment, because
+    // gating it on one string is how it came to be optional by accident.
+    ageKey: required('CONFIG_AGE_KEY', env),
     // Loopback by default. The UI has no authentication until slice 10, and 0.0.0.0 would put
     // it on the Docker network where every container could reach it.
     httpHost: env.CONFIG_HTTP_HOST ?? '127.0.0.1',
     httpPort: Number(env.CONFIG_HTTP_PORT ?? 8200),
     logLevel: env.CONFIG_LOG_LEVEL ?? 'info',
-    // Signing key for the session cookie. Required in prod: without it the editor cannot be
-    // guarded, and buildWebApp refuses to serve it unguarded there anyway.
-    sessionSecret:
-      environment === 'prod'
-        ? required('CONFIG_SESSION_SECRET')
-        : (env.CONFIG_SESSION_SECRET ?? ''),
+    // Signing key for the session cookie, in every environment. Its absence used to make the
+    // auth options undefined, and an undefined auth was allowed anywhere but prod — so one
+    // unset variable served the console with no login on it.
+    sessionSecret: required('CONFIG_SESSION_SECRET', env),
+    // The one opt-out, for a developer on plain http. Refused in prod whatever is asked for:
+    // a session cookie that can travel in clear is not a session.
+    insecureCookie: environment !== 'prod' && env.CONFIG_INSECURE_COOKIE === '1',
     iam:
       env.CONFIG_IAM_ISSUER && env.CONFIG_IAM_CLIENT_ID && env.CONFIG_IAM_CLIENT_SECRET
         ? {

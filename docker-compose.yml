@@ -20,6 +20,9 @@ services:
       CONFIG_AGE_KEY: ${CONFIG_AGE_KEY:-}
       # Signing key for the session cookie. Its presence is what turns the guard on.
       CONFIG_SESSION_SECRET: ${CONFIG_SESSION_SECRET:-}
+      # The console is reached over plain http here. Refused in prod whatever is set: a session
+      # cookie that can travel in the clear is not a session.
+      CONFIG_INSECURE_COOKIE: "1"
       # How reachability is decided. Unset means "iam is up", which keeps break-glass shut;
       # point it at a dead port locally to exercise the emergency path.
       CONFIG_IAM_HEALTH_URL: ${CONFIG_IAM_HEALTH_URL:-}

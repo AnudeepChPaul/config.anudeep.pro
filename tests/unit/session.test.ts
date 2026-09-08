@@ -109,20 +109,23 @@ describe('SessionCodec secret', () => {
 describe('cookie attributes', () => {
   it('is not readable from JavaScript', () => {
     // Anything script can read, an injected script can exfiltrate.
-    expect(codec().cookieOptions('prod').httpOnly).toBe(true);
+    expect(codec().cookieOptions().httpOnly).toBe(true);
   });
 
   it('is not sent on cross-site requests', () => {
     // The forms here are plain posts with no CSRF token, so SameSite is what stops another
     // site's page from submitting one on a logged-in operator's behalf.
-    expect(codec().cookieOptions('prod').sameSite).toBe('lax');
+    expect(codec().cookieOptions().sameSite).toBe('lax');
   });
 
-  it('is https-only in prod', () => {
-    expect(codec().cookieOptions('prod').secure).toBe(true);
+  it('is https-only by default, in every environment', () => {
+    // It used to be `environment === 'prod'`, so any value that was not exactly that — an empty
+    // string included — sent the session cookie in the clear.
+    expect(codec().cookieOptions().secure).toBe(true);
   });
 
-  it('is not https-only in dev, so local work over http still signs in', () => {
-    expect(codec().cookieOptions('dev').secure).toBe(false);
+  it('gives that up only where it is explicitly asked for', () => {
+    // For a developer on plain http, and for nobody else: loadConfig refuses the opt-out in prod.
+    expect(codec().cookieOptions(true).secure).toBe(false);
   });
 });

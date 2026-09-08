@@ -1,7 +1,5 @@
 import { rm } from 'node:fs/promises';
 import { buildWebApp } from '@config/src/app.js';
-import { BreakGlass } from '@config/src/auth/break-glass.js';
-import { SessionCodec } from '@config/src/auth/session.js';
 import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
 import { DraftStore } from '@config/src/store/draft-store.js';
@@ -11,7 +9,7 @@ import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
 import { ConfigWriteService } from '@config/src/store/write-service.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.js';
+import { type AgeKeypair, generateAgeKey, guarded, hasSops, TestRepo } from '../helpers.js';
 
 /**
  * The CRUD UI.
@@ -21,6 +19,9 @@ import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.j
  * change how authentication behaves, so a value that can run script in that session is as good
  * as a compromise of iam.
  */
+
+/** One signed-in operator for every fixture here: the console cannot be built without one. */
+const signedIn = guarded();
 
 const withSops = hasSops() ? describe : describe.skip;
 
@@ -51,19 +52,10 @@ withSops('the CRUD UI', () => {
 
   const start = async (options: { environment?: string; authenticated?: boolean } = {}) => {
     drafts = new DraftStore(`${repo.dir}/.drafts.json`);
-    // `auth` present IS authentication; these cases only care whether prod refuses to run
-    // without it, so a minimal stand-in is enough to say "something is in front".
-    const auth = options.authenticated
-      ? ({
-          codec: new SessionCodec('y'.repeat(64)),
-          breakGlass: new BreakGlass({
-            record: null,
-            isIamReachable: async () => true,
-            alert: () => {},
-          }),
-          isIamReachable: async () => true,
-        } as const)
-      : undefined;
+    // `auth` present IS authentication. Absent, the console refuses to be built at all now — in
+    // every environment, since keying that off an environment string is what let one unset
+    // variable serve it with no login on it.
+    const auth = options.authenticated === false ? undefined : signedIn.auth;
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
     app = await buildWebApp({
       repository: git,
@@ -85,7 +77,7 @@ withSops('the CRUD UI', () => {
     return app;
   };
 
-  const get = (path: string) => app.inject({ method: 'GET', url: path });
+  const get = (path: string) => app.inject({ method: 'GET', url: path, headers: signedIn.headers });
   /**
    * A real urlencoded form post. The payload is encoded by hand because inject serialises an
    * object as JSON whatever the content-type says, which would exercise a body this app never
@@ -96,7 +88,7 @@ withSops('the CRUD UI', () => {
       method: 'POST',
       url: path,
       payload: new URLSearchParams(fields).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...signedIn.headers },
     });
 
   beforeEach(async () => {
@@ -120,8 +112,8 @@ withSops('the CRUD UI', () => {
 
   describe('refusing to run unprotected', () => {
     it('will not start in prod without authentication configured', async () => {
-      // Slice 10 has not happened. Until it has, this page can change MFA enforcement and close
-      // registration for anyone who can reach it, so the only safe prod behaviour is to refuse.
+      // This page can change MFA enforcement and close registration for anyone who can reach
+      // it, so the only safe behaviour without a guard in front is to refuse.
       await expect(start({ environment: 'prod', authenticated: false })).rejects.toThrow(
         /authentication/i,
       );
@@ -131,8 +123,12 @@ withSops('the CRUD UI', () => {
       await expect(start({ environment: 'prod', authenticated: true })).resolves.toBeTruthy();
     });
 
-    it('starts in dev without it, for local work', async () => {
-      await expect(start({ environment: 'dev' })).resolves.toBeTruthy();
+    it('will not start in dev without it either', async () => {
+      // It used to. An empty CONFIG_ENVIRONMENT is neither 'dev' nor 'prod', and every guard
+      // hung off that one comparison — so one unset variable served the console unguarded.
+      await expect(start({ environment: 'dev', authenticated: false })).rejects.toThrow(
+        /authentication/i,
+      );
     });
   });
 
@@ -427,6 +423,7 @@ describe('the controls a key renders', () => {
           drafts: drafts2,
         }),
         environment: 'dev',
+        auth: signedIn.auth,
       });
     });
 
@@ -435,7 +432,9 @@ describe('the controls a key renders', () => {
       await rm(repo2.dir, { recursive: true, force: true });
     });
 
-    const page = async () => (await app2.inject({ method: 'GET', url: '/p/iam?env=prod' })).body;
+    const page = async () =>
+      (await app2.inject({ method: 'GET', url: '/p/iam?env=prod', headers: signedIn.headers }))
+        .body;
 
     it('renders an int as a number box carrying the schema bounds', async () => {
       const body = await page();
@@ -480,7 +479,10 @@ describe('the controls a key renders', () => {
         method: 'POST',
         url: '/p/iam/prod',
         payload: new URLSearchParams([['key.KILL_PASSWORD_LOGIN', 'false']]).toString(),
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          ...signedIn.headers,
+        },
       });
 
       const loader = new ConfigLoader(new SopsDecryptor(key2.secret));
@@ -530,7 +532,10 @@ describe('publishing ticked keys and promoting them', () => {
         method: 'POST',
         url,
         payload: new URLSearchParams(fields).toString(),
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          ...signedIn.headers,
+        },
       });
 
     const served = async (namespace: string) =>
@@ -568,6 +573,7 @@ describe('publishing ticked keys and promoting them', () => {
           drafts: drafts3,
         }),
         environment: 'dev',
+        auth: signedIn.auth,
       });
     });
 
@@ -612,7 +618,7 @@ describe('publishing ticked keys and promoting them', () => {
       const location = String(response.headers.location);
       expect(location).toContain('published=MFA_ENFORCEMENT');
 
-      const page = await app3.inject({ method: 'GET', url: location });
+      const page = await app3.inject({ method: 'GET', url: location, headers: signedIn.headers });
       expect(page.body).toMatch(/Save \d+ as a draft in prod\?/);
       expect(page.body).toContain('MFA_ENFORCEMENT');
       // Both keys were published — a draft publishes whole — but only the ticked one is offered
@@ -650,7 +656,9 @@ describe('publishing ticked keys and promoting them', () => {
       //
       // The guarantee is in what the form emits, so that is what this asserts: a hand-made post
       // could carry anything and would prove nothing about the page.
-      const body = (await app3.inject({ method: 'GET', url: '/p/iam?env=dev' })).body;
+      const body = (
+        await app3.inject({ method: 'GET', url: '/p/iam?env=dev', headers: signedIn.headers })
+      ).body;
 
       expect(body).toMatch(/name="key.KILL_PASSWORD_LOGIN"/);
       expect(body).not.toContain(
@@ -689,6 +697,7 @@ describe('publishing ticked keys and promoting them', () => {
       const page = await app3.inject({
         method: 'GET',
         url: '/p/iam?env=prod&published=MFA_ENFORCEMENT',
+        headers: signedIn.headers,
       });
 
       expect(page.body).not.toContain('Stage in');
@@ -722,14 +731,18 @@ describe('the environment tab offers the controls its routes accept', () => {
     let git4: GitRepository;
     let app4: Awaited<ReturnType<typeof buildWebApp>>;
 
-    const page = async (url = '/p/iam?env=dev') => (await app4.inject({ method: 'GET', url })).body;
+    const page = async (url = '/p/iam?env=dev') =>
+      (await app4.inject({ method: 'GET', url, headers: signedIn.headers })).body;
 
     const post = (url: string, fields: Array<[string, string]>) =>
       app4.inject({
         method: 'POST',
         url,
         payload: new URLSearchParams(fields).toString(),
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          ...signedIn.headers,
+        },
       });
 
     beforeEach(async () => {
@@ -762,6 +775,7 @@ describe('the environment tab offers the controls its routes accept', () => {
           drafts: drafts4,
         }),
         environment: 'dev',
+        auth: signedIn.auth,
       });
     });
 
@@ -790,7 +804,10 @@ describe('the environment tab offers the controls its routes accept', () => {
           ['key.SESSION_TTL', 'not-a-number'],
           ['intent', 'save'],
         ]).toString(),
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          ...signedIn.headers,
+        },
       });
       expect(withMore.statusCode).toBe(422);
       expect(withMore.body).toContain('name="intent" value="save"');
@@ -919,14 +936,18 @@ describe('the tick and button behaviour the page depends on', () => {
     let drafts5: DraftStore;
     let app5: Awaited<ReturnType<typeof buildWebApp>>;
 
-    const page = async () => (await app5.inject({ method: 'GET', url: '/p/iam?env=dev' })).body;
+    const page = async () =>
+      (await app5.inject({ method: 'GET', url: '/p/iam?env=dev', headers: signedIn.headers })).body;
 
     const post = (url: string, fields: Array<[string, string]>) =>
       app5.inject({
         method: 'POST',
         url,
         payload: new URLSearchParams(fields).toString(),
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          ...signedIn.headers,
+        },
       });
 
     beforeEach(async () => {
@@ -965,6 +986,7 @@ describe('the tick and button behaviour the page depends on', () => {
           drafts: drafts5,
         }),
         environment: 'dev',
+        auth: signedIn.auth,
       });
     });
 
@@ -1047,7 +1069,9 @@ describe('the tick and button behaviour the page depends on', () => {
     });
 
     it('recounts a swapped-in page rather than inheriting the previous one', async () => {
-      const script = (await app5.inject({ method: 'GET', url: '/assets/ticks.js' })).body;
+      const script = (
+        await app5.inject({ method: 'GET', url: '/assets/ticks.js', headers: signedIn.headers })
+      ).body;
 
       expect(script).toContain('htmx:afterSwap');
       expect(script).toContain('data-publish-action');
@@ -1115,7 +1139,9 @@ describe('the tick and button behaviour the page depends on', () => {
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
       ]);
-      const script = (await app5.inject({ method: 'GET', url: '/assets/ticks.js' })).body;
+      const script = (
+        await app5.inject({ method: 'GET', url: '/assets/ticks.js', headers: signedIn.headers })
+      ).body;
 
       // The page carries what is drafted, so the script can tell a fresh tick from a saved one.
       expect(await page()).toContain('data-drafted="MFA_ENFORCEMENT"');
@@ -1139,7 +1165,11 @@ describe('the tick and button behaviour the page depends on', () => {
           ['intent', 'publish'],
           ['message', 'ship it'],
         ]).toString(),
-        headers: { 'content-type': 'application/x-www-form-urlencoded', 'hx-request': 'true' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'hx-request': 'true',
+          ...signedIn.headers,
+        },
       });
 
       expect(done.body).toContain('Done publishing.');
@@ -1164,7 +1194,11 @@ describe('the tick and button behaviour the page depends on', () => {
           ['intent', 'publish'],
           ['message', 'ship it'],
         ]).toString(),
-        headers: { 'content-type': 'application/x-www-form-urlencoded', 'hx-request': 'true' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'hx-request': 'true',
+          ...signedIn.headers,
+        },
       });
 
       // This repository has no remote at all, so the push cannot have happened.
@@ -1176,7 +1210,9 @@ describe('the tick and button behaviour the page depends on', () => {
     });
 
     it('clears a transient notice after five seconds, and only a transient one', async () => {
-      const script = (await app5.inject({ method: 'GET', url: '/assets/ticks.js' })).body;
+      const script = (
+        await app5.inject({ method: 'GET', url: '/assets/ticks.js', headers: signedIn.headers })
+      ).body;
 
       expect(script).toContain('data-transient');
       expect(script).toContain('5000');
@@ -1196,7 +1232,11 @@ describe('the tick and button behaviour the page depends on', () => {
         method: 'POST',
         url: '/p/iam/dev',
         payload: fields,
-        headers: { 'content-type': 'application/x-www-form-urlencoded', 'hx-request': 'true' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'hx-request': 'true',
+          ...signedIn.headers,
+        },
       });
 
       expect(swapped.statusCode).toBe(200);
@@ -1223,6 +1263,7 @@ describe('the tick and button behaviour the page depends on', () => {
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
           'hx-request': 'true',
+          ...signedIn.headers,
         },
       });
 
@@ -1244,7 +1285,9 @@ describe('the tick and button behaviour the page depends on', () => {
     it('offers to create a declared environment that has no file yet', async () => {
       // api/dev is declared by environments.yaml and has no file. The tab renders, and asks
       // before creating anything: a click should not write a file nobody reviewed.
-      const page = (await app5.inject({ method: 'GET', url: '/p/api?env=dev' })).body;
+      const page = (
+        await app5.inject({ method: 'GET', url: '/p/api?env=dev', headers: signedIn.headers })
+      ).body;
 
       expect(page).toMatch(/no file/i);
       expect(page).toContain('name="intent" value="create"');
@@ -1254,7 +1297,13 @@ describe('the tick and button behaviour the page depends on', () => {
     });
 
     it('keeps offering after the offer is declined', async () => {
-      const page = (await app5.inject({ method: 'GET', url: '/p/api?env=dev&create=no' })).body;
+      const page = (
+        await app5.inject({
+          method: 'GET',
+          url: '/p/api?env=dev&create=no',
+          headers: signedIn.headers,
+        })
+      ).body;
 
       // The prompt is gone; the action it offered is not.
       expect(page).not.toContain('It is staged as a draft');
@@ -1264,7 +1313,9 @@ describe('the tick and button behaviour the page depends on', () => {
     it('stages one draft of the schema defaults when the offer is accepted', async () => {
       await post('/p/api/dev', [['intent', 'create']]);
 
-      const page = (await app5.inject({ method: 'GET', url: '/p/api?env=dev' })).body;
+      const page = (
+        await app5.inject({ method: 'GET', url: '/p/api?env=dev', headers: signedIn.headers })
+      ).body;
 
       expect(page).toMatch(/Publish 1 draft in dev\?/);
       // The declared defaults, written as values: once the file exists they are what the
@@ -1296,7 +1347,11 @@ describe('the tick and button behaviour the page depends on', () => {
           ['key.SESSION_TTL', 'abc'],
           ['intent', 'save'],
         ]).toString(),
-        headers: { 'content-type': 'application/x-www-form-urlencoded', 'hx-request': 'true' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'hx-request': 'true',
+          ...signedIn.headers,
+        },
       });
 
       expect(failed.statusCode).toBe(422);
@@ -1348,7 +1403,9 @@ describe('the tick and button behaviour the page depends on', () => {
     });
 
     it('filters the product list to products holding a matching key', async () => {
-      const found = (await app5.inject({ method: 'GET', url: '/?q=SESSION' })).body;
+      const found = (
+        await app5.inject({ method: 'GET', url: '/?q=SESSION', headers: signedIn.headers })
+      ).body;
 
       expect(found).toContain('iam (1002)');
       expect(found).toContain('SESSION_TTL');
@@ -1357,31 +1414,52 @@ describe('the tick and button behaviour the page depends on', () => {
     });
 
     it('matches without regard to case, and says when nothing matched', async () => {
-      expect((await app5.inject({ method: 'GET', url: '/?q=session' })).body).toContain(
-        'SESSION_TTL',
-      );
-      expect((await app5.inject({ method: 'GET', url: '/?q=zzz' })).body).toMatch(/no key/i);
+      expect(
+        (await app5.inject({ method: 'GET', url: '/?q=session', headers: signedIn.headers })).body,
+      ).toContain('SESSION_TTL');
+      expect(
+        (await app5.inject({ method: 'GET', url: '/?q=zzz', headers: signedIn.headers })).body,
+      ).toMatch(/no key/i);
     });
 
     it('links a match to that product at dev, with the key marked', async () => {
-      const found = (await app5.inject({ method: 'GET', url: '/?q=SESSION' })).body;
+      const found = (
+        await app5.inject({ method: 'GET', url: '/?q=SESSION', headers: signedIn.headers })
+      ).body;
 
       expect(found).toContain('/p/iam?env=dev&hl=SESSION_TTL');
     });
 
     it('marks the key a link arrived for, and marks nothing for a key that is not there', async () => {
-      const marked = (await app5.inject({ method: 'GET', url: '/p/iam?env=dev&hl=SESSION_TTL' }))
-        .body;
+      const marked = (
+        await app5.inject({
+          method: 'GET',
+          url: '/p/iam?env=dev&hl=SESSION_TTL',
+          headers: signedIn.headers,
+        })
+      ).body;
 
       expect(marked).toMatch(/class="[^"]*found[^"]*"/);
       expect(marked).toContain('.found');
 
-      const nothing = (await app5.inject({ method: 'GET', url: '/p/iam?env=dev&hl=NOPE' })).body;
+      const nothing = (
+        await app5.inject({
+          method: 'GET',
+          url: '/p/iam?env=dev&hl=NOPE',
+          headers: signedIn.headers,
+        })
+      ).body;
       expect(nothing).not.toMatch(/class="[^"]*found[^"]*"/);
     });
 
     it('filters the fields inside a product, and navigates nowhere', async () => {
-      const filtered = (await app5.inject({ method: 'GET', url: '/p/iam?env=dev&q=SESSION' })).body;
+      const filtered = (
+        await app5.inject({
+          method: 'GET',
+          url: '/p/iam?env=dev&q=SESSION',
+          headers: signedIn.headers,
+        })
+      ).body;
 
       expect(filtered).toContain('name="key.SESSION_TTL"');
       expect(filtered).not.toContain('name="key.MFA_ENFORCEMENT"');
@@ -1398,7 +1476,9 @@ describe('the tick and button behaviour the page depends on', () => {
     it('shows key names and no values at all, secrets included', async () => {
       // Search reads key NAMES from the schema. Searching values over a registry that holds
       // secrets becomes a way to confirm one by guessing, so no value is matched or rendered.
-      const found = (await app5.inject({ method: 'GET', url: '/?q=SESSION' })).body;
+      const found = (
+        await app5.inject({ method: 'GET', url: '/?q=SESSION', headers: signedIn.headers })
+      ).body;
 
       expect(found).toContain('SESSION_TTL');
       // dev holds 900 and prod 3600; neither belongs in a list of key names.
@@ -1416,7 +1496,8 @@ describe('the tick and button behaviour the page depends on', () => {
         ['intent', 'save'],
       ]);
 
-      const list = (await app5.inject({ method: 'GET', url: '/drafts' })).body;
+      const list = (await app5.inject({ method: 'GET', url: '/drafts', headers: signedIn.headers }))
+        .body;
 
       expect(list).toContain('iam/dev');
       expect(list).toContain('MFA_ENFORCEMENT');
@@ -1427,7 +1508,9 @@ describe('the tick and button behaviour the page depends on', () => {
     });
 
     it('says so plainly when nothing is drafted anywhere', async () => {
-      expect((await app5.inject({ method: 'GET', url: '/drafts' })).body).toMatch(/nothing/i);
+      expect(
+        (await app5.inject({ method: 'GET', url: '/drafts', headers: signedIn.headers })).body,
+      ).toMatch(/nothing/i);
     });
 
     it('drops the save it is asked to drop, and leaves the other', async () => {
@@ -1444,7 +1527,8 @@ describe('the tick and button behaviour the page depends on', () => {
         ['namespace', 'iam/dev'],
         ['index', '0'],
       ]);
-      const list = (await app5.inject({ method: 'GET', url: '/drafts' })).body;
+      const list = (await app5.inject({ method: 'GET', url: '/drafts', headers: signedIn.headers }))
+        .body;
 
       expect(list).toContain('SESSION_TTL');
       expect(list).not.toContain('MFA_ENFORCEMENT');
@@ -1456,7 +1540,9 @@ describe('the tick and button behaviour the page depends on', () => {
         ['intent', 'save'],
       ]);
 
-      expect((await app5.inject({ method: 'GET', url: '/drafts' })).body).toContain('hx-confirm');
+      expect(
+        (await app5.inject({ method: 'GET', url: '/drafts', headers: signedIn.headers })).body,
+      ).toContain('hx-confirm');
     });
 
     it('links the draft list from the product list, with the count on it', async () => {
@@ -1465,7 +1551,9 @@ describe('the tick and button behaviour the page depends on', () => {
         ['intent', 'save'],
       ]);
 
-      expect((await app5.inject({ method: 'GET', url: '/' })).body).toContain('href="/drafts"');
+      expect(
+        (await app5.inject({ method: 'GET', url: '/', headers: signedIn.headers })).body,
+      ).toContain('href="/drafts"');
     });
 
     it('marks a declared product whose schema is missing, and refuses to open it', async () => {
@@ -1477,13 +1565,16 @@ describe('the tick and button behaviour the page depends on', () => {
           '  - name: audit\n    uid: 1004\n    namespaces: [audit/prod]\n',
       });
 
-      const list = (await app5.inject({ method: 'GET', url: '/' })).body;
+      const list = (await app5.inject({ method: 'GET', url: '/', headers: signedIn.headers })).body;
 
       expect(list).toContain('schema is missing');
       expect(list).toContain('audit (1004)');
       // Not a link: there is nowhere useful for it to go.
       expect(list).not.toMatch(/href="\/p\/audit"/);
-      expect((await app5.inject({ method: 'GET', url: '/p/audit' })).statusCode).toBe(404);
+      expect(
+        (await app5.inject({ method: 'GET', url: '/p/audit', headers: signedIn.headers }))
+          .statusCode,
+      ).toBe(404);
     });
 
     it('renders a tab for every declared environment, file or no file', async () => {
@@ -1710,7 +1801,11 @@ describe('the tick and button behaviour the page depends on', () => {
       const body = await page();
       expect(body).toContain('src="/assets/ticks.js"');
 
-      const script = await app5.inject({ method: 'GET', url: '/assets/ticks.js' });
+      const script = await app5.inject({
+        method: 'GET',
+        url: '/assets/ticks.js',
+        headers: signedIn.headers,
+      });
       expect(script.statusCode).toBe(200);
       expect(script.body).toContain('data-original');
     });

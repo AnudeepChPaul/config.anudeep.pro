@@ -103,8 +103,11 @@ export class SessionCodec {
    * lax` because these are plain form posts with no CSRF token, so it is what stops another
    * site submitting one on a signed-in operator's behalf.
    */
-  cookieOptions(environment: string): CookieOptions {
-    return { httpOnly: true, sameSite: 'lax', secure: environment === 'prod', path: '/' };
+  cookieOptions(insecure = false): CookieOptions {
+    // Secure unless someone explicitly gave it up. It used to be `environment === 'prod'`, so
+    // any environment string that was not exactly that — an empty one included — sent the
+    // session cookie in the clear.
+    return { httpOnly: true, sameSite: 'lax', secure: !insecure, path: '/' };
   }
 
   private mac(payload: string): string {

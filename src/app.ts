@@ -124,6 +124,8 @@ export interface WebAppOptions extends UiRouteOptions {
    * a guard can disagree, and the way they disagree is that the flag says protected.
    */
   readonly auth?: AuthOptions;
+  /** Passed to the cookie: secure unless this says otherwise. Never set in prod. */
+  readonly insecureCookie?: boolean;
   readonly logger?: FastifyInstance['log'];
 }
 
@@ -138,10 +140,12 @@ export class UnprotectedUiError extends Error {}
  * yet is not a state worth leaving reachable, and a warning in a log is not a control.
  */
 export async function buildWebApp(options: WebAppOptions): Promise<FastifyInstance> {
-  if (options.environment === 'prod' && !options.auth) {
-    throw new UnprotectedUiError(
-      'refusing to serve the configuration UI in prod without authentication',
-    );
+  // Every environment, not only prod. These routes can close registration, change MFA
+  // enforcement and publish commits for the whole platform; serving them unguarded because an
+  // environment string said `dev` is not a state worth being able to reach by accident, and
+  // "which environment is this" is exactly the question that went wrong.
+  if (!options.auth) {
+    throw new UnprotectedUiError('refusing to serve the configuration UI without authentication');
   }
 
   const app = Fastify(options.logger ? { loggerInstance: options.logger } : { logger: false });
@@ -149,7 +153,7 @@ export async function buildWebApp(options: WebAppOptions): Promise<FastifyInstan
   await app.register(formbody);
   registerAssetRoutes(app);
   // Before the UI routes, so its onRequest guard runs ahead of every handler they add.
-  if (options.auth) registerAuthRoutes(app, options.auth, options.environment);
+  if (options.auth) registerAuthRoutes(app, options.auth, options.insecureCookie ?? false);
   registerUiRoutes(app, options);
   await app.ready();
   return app;

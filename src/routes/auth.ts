@@ -47,7 +47,8 @@ declare module 'fastify' {
 export function registerAuthRoutes(
   app: FastifyInstance,
   auth: AuthOptions,
-  environment: string,
+  /** True only where the operator explicitly gave up the secure cookie; never true in prod. */
+  insecureCookie: boolean,
 ): void {
   const open = new Set([
     '/login',
@@ -111,7 +112,7 @@ export function registerAuthRoutes(
 
     return reply
       .setCookie(FLOW_COOKIE, auth.codec.signValue(flow), {
-        ...auth.codec.cookieOptions(environment),
+        ...auth.codec.cookieOptions(insecureCookie),
         maxAge: FLOW_TTL_MS / 1000,
       })
       .code(302)
@@ -149,7 +150,7 @@ export function registerAuthRoutes(
       }
 
       return reply
-        .clearCookie(FLOW_COOKIE, auth.codec.cookieOptions(environment))
+        .clearCookie(FLOW_COOKIE, auth.codec.cookieOptions(insecureCookie))
         .setCookie(
           SESSION_COOKIE,
           auth.codec.sign({
@@ -158,7 +159,7 @@ export function registerAuthRoutes(
             via: 'iam',
             expiresAt: Date.now() + SESSION_TTL_MS,
           }),
-          auth.codec.cookieOptions(environment),
+          auth.codec.cookieOptions(insecureCookie),
         )
         .code(303)
         .header('location', '/')
@@ -215,7 +216,7 @@ export function registerAuthRoutes(
             via: 'break-glass',
             expiresAt: Date.now() + SESSION_TTL_MS,
           }),
-          auth.codec.cookieOptions(environment),
+          auth.codec.cookieOptions(insecureCookie),
         )
         .code(303)
         .header('location', '/')
@@ -225,7 +226,7 @@ export function registerAuthRoutes(
 
   app.post('/logout', async (_request, reply) =>
     reply
-      .clearCookie(SESSION_COOKIE, auth.codec.cookieOptions(environment))
+      .clearCookie(SESSION_COOKIE, auth.codec.cookieOptions(insecureCookie))
       .code(303)
       .header('location', '/login')
       .send(),

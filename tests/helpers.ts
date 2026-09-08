@@ -4,6 +4,9 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { BreakGlass } from '@config/src/auth/break-glass.js';
+import { SessionCodec } from '@config/src/auth/session.js';
+import { SESSION_COOKIE } from '@config/src/routes/auth.js';
 
 const run = promisify(execFile);
 
@@ -136,4 +139,42 @@ export function sopsEncrypt(
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * A guarded console, and the cookie that gets past its guard.
+ *
+ * The console refuses to be built without authentication — in every environment, since keying
+ * that off an environment string is what let one unset variable serve it with no login on it.
+ * So a test that wants to exercise a page has to build it guarded and sign in, which is what
+ * this returns: the `auth` options to build with, and the cookie header to send.
+ */
+export function guarded(): {
+  auth: {
+    codec: SessionCodec;
+    breakGlass: BreakGlass;
+    isIamReachable: () => Promise<boolean>;
+  };
+  headers: { cookie: string };
+} {
+  const codec = new SessionCodec('y'.repeat(64));
+  const session = codec.sign({
+    email: 'me@anudeep.pro',
+    id: '7f3a1c9e',
+    via: 'iam',
+    expiresAt: Date.now() + 3_600_000,
+  });
+
+  return {
+    auth: {
+      codec,
+      breakGlass: new BreakGlass({
+        record: null,
+        isIamReachable: async () => true,
+        alert: () => {},
+      }),
+      isIamReachable: async () => true,
+    },
+    headers: { cookie: `${SESSION_COOKIE}=${session}` },
+  };
 }

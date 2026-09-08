@@ -1,18 +1,16 @@
 import { dirname } from 'node:path';
 import pino from 'pino';
-import { parse as parseYaml } from 'yaml';
 import { buildReadApi, buildWebApp, buildWebhookApp } from './app.js';
-import { BreakGlass, type BreakGlassRecord } from './auth/break-glass.js';
+import { BreakGlass } from './auth/break-glass.js';
 import { OidcClient } from './auth/oidc.js';
 import { SessionCodec } from './auth/session.js';
+import { RepositoryState } from './boot/repository-state.js';
 import { loadConfig, type ServiceConfig } from './config.js';
 import { prepareDeployKey } from './git/deploy-key.js';
 import { GitRepository } from './git/repository.js';
 import { GitSyncer } from './git/syncer.js';
 import { AccessGuard } from './identity/access-guard.js';
 import { PeerCredentialResolver, platformPeerCredentialReader } from './identity/peercred.js';
-import { ServiceRegistry } from './identity/registry.js';
-import { SchemaSet } from './schema/validator.js';
 import { ConfigCache } from './store/cache.js';
 import { DraftStore } from './store/draft-store.js';
 import { EnvironmentOrder } from './store/environment-order.js';
@@ -79,19 +77,32 @@ async function main(): Promise<void> {
     }
   }
 
-  const schemas = () => SchemaSet.fromFiles({});
-  const loadSchemas = async () => SchemaSet.fromFiles(await repository.readSchemas());
-
-  // One registry for both halves: the read API authenticates against it, and the console lists
-  // what it declares. Two readings of services.yaml would drift, and the drift would show as a
-  // product you can edit but no process can read.
-  const registry = ServiceRegistry.fromYaml(await readServicesYaml(repository));
+  // One object holding everything read out of the repository, rebuilt on every reload. The
+  // registry used to be read once at boot: a reload made a commit's VALUES live while leaving
+  // its grant table untouched, so a revocation had no effect until a restart — and a change
+  // that rotates a secret and revokes a grant together handed the new secret to exactly the uid
+  // it was being taken from.
+  const state = new RepositoryState({
+    readFile: (path) => repository.readFile(path),
+    loadSchemas: () => repository.readSchemas(),
+    decrypt: (path, source) => decryptor.decrypt(path, source),
+    breakGlassPath: config.breakGlassPath,
+    onCache: async () => {
+      const sources = await repository.readSources();
+      cache.reload(await loader.resolve(sources));
+      await snapshots.save(sources);
+    },
+    onError: (what, error) =>
+      log.warn({ err: error, what }, 'could not reload from the repository'),
+  });
+  await state.reload();
 
   const readApi = await buildReadApi({
     cache,
     guard: new AccessGuard({
       resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
-      registry,
+      // Asked per check: a revocation must not wait for a restart.
+      registry: () => state.registry(),
       audit: (entry) => log.info({ ...entry, event: 'authorize' }),
       alert: (entry) => log.warn({ ...entry, event: 'access_denied' }),
     }),
@@ -100,15 +111,14 @@ async function main(): Promise<void> {
   await readApi.listen(config.socketPath);
   log.info({ socket: config.socketPath }, 'read API listening');
 
-  let currentSchemas = await loadSchemas().catch(() => schemas());
   const web = await buildWebApp({
     repository,
     // The console lists what the registry declares, so both halves of the service — the read API
     // and the editor — agree on what exists.
-    services: () => registry.services(),
+    services: () => state.registry().services(),
     repoWebUrl: config.repoWebUrl,
     loader,
-    schemas: () => currentSchemas,
+    schemas: () => state.schemas(),
     drafts,
     // Read per request, so declaring an order takes effect without a restart. Absent means
     // promotion is not offered at all rather than inferred from environment names.
@@ -123,7 +133,7 @@ async function main(): Promise<void> {
       repository,
       loader,
       encryptor: new SopsEncryptor(config.repoDir),
-      schemas: () => currentSchemas,
+      schemas: () => state.schemas(),
       drafts,
     }),
     environment: config.environment,
@@ -131,7 +141,9 @@ async function main(): Promise<void> {
       ? {
           codec: new SessionCodec(config.sessionSecret),
           breakGlass: new BreakGlass({
-            record: await readBreakGlassRecord(repository, decryptor, config, log),
+            // Read through the state, so rotating or deleting the record takes effect on the
+            // next reload rather than on the next restart.
+            record: state.breakGlassRecord(),
             isIamReachable: () => isIamReachable(config),
             alert: (entry) => log.warn({ ...entry, event: 'break_glass' }),
           }),
@@ -154,9 +166,9 @@ async function main(): Promise<void> {
   const reloadFromRepository = async (): Promise<boolean> => {
     const sources = await repository.readSources();
     if (sources.commit === cache.commit()) return false;
-    cache.reload(await loader.resolve(sources));
-    currentSchemas = await loadSchemas();
-    await snapshots.save(sources);
+    // Everything the repository declares, in one place and in one order: the grant table first,
+    // then the schemas and the break-glass record, then the values themselves.
+    await state.reload();
     log.info({ commit: sources.commit }, 'reloaded configuration');
     return true;
   };
@@ -220,51 +232,6 @@ async function isIamReachable(config: ServiceConfig): Promise<boolean> {
     return response.ok;
   } catch {
     return false;
-  }
-}
-
-/**
- * The break-glass record, read from the config repository and decrypted in memory.
- *
- * Not circular: this reads the repository directly rather than through this service's own
- * socket API, so it still works during the iam outage the credential exists for.
- */
-async function readBreakGlassRecord(
-  repository: GitRepository,
-  decryptor: SopsDecryptor,
-  config: ServiceConfig,
-  log: { warn: (o: object, m: string) => void },
-): Promise<BreakGlassRecord | null> {
-  try {
-    const source = await repository.readFile(config.breakGlassPath);
-    const parsed = parseYaml(
-      await decryptor.decrypt(config.breakGlassPath, source),
-    ) as Partial<BreakGlassRecord>;
-    if (!parsed?.passwordHash || !parsed.totpSecret || !parsed.actorEmail) {
-      throw new Error('the break-glass record is missing fields');
-    }
-    return {
-      passwordHash: parsed.passwordHash,
-      totpSecret: parsed.totpSecret,
-      actorEmail: parsed.actorEmail,
-    };
-  } catch (error) {
-    // Absent is a legitimate state, and BreakGlass refuses every attempt when the record is
-    // null — so a missing file locks the door rather than leaving it open.
-    log.warn(
-      { err: error },
-      'no break-glass record; break-glass sign-in will refuse every attempt',
-    );
-    return null;
-  }
-}
-
-/** The grant table. Absent means no service may read anything, which fails closed. */
-async function readServicesYaml(repository: GitRepository): Promise<string> {
-  try {
-    return await repository.readFile('services.yaml');
-  } catch {
-    return 'services:\n  - name: none\n    uid: 65534\n    namespaces: [none/none]\n';
   }
 }
 

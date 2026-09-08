@@ -13,6 +13,8 @@ say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 # Kept in .env (gitignored) rather than exported per shell, so a restart does not invalidate
 # the session cookie you are already holding.
 touch .env
+# Required in every environment now, not only prod: keying authentication off an environment
+# string is what let one unset variable serve the console with no login on it.
 grep -q '^CONFIG_SESSION_SECRET=' .env 2>/dev/null || {
   printf 'CONFIG_SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env
 }

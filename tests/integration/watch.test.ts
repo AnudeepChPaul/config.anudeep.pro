@@ -42,9 +42,10 @@ linuxOnly('waiting for a change', () => {
       cache,
       guard: new AccessGuard({
         resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
-        registry: ServiceRegistry.fromYaml(
-          `services:\n  - name: iam\n    uid: ${uid()}\n    namespaces: [iam/prod]\n`,
-        ),
+        registry: () =>
+          ServiceRegistry.fromYaml(
+            `services:\n  - name: iam\n    uid: ${uid()}\n    namespaces: [iam/prod]\n`,
+          ),
         audit: vi.fn(),
         alert: vi.fn(),
       }),

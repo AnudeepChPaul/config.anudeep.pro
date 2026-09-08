@@ -109,7 +109,7 @@ linuxOnly('read API over a Unix socket', () => {
       cache: cacheWith(options.namespaces ?? { 'iam/prod': { MFA_ENFORCEMENT: 'all' } }),
       guard: new AccessGuard({
         resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
-        registry: registryFor(options.service ?? 'iam', options.grants ?? ['iam/prod']),
+        registry: () => registryFor(options.service ?? 'iam', options.grants ?? ['iam/prod']),
         audit: audit as unknown as (e: AccessAuditEntry) => void,
         alert: alert as unknown as (e: AccessAuditEntry) => void,
       }),
@@ -197,7 +197,7 @@ linuxOnly('read API over a Unix socket', () => {
         cache: cacheWith({ 'iam/prod': { A: 1 } }),
         guard: new AccessGuard({
           resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
-          registry,
+          registry: () => registry,
           audit: audit as unknown as (e: AccessAuditEntry) => void,
           alert: alert as unknown as (e: AccessAuditEntry) => void,
         }),

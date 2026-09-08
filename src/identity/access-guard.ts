@@ -43,7 +43,14 @@ const DENIED: Denied = Object.freeze({
 
 export interface AccessGuardOptions {
   readonly resolver: PeerCredentialResolver;
-  readonly registry: ServiceRegistry;
+  /**
+   * Asked for the table on every check, not handed one at construction.
+   *
+   * The grant table changes when someone commits `services.yaml`, and holding one instance for
+   * the process lifetime meant a revocation took effect only on a restart — while the same
+   * reload made that commit's values live.
+   */
+  readonly registry: () => ServiceRegistry;
   readonly audit: (entry: AccessAuditEntry) => void;
   readonly alert: (entry: AccessAuditEntry) => void;
 }
@@ -69,12 +76,13 @@ export class AccessGuard {
       });
     }
 
-    const service = this.options.registry.identify(uid);
+    const registry = this.options.registry();
+    const service = registry.identify(uid);
     if (!service) {
       return this.deny({ outcome: 'denied', uid, service: null, namespace, reason: 'unknown_uid' });
     }
 
-    if (!this.options.registry.mayRead(service, namespace)) {
+    if (!registry.mayRead(service, namespace)) {
       return this.deny({
         outcome: 'denied',
         uid,

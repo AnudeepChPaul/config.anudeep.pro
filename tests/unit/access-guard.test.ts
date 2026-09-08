@@ -30,7 +30,7 @@ const guardFor = (uid: number) => {
   const alert = vi.fn();
   const guard = new AccessGuard({
     resolver: new PeerCredentialResolver(() => ({ uid, gid: uid, pid: 4711 })),
-    registry: ServiceRegistry.fromYaml(SERVICES_YAML),
+    registry: () => ServiceRegistry.fromYaml(SERVICES_YAML),
     audit,
     alert,
   });
@@ -68,7 +68,7 @@ describe('AccessGuard.authorize', () => {
       resolver: new PeerCredentialResolver(() => {
         throw new Error('ENOTSOCK');
       }),
-      registry: ServiceRegistry.fromYaml(SERVICES_YAML),
+      registry: () => ServiceRegistry.fromYaml(SERVICES_YAML),
       audit: vi.fn(),
       alert: vi.fn(),
     });

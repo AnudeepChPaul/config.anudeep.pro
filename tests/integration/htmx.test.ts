@@ -8,7 +8,7 @@ import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
 import { ConfigWriteService } from '@config/src/store/write-service.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.js';
+import { type AgeKeypair, generateAgeKey, guarded, hasSops, TestRepo } from '../helpers.js';
 
 /**
  * The console became dynamic without becoming script-dependent.
@@ -17,6 +17,9 @@ import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.j
  * every form still posts and every link still navigates when the script does not load. These
  * assert both halves: the enhancement is there, and removing it leaves a working page.
  */
+
+/** One signed-in operator for every fixture here: the console cannot be built without one. */
+const signedIn = guarded();
 
 const withSops = hasSops() ? describe : describe.skip;
 
@@ -64,6 +67,7 @@ withSops('htmx as progressive enhancement', () => {
         drafts,
       }),
       environment: 'dev',
+      auth: signedIn.auth,
     });
   });
 
@@ -72,8 +76,10 @@ withSops('htmx as progressive enhancement', () => {
     await rm(repo.dir, { recursive: true, force: true });
   });
 
+  // Every request carries the session: the console refuses to be built without a guard now, so
+  // an unauthenticated one only ever sees the login page.
   const get = (url: string, headers: Record<string, string> = {}) =>
-    app.inject({ method: 'GET', url, headers });
+    app.inject({ method: 'GET', url, headers: { ...signedIn.headers, ...headers } });
 
   const post = (
     url: string,
@@ -84,7 +90,11 @@ withSops('htmx as progressive enhancement', () => {
       method: 'POST',
       url,
       payload: new URLSearchParams(fields).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        ...signedIn.headers,
+        ...headers,
+      },
     });
 
   describe('serving the script', () => {

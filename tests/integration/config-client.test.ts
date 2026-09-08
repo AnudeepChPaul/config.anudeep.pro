@@ -53,9 +53,10 @@ linuxOnly('ConfigClient', () => {
       cache,
       guard: new AccessGuard({
         resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
-        registry: ServiceRegistry.fromYaml(
-          `services:\n  - name: iam\n    uid: ${uid()}\n    namespaces: [iam/prod]\n`,
-        ),
+        registry: () =>
+          ServiceRegistry.fromYaml(
+            `services:\n  - name: iam\n    uid: ${uid()}\n    namespaces: [iam/prod]\n`,
+          ),
         audit: vi.fn(),
         alert: vi.fn(),
       }),
@@ -121,9 +122,10 @@ linuxOnly('ConfigClient', () => {
         cache,
         guard: new AccessGuard({
           resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
-          registry: ServiceRegistry.fromYaml(
-            'services:\n  - name: other\n    uid: 65500\n    namespaces: [other/prod]\n',
-          ),
+          registry: () =>
+            ServiceRegistry.fromYaml(
+              'services:\n  - name: other\n    uid: 65500\n    namespaces: [other/prod]\n',
+            ),
           audit: vi.fn(),
           alert: vi.fn(),
         }),
