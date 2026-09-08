@@ -552,17 +552,18 @@ describe('publishing ticked keys and promoting them', () => {
       await rm(repo3.dir, { recursive: true, force: true });
     });
 
-    it('publishes only the ticked key', async () => {
+    it('publishes the whole draft, ticked or not', async () => {
+      // A draft is the unit: the tick decides what enters one and what promotes, not what a
+      // publish leaves behind.
       const response = await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['key.SESSION_TTL', '600'],
         ['select', 'MFA_ENFORCEMENT'],
-        ['message', 'Tighten MFA in dev'],
         ['intent', 'publish'],
       ]);
 
       expect(response.statusCode).toBe(303);
-      expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'all', SESSION_TTL: 900 });
+      expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'all', SESSION_TTL: 600 });
     });
 
     it('saves without publishing when that is the intent', async () => {
@@ -581,7 +582,6 @@ describe('publishing ticked keys and promoting them', () => {
         ['key.MFA_ENFORCEMENT', 'all'],
         ['key.SESSION_TTL', '600'],
         ['select', 'MFA_ENFORCEMENT'],
-        ['message', 'Tighten MFA'],
         ['intent', 'publish'],
       ]);
 
@@ -591,7 +591,8 @@ describe('publishing ticked keys and promoting them', () => {
       const page = await app3.inject({ method: 'GET', url: location });
       expect(page.body).toMatch(/Save \d+ as a draft in prod\?/);
       expect(page.body).toContain('MFA_ENFORCEMENT');
-      // The key that stayed staged was not published, so it is not on offer.
+      // Both keys were published — a draft publishes whole — but only the ticked one is offered
+      // for the next environment. Deciding what moves on is what the tick is still for.
       expect(page.body).not.toContain('name="key" value="SESSION_TTL"');
     });
 
@@ -599,7 +600,6 @@ describe('publishing ticked keys and promoting them', () => {
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['select', 'MFA_ENFORCEMENT'],
-        ['message', 'Tighten MFA'],
         ['intent', 'publish'],
       ]);
 
@@ -640,7 +640,6 @@ describe('publishing ticked keys and promoting them', () => {
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['select', 'MFA_ENFORCEMENT'],
-        ['message', 'Tighten MFA'],
         ['intent', 'publish'],
       ]);
 

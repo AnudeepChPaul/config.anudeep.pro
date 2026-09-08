@@ -64,11 +64,15 @@ export interface ConfigWriteServiceOptions {
   readonly drafts?: DraftStore;
 }
 
-/** A namespace to publish, optionally narrowed to some of the keys staged in it. */
+/**
+ * A namespace to publish.
+ *
+ * There is no key narrowing: a draft publishes whole. Shipping some of a draft's keys and
+ * re-staging the rest gave a button that counted drafts and an outcome that shipped keys — two
+ * different things behind one number. To hold a change back now, undo the change.
+ */
 export interface PublishSelection {
   readonly namespace: string;
-  /** Omitted publishes everything staged for that namespace. */
-  readonly keys?: readonly string[];
 }
 
 export interface PromoteRequest {
@@ -93,6 +97,23 @@ export interface StageRequest {
 
 /** Recognises a SOPS-encrypted value, to confirm the secrets really were encrypted. */
 const ENCRYPTED = /^ENC\[AES256_GCM,/;
+
+/**
+ * One draft's line in a commit body: where it was, the day the edit was made, and what it
+ * touched.
+ *
+ * The date is the SAVE's, not the publish's — the line describes an edit, and stamping every
+ * line with the publish time would make them all claim the same moment, which is the one thing
+ * the body is there to distinguish.
+ *
+ * Key names appear, a secret's included: a name is not a value, and the commit trailers already
+ * carry key names.
+ */
+function draftLine(namespace: string, save: { keys: readonly string[]; at: number }): string {
+  const [service = '', environment = ''] = namespace.split('/');
+  const day = new Date(save.at).toISOString().slice(0, 10);
+  return `[${service}-${environment}] ${day} ${[...save.keys].sort().join(' ')}`.trimEnd();
+}
 
 export class ConfigWriteService {
   private readonly lock: WriteLock;
@@ -278,6 +299,17 @@ export class ConfigWriteService {
         namespace,
         document,
         changes: dedupeByKey(recorded),
+        // One entry per press of Save. This is what the console counts — "Publish 2 drafts?" —
+        // and what a publish turns into one generated line each. Nobody types a message, so a
+        // save records only facts: what it touched, who made it, and when.
+        saves: [
+          ...(existing?.saves ?? []),
+          {
+            keys: [...new Set([...changes.map((change) => change.key), ...selectedOnly])],
+            actor: actor.email,
+            at: Date.now(),
+          },
+        ],
         actor: actor.email,
         updatedAt: Date.now(),
         // What the namespace looked like when this draft was built, so publishing can tell
@@ -304,18 +336,14 @@ export class ConfigWriteService {
    */
   async publish(
     selections: readonly (string | PublishSelection)[],
-    message: string,
     actor: Actor,
     context: RequestContext,
   ): Promise<Result<SaveResult, SaveError>> {
     const drafts = this.options.drafts;
     if (!drafts) return err({ code: 'failed', detail: 'staging is not enabled' });
 
-    if (!message.trim()) {
-      return err({ code: 'invalid', detail: 'a publish message is required' });
-    }
-    // A bare namespace means "everything staged there" — the common case, and it keeps callers
-    // that do not care about individual keys from having to say so.
+    // A bare namespace means "everything staged there", which is now the only thing a selection
+    // can mean: drafts publish whole.
     const chosenSelections: PublishSelection[] = selections.map((entry) =>
       typeof entry === 'string' ? { namespace: entry } : entry,
     );
@@ -330,11 +358,8 @@ export class ConfigWriteService {
 
       const files: Record<string, string> = {};
       const keyChanges: KeyChange[] = [];
-      const residuals: Array<{
-        namespace: string;
-        keys: string[];
-        staged: Record<string, unknown>;
-      }> = [];
+      const summaryLines: string[] = [];
+      let drafted = 0;
 
       for (const selection of chosenSelections) {
         const draft = await drafts.get(selection.namespace);
@@ -354,18 +379,10 @@ export class ConfigWriteService {
           });
         }
 
-        const staged = draft.changes.map((change) => change.key);
-        const chosen = selection.keys ? [...selection.keys] : staged;
-        const unknown = chosen.filter((key) => !staged.includes(key));
-        if (unknown.length > 0) {
-          return err({
-            code: 'nothing_staged',
-            detail: `not staged in ${selection.namespace}: ${unknown.join(', ')}`,
-          });
-        }
+        const chosen = draft.changes.map((change) => change.key);
 
-        // The draft holds the whole document with secrets already encrypted, so a subset is
-        // rebuilt by decrypting it in memory and taking only the chosen keys.
+        // The draft holds the whole document with secrets already encrypted, so it is decrypted
+        // in memory to read the values this commit is about to carry.
         const stagedConfig = await this.options.loader.resolveOne(
           selection.namespace,
           draft.document,
@@ -406,14 +423,19 @@ export class ConfigWriteService {
         }
 
         files[`config/${selection.namespace}.yaml`] = document;
-
-        const leftover = staged.filter((key) => !chosen.includes(key));
-        if (leftover.length > 0) {
-          // The staged values are captured here, before the commit: after it, the draft is gone
-          // and the document on disk no longer holds them.
-          residuals.push({ namespace: selection.namespace, keys: leftover, staged: stagedConfig });
-        }
+        // One line per draft, in the order the saves were made.
+        summaryLines.push(...draft.saves.map((save) => draftLine(selection.namespace, save)));
+        drafted += draft.saves.length;
       }
+
+      // Generated, never typed. An operator has better things to do mid-incident than compose a
+      // subject line, and a generated one cannot be left as "wip".
+      const scope = [...new Set(chosenSelections.map((s) => s.namespace))].join(', ');
+      const message = [
+        `Publish ${drafted} draft${drafted === 1 ? '' : 's'} in ${scope}`,
+        '',
+        ...summaryLines,
+      ].join('\n');
 
       const commitMessage = this.trailers.build(
         actor,
@@ -431,73 +453,10 @@ export class ConfigWriteService {
       const commit = await this.options.repository.writeAndCommit(files, commitMessage);
       await drafts.remove(chosenSelections.map((s) => s.namespace));
 
-      // What was not published goes back as a draft, measured against the file as it now
-      // stands — carrying the old base forward would make the next publish either conflict or
-      // quietly revert the key just published.
-      for (const residual of residuals) {
-        const restaged = await this.restage(residual, actor);
-        if (!restaged.ok) return restaged;
-      }
-
       const push = await this.options.repository.push();
 
       return ok({ commit, changedKeys: keyChanges.map((k) => k.key), published: push.pushed });
     });
-  }
-
-  /**
-   * Puts unpublished keys back as a draft, measured against the new committed state.
-   *
-   * Called with the lock already held, so it stages directly rather than going through stage().
-   */
-  private async restage(
-    residual: { namespace: string; keys: string[]; staged: Record<string, unknown> },
-    actor: Actor,
-  ): Promise<Result<void, SaveError>> {
-    const drafts = this.options.drafts;
-    if (!drafts) return ok(undefined);
-
-    const service = residual.namespace.split('/')[0] ?? '';
-    const previous = residual.staged;
-    const sources = await this.options.repository.readSources();
-    const tree = await this.options.loader.resolve(sources);
-    const committed = tree.namespaces.get(residual.namespace) ?? {};
-
-    const next: Record<string, unknown> = { ...committed };
-    const changes: DraftChange[] = [];
-    const schemas = this.options.schemas();
-
-    // The keys left behind are a revision of their own: they are being written against the
-    // commit the publish just made, not against the one the original draft was built on.
-    next[VERSION_KEY] = bumpedVersion(committed);
-
-    for (const key of residual.keys) {
-      const value = previous[key];
-      if (value === undefined) delete next[key];
-      else next[key] = value;
-      changes.push(
-        schemas.isSecret(service, key)
-          ? { key, from: undefined, to: undefined, secret: true }
-          : { key, from: committed[key], to: value, secret: false },
-      );
-    }
-
-    const document = await this.options.encryptor.encrypt(
-      residual.namespace,
-      stringifyYaml(sortKeys(next)),
-    );
-
-    await drafts.put({
-      namespace: residual.namespace,
-      document,
-      changes,
-      actor: actor.email,
-      updatedAt: Date.now(),
-      ...(sources.sources.has(residual.namespace)
-        ? { basedOn: sources.sources.get(residual.namespace) }
-        : {}),
-    });
-    return ok(undefined);
   }
 
   /**

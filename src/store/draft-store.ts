@@ -22,11 +22,29 @@ export interface DraftChange {
   readonly secret: boolean;
 }
 
+/**
+ * One press of Save.
+ *
+ * A namespace accumulates these until it is published: they are what the console counts —
+ * "Publish 2 drafts?" — and what a publish turns into one line each in the commit body.
+ *
+ * Nobody types a commit message here, so a save records only facts: which keys it touched, who
+ * made it, and when. The line is generated from those at publish time.
+ */
+export interface DraftSave {
+  /** The keys this save touched, named in its generated commit line. */
+  readonly keys: readonly string[];
+  readonly actor: string;
+  readonly at: number;
+}
+
 export interface Draft {
   readonly namespace: Namespace;
   /** The full document as it would be committed — secrets already encrypted. */
   readonly document: string;
   readonly changes: readonly DraftChange[];
+  /** One entry per save action, oldest first. */
+  readonly saves: readonly DraftSave[];
   readonly actor: string;
   readonly updatedAt: number;
   /** The committed file text this draft was built from, for detecting a change underneath it. */
@@ -47,6 +65,26 @@ const isDraft = (value: unknown): value is Draft => {
   );
 };
 
+/**
+ * A draft written before saves existed is one save.
+ *
+ * Reading it as none would put "Publish 0 drafts" over a draft that plainly holds changes, and
+ * every draft on disk at the moment this ships is one of these.
+ */
+const withSaves = (draft: Draft): Draft =>
+  Array.isArray(draft.saves) && draft.saves.length > 0
+    ? draft
+    : {
+        ...draft,
+        saves: [
+          {
+            keys: draft.changes.map((change) => change.key),
+            actor: draft.actor,
+            at: draft.updatedAt,
+          },
+        ],
+      };
+
 export class DraftStore {
   constructor(private readonly path: string) {}
 
@@ -64,7 +102,7 @@ export class DraftStore {
 
     // One malformed entry discards itself, not the rest: losing every pending change because
     // one is unreadable would be a worse outcome than losing the one.
-    return drafts.filter(isDraft);
+    return drafts.filter(isDraft).map(withSaves);
   }
 
   async get(namespace: Namespace): Promise<Draft | null> {
@@ -72,6 +110,14 @@ export class DraftStore {
   }
 
   async put(draft: Draft): Promise<void> {
+    for (const save of draft.saves ?? []) {
+      // These key names are rendered into the console and into a commit body; refusing beats
+      // discovering what a non-array stringifies to in either place.
+      if (!Array.isArray(save.keys) || save.keys.some((key) => typeof key !== 'string')) {
+        throw new DraftError(`refusing to store a malformed save for '${draft.namespace}'`);
+      }
+    }
+
     for (const change of draft.changes) {
       // The one way plaintext could reach this file is a caller forgetting to strip it.
       // Refusing beats trusting every future call site to remember.

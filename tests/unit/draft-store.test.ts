@@ -16,6 +16,7 @@ const draft = (namespace: string, overrides: Partial<Draft> = {}): Draft => ({
   namespace,
   document: 'MFA_ENFORCEMENT: all\n',
   changes: [{ key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false }],
+  saves: [{ keys: ['MFA_ENFORCEMENT'], actor: 'me@anudeep.pro', at: 1 }],
   actor: 'me@anudeep.pro',
   updatedAt: 1_700_000_000_000,
   ...overrides,
@@ -171,5 +172,71 @@ describe('surviving a broken file', () => {
     await store.put(draft('iam/prod'));
 
     expect(await readdir(dir)).toEqual(['drafts.json']);
+  });
+});
+
+/**
+ * A draft is one press of Save, and a namespace can hold several of them before anything is
+ * published. The saves are what the console counts and what a publish folds into its commit
+ * message, so they have to survive a restart like everything else here.
+ */
+describe('the saves inside a draft', () => {
+  const save = (keys: string[]) => ({ keys, actor: 'me@anudeep.pro', at: 1_700_000_000_000 });
+
+  it('round-trips every save, in the order they were made', async () => {
+    const store = new DraftStore(path);
+    await store.put({
+      namespace: 'iam/dev',
+      document: 'A: 1\n',
+      changes: [{ key: 'A', from: 0, to: 1, secret: false }],
+      saves: [save(['A']), save(['B'])],
+      actor: 'me@anudeep.pro',
+      updatedAt: 1,
+    });
+
+    const back = await new DraftStore(path).get('iam/dev');
+
+    expect(back?.saves.map((entry) => entry.keys)).toEqual([['A'], ['B']]);
+    expect(back?.saves[1]?.actor).toBe('me@anudeep.pro');
+  });
+
+  it('reads a draft written before saves existed as a single save', async () => {
+    // Every draft on disk today. Treating it as zero would say "Publish 0 drafts" over a draft
+    // that plainly holds changes.
+    await writeFile(
+      path,
+      JSON.stringify({
+        drafts: [
+          {
+            namespace: 'iam/dev',
+            document: 'A: 1\n',
+            changes: [{ key: 'A', from: 0, to: 1, secret: false }],
+            actor: 'me@anudeep.pro',
+            updatedAt: 1,
+          },
+        ],
+      }),
+      'utf8',
+    );
+
+    const back = await new DraftStore(path).get('iam/dev');
+
+    expect(back?.saves).toHaveLength(1);
+    expect(back?.saves[0]?.keys).toEqual(['A']);
+  });
+
+  it('refuses a save whose keys are not names, rather than storing it', async () => {
+    const store = new DraftStore(path);
+
+    await expect(
+      store.put({
+        namespace: 'iam/dev',
+        document: 'A: 1\n',
+        changes: [],
+        saves: [{ keys: [12] as unknown as string[], actor: 'x', at: 1 }],
+        actor: 'x',
+        updatedAt: 1,
+      }),
+    ).rejects.toThrow();
   });
 });

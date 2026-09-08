@@ -121,7 +121,7 @@ withSops('staging and scoped publishing', () => {
       // Publishing writes down what a draft already decided; it is not a second revision of the
       // document, and counting it twice would make the number mean nothing in particular.
       await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
-      await service.publish(['iam/dev'], 'first', ACTOR, REQUEST);
+      await service.publish(['iam/dev'], ACTOR, REQUEST);
 
       expect(versionOf((await served('iam/dev')) ?? {})).toBe(1);
 
@@ -159,9 +159,101 @@ withSops('staging and scoped publishing', () => {
 
     it('is committed with the file, so the next host reads the number this one wrote', async () => {
       await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
-      await service.publish(['iam/dev'], 'ship it', ACTOR, REQUEST);
+      await service.publish(['iam/dev'], ACTOR, REQUEST);
 
       expect(await git.readFile('config/iam/dev.yaml')).toContain('version:');
+    });
+  });
+
+  describe('a draft is one press of Save', () => {
+    // The unit the console counts. Three keys saved together are one draft; saving twice against
+    // the same namespace is two, even though they share one file.
+    const message = () => repo.git('log', '-1', '--format=%B');
+
+    it('records one save for one action, whatever it contained', async () => {
+      const result = await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all', SESSION_TTL: 1800 });
+
+      expect(result.ok && result.value.saves).toHaveLength(1);
+      expect(result.ok && [...(result.value.saves[0]?.keys ?? [])].sort()).toEqual([
+        'MFA_ENFORCEMENT',
+        'SESSION_TTL',
+      ]);
+      expect(result.ok && result.value.saves[0]?.actor).toBe(ACTOR.email);
+    });
+
+    it('records a second save beside the first, oldest first', async () => {
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      const second = await stage('iam', 'dev', { SESSION_TTL: 1800 });
+
+      expect(second.ok && second.value.saves.map((entry) => entry.keys)).toEqual([
+        ['MFA_ENFORCEMENT'],
+        ['SESSION_TTL'],
+      ]);
+    });
+
+    it('gives every draft a generated line in the one commit a publish makes', async () => {
+      // Nobody types a commit message. Each draft's line names the namespace, the day the edit
+      // was made, and the keys it touched.
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      await stage('iam', 'dev', { SESSION_TTL: 1800 });
+
+      const published = await service.publish(['iam/dev'], ACTOR, REQUEST);
+      expect(published.ok).toBe(true);
+
+      const body = await message();
+      const today = new Date().toISOString().slice(0, 10);
+
+      expect(body).toContain('Publish 2 drafts in iam/dev');
+      expect(body).toContain(`[iam-dev] ${today} MFA_ENFORCEMENT`);
+      expect(body).toContain(`[iam-dev] ${today} SESSION_TTL`);
+    });
+
+    it('dates each line by when the save was made, not by when it was published', async () => {
+      // The line describes an edit. Stamping it with the publish time would make every line in a
+      // commit claim the same moment, which is the one thing the body is there to distinguish.
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      const draft = await drafts.get('iam/dev');
+      await drafts.put({
+        ...(draft as NonNullable<typeof draft>),
+        saves: [{ keys: ['MFA_ENFORCEMENT'], actor: ACTOR.email, at: Date.parse('2020-03-04') }],
+      });
+
+      await service.publish(['iam/dev'], ACTOR, REQUEST);
+
+      expect(await message()).toContain('[iam-dev] 2020-03-04 MFA_ENFORCEMENT');
+    });
+
+    it('makes exactly one commit for several drafts', async () => {
+      const before = (await git.headCommit()).trim();
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      await stage('iam', 'dev', { SESSION_TTL: 1800 });
+
+      await service.publish(['iam/dev'], ACTOR, REQUEST);
+
+      expect(await repo.git('rev-list', '--count', `${before}..HEAD`)).toContain('1');
+    });
+
+    it('names a secret key in its line, which is a name and not a value', async () => {
+      await stage('iam', 'prod', { SMTP_PASSWORD: 'hunter2' });
+
+      await service.publish(['iam/prod'], ACTOR, REQUEST);
+      const body = await message();
+
+      expect(body).toContain('SMTP_PASSWORD');
+      expect(body).not.toContain('hunter2');
+    });
+
+    it('publishes every key in the draft, ticks or no ticks', async () => {
+      // Drafts publish whole. The tick decides what enters a draft and what promotes; it no
+      // longer narrows a publish, or the button would count drafts and ship keys.
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all', SESSION_TTL: 1800 });
+
+      await service.publish(['iam/dev'], ACTOR, REQUEST);
+      const values = await served('iam/dev');
+
+      expect(values?.MFA_ENFORCEMENT).toBe('all');
+      expect(values?.SESSION_TTL).toBe(1800);
+      expect(await drafts.get('iam/dev')).toBeNull();
     });
   });
 
@@ -296,7 +388,7 @@ withSops('staging and scoped publishing', () => {
       await stage('iam', 'prod', { MFA_ENFORCEMENT: 'all' });
       await stage('iam', 'dev', { MFA_ENFORCEMENT: 'admins' });
 
-      const result = await service.publish(['iam/prod'], 'Tighten prod', ACTOR, REQUEST);
+      const result = await service.publish(['iam/prod'], ACTOR, REQUEST);
 
       expect(result.ok).toBe(true);
       expect(await served('iam/prod')).toMatchObject({ MFA_ENFORCEMENT: 'all' });
@@ -307,7 +399,7 @@ withSops('staging and scoped publishing', () => {
       await stage('iam', 'prod', { MFA_ENFORCEMENT: 'all' });
       await stage('iam', 'dev', { MFA_ENFORCEMENT: 'admins' });
 
-      await service.publish(['iam/prod'], 'Tighten prod', ACTOR, REQUEST);
+      await service.publish(['iam/prod'], ACTOR, REQUEST);
 
       expect((await drafts.all()).map((d) => d.namespace)).toEqual(['iam/dev']);
     });
@@ -315,10 +407,11 @@ withSops('staging and scoped publishing', () => {
     it('records the actor and the keys in the commit', async () => {
       await stage('iam', 'prod', { MFA_ENFORCEMENT: 'all' });
 
-      await service.publish(['iam/prod'], 'Tighten MFA', ACTOR, REQUEST);
+      await service.publish(['iam/prod'], ACTOR, REQUEST);
 
       const body = await repo.git('log', '-1', '--format=%B');
-      expect(body).toContain('Tighten MFA');
+      // The subject is generated; the trailers are what carry the audit facts.
+      expect(body).toContain('Publish 1 draft in iam/prod');
       expect(body).toContain('Actor: me@anudeep.pro');
       expect(body).toContain('Key: MFA_ENFORCEMENT');
     });
@@ -329,7 +422,7 @@ withSops('staging and scoped publishing', () => {
       await stage('iam', 'prod', { MFA_ENFORCEMENT: 'all' });
       await stage('iam', 'dev', { MFA_ENFORCEMENT: 'admins' });
 
-      await service.publish(['iam/prod', 'iam/dev'], 'Roll MFA out', ACTOR, REQUEST);
+      await service.publish(['iam/prod', 'iam/dev'], ACTOR, REQUEST);
 
       expect(await served('iam/prod')).toMatchObject({ MFA_ENFORCEMENT: 'all' });
       expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'admins' });
@@ -343,7 +436,7 @@ withSops('staging and scoped publishing', () => {
       await stage('iam', 'dev', { MFA_ENFORCEMENT: 'admins' });
       const before = Number(await repo.git('rev-list', '--count', 'HEAD'));
 
-      await service.publish(['iam/prod', 'iam/dev'], 'Roll MFA out', ACTOR, REQUEST);
+      await service.publish(['iam/prod', 'iam/dev'], ACTOR, REQUEST);
 
       expect(Number(await repo.git('rev-list', '--count', 'HEAD'))).toBe(before + 1);
     });
@@ -354,7 +447,7 @@ withSops('staging and scoped publishing', () => {
       await stage('iam', 'prod', { MFA_ENFORCEMENT: 'all' });
       await stage('api', 'prod', { RATE_LIMIT: 500 });
 
-      await service.publish(['iam/prod', 'api/prod'], 'Incident response', ACTOR, REQUEST);
+      await service.publish(['iam/prod', 'api/prod'], ACTOR, REQUEST);
 
       expect(await served('iam/prod')).toMatchObject({ MFA_ENFORCEMENT: 'all' });
       expect(await served('api/prod')).toMatchObject({ RATE_LIMIT: 500 });
@@ -363,7 +456,7 @@ withSops('staging and scoped publishing', () => {
 
   describe('what publishing refuses', () => {
     it('refuses a namespace with nothing staged', async () => {
-      const result = await service.publish(['iam/prod'], 'Nothing here', ACTOR, REQUEST);
+      const result = await service.publish(['iam/prod'], ACTOR, REQUEST);
 
       expect(result.ok).toBe(false);
     });
@@ -374,17 +467,22 @@ withSops('staging and scoped publishing', () => {
       await stage('iam', 'prod', { MFA_ENFORCEMENT: 'all' });
       const before = await git.headCommit();
 
-      const result = await service.publish(['iam/prod', 'iam/dev'], 'Both', ACTOR, REQUEST);
+      const result = await service.publish(['iam/prod', 'iam/dev'], ACTOR, REQUEST);
 
       expect(result.ok).toBe(false);
       expect(await git.headCommit()).toBe(before);
       expect((await drafts.all()).map((d) => d.namespace)).toEqual(['iam/prod']);
     });
 
-    it('requires a message, since it becomes the commit subject', async () => {
+    it('asks for no message at all: the commit subject is generated', async () => {
+      // An operator mid-incident has better things to do than compose a subject line, and a
+      // generated one cannot be left as "wip".
       await stage('iam', 'prod', { MFA_ENFORCEMENT: 'all' });
 
-      expect((await service.publish(['iam/prod'], '   ', ACTOR, REQUEST)).ok).toBe(false);
+      const result = await service.publish(['iam/prod'], ACTOR, REQUEST);
+
+      expect(result.ok).toBe(true);
+      expect(await repo.git('log', '-1', '--format=%s')).toContain('Publish 1 draft in iam/prod');
     });
 
     it('refuses when the repository moved under a draft', async () => {
@@ -393,7 +491,7 @@ withSops('staging and scoped publishing', () => {
       await stage('iam', 'prod', { MFA_ENFORCEMENT: 'all' });
       await repo.commit({ 'config/iam/prod.yaml': 'MFA_ENFORCEMENT: admins\nSESSION_TTL: 7200\n' });
 
-      const result = await service.publish(['iam/prod'], 'Tighten', ACTOR, REQUEST);
+      const result = await service.publish(['iam/prod'], ACTOR, REQUEST);
 
       expect(result.ok).toBe(false);
       expect(!result.ok && result.error.code).toBe('conflict');

@@ -10,11 +10,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.js';
 
 /**
- * Publishing SOME of what is staged, and moving a published change to the next environment.
+ * Publishing a whole draft, and moving a published change to the next environment.
  *
- * The console lets an operator tick individual keys and publish just those — so a draft is no
- * longer all-or-nothing, and what is left behind has to stay correct relative to the commit that
- * just happened.
+ * A draft is the unit of publishing: everything in it ships together, and nothing is left
+ * staged afterwards. The per-key narrowing this file used to cover was withdrawn when the
+ * console started counting drafts rather than keys.
  */
 
 const withSops = hasSops() ? describe : describe.skip;
@@ -79,154 +79,61 @@ withSops('publishing part of a draft', () => {
     );
   };
 
-  describe('publishing a subset', () => {
-    it('commits only the keys that were selected', async () => {
+  describe('a draft publishes whole', () => {
+    // This file used to pin the opposite: ticking individual keys shipped only those and
+    // re-staged the rest. That was withdrawn when the draft became the unit of publishing — a
+    // button counting drafts and an outcome shipping keys are two different things behind one
+    // number. To hold a change back now, undo the change.
+    it('commits every key in the draft', async () => {
       await stageBoth();
 
-      const result = await service.publish(
-        [{ namespace: 'iam/dev', keys: ['MFA_ENFORCEMENT'] }],
-        'Tighten MFA only',
-        ACTOR,
-        REQUEST,
-      );
+      const result = await service.publish([{ namespace: 'iam/dev' }], ACTOR, REQUEST);
 
       expect(result.ok).toBe(true);
-      expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'all', SESSION_TTL: 900 });
-    });
-
-    it('leaves the unselected key staged', async () => {
-      await stageBoth();
-
-      await service.publish(
-        [{ namespace: 'iam/dev', keys: ['MFA_ENFORCEMENT'] }],
-        'Part',
-        ACTOR,
-        REQUEST,
-      );
-
-      const draft = await drafts.get('iam/dev');
-      expect(draft?.changes.map((c) => c.key)).toEqual(['SESSION_TTL']);
-    });
-
-    it('rebases what is left on the commit that just happened', async () => {
-      // The residual draft was built against the old file. If it still carried the old base, the
-      // next publish would either conflict or silently revert the key just published.
-      await stageBoth();
-      await service.publish(
-        [{ namespace: 'iam/dev', keys: ['MFA_ENFORCEMENT'] }],
-        'Part',
-        ACTOR,
-        REQUEST,
-      );
-
-      const rest = await service.publish(
-        [{ namespace: 'iam/dev', keys: ['SESSION_TTL'] }],
-        'Rest',
-        ACTOR,
-        REQUEST,
-      );
-
-      expect(rest.ok).toBe(true);
       expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'all', SESSION_TTL: 600 });
     });
 
-    it('clears the draft when every staged key is selected', async () => {
+    it('leaves nothing staged behind', async () => {
       await stageBoth();
 
-      await service.publish(
-        [{ namespace: 'iam/dev', keys: ['MFA_ENFORCEMENT', 'SESSION_TTL'] }],
-        'Both',
-        ACTOR,
-        REQUEST,
-      );
+      await service.publish([{ namespace: 'iam/dev' }], ACTOR, REQUEST);
 
-      expect(await drafts.all()).toEqual([]);
-    });
-
-    it('publishes the whole draft when no keys are named', async () => {
-      await stageBoth();
-
-      await service.publish([{ namespace: 'iam/dev' }], 'Everything', ACTOR, REQUEST);
-
-      expect(await drafts.all()).toEqual([]);
-      expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'all', SESSION_TTL: 600 });
+      expect(await drafts.get('iam/dev')).toBeNull();
     });
 
     it('publishes a deletion, not just a new value', async () => {
-      // Removing an override is a staged change like any other, and it is the one an incident
-      // needs: drop a bad value and fall back to the service's compiled-in default. Treating a
-      // staged key as always-a-value would leave the old one committed and report success.
       await service.stage(
-        {
-          service: 'iam',
-          environment: 'dev',
-          changes: { SESSION_TTL: undefined, MFA_ENFORCEMENT: 'all' },
-        },
+        { service: 'iam', environment: 'dev', changes: { SESSION_TTL: undefined } },
         ACTOR,
       );
 
-      await service.publish(
-        [{ namespace: 'iam/dev', keys: ['SESSION_TTL'] }],
-        'Drop the override',
-        ACTOR,
-        REQUEST,
-      );
+      await service.publish([{ namespace: 'iam/dev' }], ACTOR, REQUEST);
 
       expect(await served('iam/dev')).not.toHaveProperty('SESSION_TTL');
-      expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'optional' });
     });
 
-    it('refuses a key that is not staged', async () => {
-      await stageBoth();
-
-      const result = await service.publish(
-        [{ namespace: 'iam/dev', keys: ['SMTP_PASSWORD'] }],
-        'Not staged',
-        ACTOR,
-        REQUEST,
-      );
-
-      expect(result.ok).toBe(false);
-    });
-
-    it('carries a secret through a partial publish', async () => {
-      // The draft holds the secret encrypted, so publishing a subset has to decrypt it in memory
-      // to rebuild the document. Getting this wrong loses the secret or commits it in the clear.
+    it('carries a secret through as ciphertext', async () => {
       await service.stage(
-        {
-          service: 'iam',
-          environment: 'dev',
-          changes: { SMTP_PASSWORD: 'hunter2', SESSION_TTL: 600 },
-        },
+        { service: 'iam', environment: 'dev', changes: { SMTP_PASSWORD: 'hunter2' } },
         ACTOR,
       );
 
-      await service.publish(
-        [{ namespace: 'iam/dev', keys: ['SMTP_PASSWORD'] }],
-        'Set password',
-        ACTOR,
-        REQUEST,
-      );
+      await service.publish([{ namespace: 'iam/dev' }], ACTOR, REQUEST);
 
-      expect(await served('iam/dev')).toMatchObject({ SMTP_PASSWORD: 'hunter2' });
       const committed = (await git.readSources()).sources.get('iam/dev') ?? '';
-      expect(committed).toContain('ENC[AES256_GCM');
       expect(committed).not.toContain('hunter2');
+      expect(committed).toContain('ENC[AES256_GCM');
+      expect(await served('iam/dev')).toMatchObject({ SMTP_PASSWORD: 'hunter2' });
     });
 
-    it('names only the published keys in the commit', async () => {
+    it('names every published key in the commit trailers', async () => {
       await stageBoth();
 
-      await service.publish(
-        [{ namespace: 'iam/dev', keys: ['MFA_ENFORCEMENT'] }],
-        'Part',
-        ACTOR,
-        REQUEST,
-      );
-
+      await service.publish([{ namespace: 'iam/dev' }], ACTOR, REQUEST);
       const body = await repo.git('log', '-1', '--format=%B');
+
       expect(body).toContain('Key: MFA_ENFORCEMENT');
-      expect(body).not.toContain('Key: SESSION_TTL');
+      expect(body).toContain('Key: SESSION_TTL');
     });
   });
 
@@ -236,12 +143,7 @@ withSops('publishing part of a draft', () => {
         { service: 'iam', environment: 'dev', changes: { MFA_ENFORCEMENT: 'all' } },
         ACTOR,
       );
-      await service.publish(
-        [{ namespace: 'iam/dev', keys: ['MFA_ENFORCEMENT'] }],
-        'In dev',
-        ACTOR,
-        REQUEST,
-      );
+      await service.publish([{ namespace: 'iam/dev' }], ACTOR, REQUEST);
 
       const result = await service.promote(
         { service: 'iam', from: 'dev', to: 'prod', keys: ['MFA_ENFORCEMENT'] },
@@ -260,12 +162,7 @@ withSops('publishing part of a draft', () => {
         { service: 'iam', environment: 'dev', changes: { MFA_ENFORCEMENT: 'all' } },
         ACTOR,
       );
-      await service.publish(
-        [{ namespace: 'iam/dev', keys: ['MFA_ENFORCEMENT'] }],
-        'In dev',
-        ACTOR,
-        REQUEST,
-      );
+      await service.publish([{ namespace: 'iam/dev' }], ACTOR, REQUEST);
 
       await service.promote(
         { service: 'iam', from: 'dev', to: 'prod', keys: ['MFA_ENFORCEMENT'] },
@@ -282,12 +179,7 @@ withSops('publishing part of a draft', () => {
         { service: 'iam', environment: 'dev', changes: { SMTP_PASSWORD: 'hunter2' } },
         ACTOR,
       );
-      await service.publish(
-        [{ namespace: 'iam/dev', keys: ['SMTP_PASSWORD'] }],
-        'Set',
-        ACTOR,
-        REQUEST,
-      );
+      await service.publish([{ namespace: 'iam/dev' }], ACTOR, REQUEST);
 
       const result = await service.promote(
         { service: 'iam', from: 'dev', to: 'prod', keys: ['SMTP_PASSWORD'] },

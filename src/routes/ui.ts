@@ -337,15 +337,15 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           return respond(reply, request, { service, env: environment });
         }
 
-        // Only ticks that are still staged. A stale tick — a key published from another tab
-        // meanwhile — must not fail the whole publish.
-        const staged = result.value.changes.map((change) => change.key);
-        const ticked = toList(body.select).filter((key) => staged.includes(key));
-        const keys = ticked.length > 0 ? ticked : staged;
+        // The whole draft is published — a draft publishes whole, and its commit message is
+        // generated from the saves that made it. The ticks still say what should MOVE ON to the
+        // next environment, which is the one thing they are still for.
+        const inDraft = result.value.changes.map((change) => change.key);
+        const ticked = toList(body.select).filter((key) => inDraft.includes(key));
+        const keys = ticked.length > 0 ? ticked : inDraft;
 
         const published = await writeService.publish(
-          [{ namespace: `${service}/${environment}`, keys }],
-          String(body.message ?? '').trim() || `Publish ${service}/${environment}`,
+          [{ namespace: `${service}/${environment}` }],
           actor,
           { id: request.id, sourceIp: request.ip },
         );
@@ -456,7 +456,6 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     async (request: FastifyRequest<{ Body: Record<string, string | string[]> }>, reply) => {
       const body = request.body ?? {};
       const selected = toList(body.namespace);
-      const message = String(body.message ?? '').trim();
       const session = request.session;
 
       // A product checkbox on the index selects the product; the namespaces it stands for are
@@ -479,7 +478,6 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
       const result = await writeService.publish(
         namespaces,
-        message || `Publish ${namespaces.join(', ')}`,
         {
           email: session?.email ?? 'unauthenticated@localhost',
           id: session?.id ?? 'anonymous',
