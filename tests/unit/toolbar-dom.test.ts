@@ -40,6 +40,9 @@ const selection = () => document.querySelector('[data-selection]') as HTMLElemen
 const idle = () => document.querySelector('.idle') as HTMLElement;
 const count = () => document.querySelector('.count') as HTMLElement;
 const save = () => document.querySelector('button[value="save"]') as HTMLButtonElement | null;
+/** Shown or not: the action is hidden rather than removed, so the script can bring it back. */
+const draftOffered = () =>
+  [...document.querySelectorAll('[data-draft-action]')].every((el) => !(el as HTMLElement).hidden);
 
 const load = (html: string) => {
   document.body.innerHTML = `<div id="page">${html}</div>`;
@@ -54,6 +57,65 @@ const swap = (html: string) => {
 };
 
 beforeEach(() => load(render()));
+
+const drafted = (keys: string[]) =>
+  render({
+    drafted: keys,
+    rows: rows.map((row) => (keys.includes(row.key) ? { ...row, pending: true } : row)),
+    environments: [
+      {
+        name: 'dev',
+        namespace: 'iam/dev',
+        pending: keys.map((key) => ({ key, from: 'optional', to: 'all', secret: false })),
+      },
+    ],
+  });
+
+describe('a page whose draft already holds everything ticked', () => {
+  // Pressing Draft again would write the same document a second time and count a revision for
+  // it, so the action is gone until something moves.
+  beforeEach(() => load(drafted(['MFA_ENFORCEMENT'])));
+
+  it('offers no draft action', () => {
+    expect(draftOffered()).toBe(false);
+  });
+
+  it('brings it back when a value is edited', () => {
+    const field = document.querySelector<HTMLInputElement>(
+      'input[data-key="SESSION_TTL"], select[data-key="SESSION_TTL"]',
+    ) as HTMLInputElement;
+    field.value = '1200';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(draftOffered()).toBe(true);
+    expect(save()?.disabled).toBe(false);
+  });
+
+  it('brings it back when another key is ticked', () => {
+    tick('SESSION_TTL').checked = true;
+    tick('SESSION_TTL').dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(draftOffered()).toBe(true);
+  });
+
+  it('takes it away again when that tick is cleared', () => {
+    tick('SESSION_TTL').checked = true;
+    tick('SESSION_TTL').dispatchEvent(new Event('change', { bubbles: true }));
+    tick('SESSION_TTL').checked = false;
+    tick('SESSION_TTL').dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(draftOffered()).toBe(false);
+  });
+
+  it('takes it away when a drafted key is unticked, which is a change to the draft', () => {
+    // Unticking a drafted key narrows what a publish would ship; it does not create something
+    // new to write down.
+    tick('MFA_ENFORCEMENT').checked = false;
+    tick('MFA_ENFORCEMENT').dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(draftOffered()).toBe(false);
+  });
+});
 
 describe('a freshly loaded environment', () => {
   it('selects the key when its tick is clicked', () => {

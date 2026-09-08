@@ -752,8 +752,23 @@ describe('the environment tab offers the controls its routes accept', () => {
       ]);
       const body = await page();
 
-      expect(body).toContain('name="intent" value="save"');
+      // Save is absent once everything on the page is drafted, so the pair is shown by adding
+      // an edit the draft does not hold.
       expect(body).toContain('name="intent" value="publish"');
+
+      // A page that failed validation has nothing ticked, so the action is offered: hiding it
+      // there would leave no way to save the fix.
+      const withMore = await app4.inject({
+        method: 'POST',
+        url: '/p/iam/dev',
+        payload: new URLSearchParams([
+          ['key.SESSION_TTL', 'not-a-number'],
+          ['intent', 'save'],
+        ]).toString(),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      expect(withMore.statusCode).toBe(422);
+      expect(withMore.body).toContain('name="intent" value="save"');
     });
 
     it('offers a message field with the publish button, since publishing requires one', async () => {
@@ -959,7 +974,6 @@ describe('the tick and button behaviour the page depends on', () => {
       const form = (await page()).match(/<form[^>]*data-keys[\s\S]*?<\/form>/)?.[0] ?? '';
 
       expect(form).toContain('value="publish"');
-      expect(form).toContain('value="save"');
       expect(form).toContain('name="select"');
       expect(form).toContain('name="key.MFA_ENFORCEMENT"');
     });
@@ -973,14 +987,13 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(body).not.toContain('id="message"');
     });
 
-    it('enables saving and reveals publishing once a draft exists', async () => {
+    it('reveals publishing, enabled, once a draft exists', async () => {
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
       ]);
       const body = await page();
 
-      expect(body.match(/<button[^>]*value="save"[^>]*>/)?.[0]).not.toContain('disabled');
       expect(body.match(/<button[^>]*value="publish"[^>]*>/)?.[0]).not.toContain('disabled');
     });
 
@@ -1013,8 +1026,60 @@ describe('the tick and button behaviour the page depends on', () => {
       const staged = await page();
 
       expect(staged).toContain('data-label="Publish {n} in dev?"');
-      expect(staged).toContain('data-label="Draft {n} change{s}?"');
       expect(staged).toContain('data-needs-ticks');
+    });
+
+    it('offers no draft action once everything on the page is already drafted', async () => {
+      // Pressing Draft again would write the same document a second time and count a revision
+      // for it. There is nothing left to draft until something else moves.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const body = await page();
+
+      // Hidden rather than removed, so the script can bring it back the moment something on
+      // the page is not in the draft — without a round trip to find that out.
+      expect(body).toMatch(/<span data-draft-action hidden>/);
+      expect(body).toContain('value="publish"');
+    });
+
+    it('enables publishing what the draft holds, without needing a fresh tick', async () => {
+      // The draft is the selection: it was chosen when it was saved, and a page load must not
+      // silently unselect it.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const publish = (await page()).match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '';
+
+      expect(publish).not.toContain('disabled');
+    });
+
+    it('ticks a key the draft holds even when its value never moved', async () => {
+      // A tick-only draft: the values match what is committed, so comparing values alone would
+      // show the key as untouched and publish nothing.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'optional'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['intent', 'save'],
+      ]);
+      const body = await page();
+
+      expect(body).toMatch(/data-select="MFA_ENFORCEMENT"[^>]*checked/);
+      expect(body.match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '').not.toContain('disabled');
+    });
+
+    it('brings the draft action back the moment something else moves', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const script = (await app5.inject({ method: 'GET', url: '/assets/ticks.js' })).body;
+
+      // The page carries what is drafted, so the script can tell a fresh tick from a saved one.
+      expect(await page()).toContain('data-drafted="MFA_ENFORCEMENT"');
+      expect(script).toContain('data-drafted');
     });
 
     it('drafts a ticked key whose value has not moved, rather than refusing', async () => {
@@ -1085,7 +1150,7 @@ describe('the tick and button behaviour the page depends on', () => {
     it('hides the selection while nothing is selected, showing where you are instead', async () => {
       const body = await page();
 
-      expect(body).toMatch(/<span class="selection" data-selection hidden>/);
+      expect(body).toMatch(/<span class="selection" data-selection hidden/);
       expect(body).toContain('class="idle"');
     });
 
@@ -1208,7 +1273,7 @@ describe('the tick and button behaviour the page depends on', () => {
       const body = await page();
 
       expect(body).toContain('data-has-draft');
-      expect(body).toMatch(/<span class="selection" data-selection >/);
+      expect(body).toMatch(/<span class="selection" data-selection\s+data-drafted=/);
     });
 
     it('renders the actions as links in the sentence, not as boxed buttons', async () => {

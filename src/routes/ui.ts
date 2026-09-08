@@ -188,9 +188,21 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           service,
           environments,
           active,
-          rows: buildRows(schemaSet, service, shown, {}, {}, { committed, elsewhere }),
+          rows: buildRows(
+            schemaSet,
+            service,
+            shown,
+            {},
+            {},
+            {
+              committed,
+              elsewhere,
+              drafted: draft?.changes.map((change) => change.key) ?? [],
+            },
+          ),
           commit: sources.commit,
           repoWebUrl,
+          drafted: draft?.changes.map((change) => change.key) ?? [],
           nextEnvironment,
           // What revision of this namespace the console is showing. Read from the draft when
           // there is one, since that is the document on screen.
@@ -369,6 +381,9 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
                 { ...(tree.namespaces.get(`${service}/${environment}`) ?? {}), ...changes },
                 perKey,
                 submitted,
+                // With the committed values in hand the rows keep their ticks, so a corrected
+                // value can be saved without re-ticking everything that was already selected.
+                { committed: tree.namespaces.get(`${service}/${environment}`) ?? {} },
               ),
               commit: sources.commit,
               error: result.error.detail,
@@ -469,6 +484,8 @@ function toList(value: string | string[] | undefined): string[] {
 interface RowContext {
   /** The committed values, so a staged edit can be shown as old -> new. */
   readonly committed?: Record<string, unknown>;
+  /** Keys the draft holds. A tick-only selection moves no value, so it cannot be inferred. */
+  readonly drafted?: readonly string[];
   /** Every other environment of this product: name -> its values and pending changes. */
   readonly elsewhere?: ReadonlyArray<{
     environment: string;
@@ -497,9 +514,12 @@ function buildRows(
     const definition: KeyDefinition | null = definitions.get(key) ?? null;
     const value = key in submitted ? submitted[key] : config[key];
     // Pending means the shown value differs from what is committed — the same comparison the
-    // write path makes, so the marker cannot disagree with what a publish would do.
+    // write path makes, so the marker cannot disagree with what a publish would do — or the
+    // draft names the key. A tick-only selection moves no value, and comparing values alone
+    // would show it as untouched and publish nothing.
     const pending =
-      committed !== undefined && JSON.stringify(committed[key]) !== JSON.stringify(value);
+      (context.drafted ?? []).includes(key) ||
+      (committed !== undefined && JSON.stringify(committed[key]) !== JSON.stringify(value));
 
     return {
       key,

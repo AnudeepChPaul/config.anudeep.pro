@@ -633,6 +633,8 @@ export function renderProduct(options: {
   commit: string;
   /** Where this repository lives in a browser, for linking the commit being served. */
   repoWebUrl?: string | null;
+  /** Keys the draft already holds, so the page can tell a fresh tick from a saved one. */
+  drafted?: readonly string[];
   /** The document's revision counter, 0 for a file that has never carried one. */
   revision?: number;
   /** The environment this one promotes into, for the drift count. */
@@ -668,6 +670,18 @@ export function renderProduct(options: {
   // Nothing ticked and nothing written down: the toolbar has nothing to act on, so it says
   // where you are instead.
   const idle = ticked === 0 && !hasDraft;
+  // Everything ticked is already in the draft, so there is nothing left to write down. Pressing
+  // Draft again would rewrite the same document and count a revision for it.
+  const drafted = options.drafted ?? [];
+  const tickedKeys = options.rows.filter((row) => row.pending).map((row) => row.key);
+  // Unticking a drafted key narrows what a publish would ship; it does not create something new
+  // to write down. So the action is about what is ticked and NOT yet drafted.
+  const nothingToDraft =
+    hasDraft &&
+    // Never on a page with nothing ticked: that is a page that failed validation or was just
+    // loaded, and hiding the action there leaves no way to save the fix.
+    tickedKeys.length > 0 &&
+    tickedKeys.every((key) => drafted.includes(key));
 
   const body = html`
 
@@ -723,7 +737,8 @@ export function renderProduct(options: {
               // the selection the moment there is one.
               idle ? idleLine(options) : html``
             }
-            <span class="selection" data-selection ${idle ? 'hidden' : ''}>
+            <span class="selection" data-selection ${idle ? 'hidden' : ''}
+                  data-drafted="${drafted.join(',')}">
               <!-- The count says how many; hovering it says which. The script rebuilds the panel
                    as ticks move, because before a draft is saved the server has never seen the
                    edits the panel is describing. -->
@@ -732,15 +747,19 @@ export function renderProduct(options: {
                   >${ticked} unpublished change${ticked === 1 ? '' : 's'}.</span>
                 ${detailPanel('Selected', activeEnv?.pending ?? [])}
               </span>
-              <button type="submit" name="intent" value="save" class="linkbtn"
-                      data-needs-ticks data-label="Draft {n} change{s}?"
-                      ${ticked === 0 ? 'disabled' : ''}>Draft ${ticked} change${ticked === 1 ? '' : 's'}?</button>
+              <!-- Hidden rather than absent: the script shows it again the moment something on
+                   the page is not in the draft, without a round trip to find that out. -->
+              <span data-draft-action ${nothingToDraft ? 'hidden' : ''}>
+                <button type="submit" name="intent" value="save" class="linkbtn"
+                        data-needs-ticks data-label="Draft {n} change{s}?"
+                        ${ticked === 0 ? 'disabled' : ''}>Draft ${ticked} change${ticked === 1 ? '' : 's'}?</button>
+              </span>
               ${
                 // Publishing appears only once something is actually saved. Not disabled —
                 // absent: you cannot publish what has not been written down, and a permanently
                 // greyed action invites clicking at it to find out why.
                 hasDraft
-                  ? html`<span class="sep">·</span>
+                  ? html`<span class="sep" data-draft-action ${nothingToDraft ? 'hidden' : ''}>·</span>
                       <button type="submit" name="intent" value="publish" class="linkbtn go"
                               data-needs-ticks data-label="Publish {n} in ${options.active}?"
                               ${ticked === 0 ? 'disabled' : ''}>Publish ${ticked} in ${options.active}?</button>`

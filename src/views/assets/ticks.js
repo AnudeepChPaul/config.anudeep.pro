@@ -78,6 +78,23 @@
         .replace('{s}', ticked === 1 ? '' : 's');
     }
 
+    // What is ticked but not yet in the draft, plus anything edited on the page. With neither,
+    // pressing Draft would rewrite the same document and count a revision for it; unticking a
+    // drafted key narrows a publish rather than creating something to write down.
+    const selection = form.querySelector('[data-selection]');
+    const draftedAttr = selection?.getAttribute('data-drafted');
+    if (draftedAttr !== null && draftedAttr !== undefined) {
+      const draftedKeys = draftedAttr.split(',').filter(Boolean);
+      const somethingNew =
+        draftedKeys.length === 0 ||
+        [...form.querySelectorAll('input[name="select"]:checked')].some(
+          (box) => !draftedKeys.includes(box.value),
+        ) ||
+        [...form.querySelectorAll('[data-key]')].some((control) => isDirty(control));
+
+      for (const el of form.querySelectorAll('[data-draft-action]')) el.hidden = !somethingNew;
+    }
+
     // Nothing ticked and nothing written down: the toolbar has nothing to act on, so it shows
     // where you are instead. A saved draft counts as something, since it is publishable
     // whatever the ticks say.
