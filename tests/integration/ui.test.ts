@@ -672,3 +672,159 @@ describe('publishing ticked keys and promoting them', () => {
     });
   });
 });
+
+describe('the environment tab offers the controls its routes accept', () => {
+  /**
+   * Every publish test until now posted to the route directly. That proved the handler works
+   * and said nothing about whether the page ever offers it — and for a while it did not: the
+   * button was missing from the view while the route, the tests and a curl all passed.
+   *
+   * So these assert the PAGE: that what a person can click matches what the server accepts.
+   */
+  const SCHEMA4 = `keys:
+  MFA_ENFORCEMENT:
+    type: enum
+    values: [optional, admins, all]
+  SESSION_TTL:
+    type: int
+    min: 60
+    max: 86400
+`;
+
+  const withSops4 = hasSops() ? describe : describe.skip;
+
+  withSops4('as rendered', () => {
+    let key4: AgeKeypair;
+    let repo4: TestRepo;
+    let git4: GitRepository;
+    let app4: Awaited<ReturnType<typeof buildWebApp>>;
+
+    const page = async (url = '/p/iam?env=dev') => (await app4.inject({ method: 'GET', url })).body;
+
+    const post = (url: string, fields: Array<[string, string]>) =>
+      app4.inject({
+        method: 'POST',
+        url,
+        payload: new URLSearchParams(fields).toString(),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+
+    beforeEach(async () => {
+      key4 = generateAgeKey();
+      repo4 = await TestRepo.create();
+      await repo4.commit({
+        'schema/iam.yaml': SCHEMA4,
+        'environments.yaml': 'order: [dev, prod]\n',
+        'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
+        'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
+        '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key4.recipient}\n`,
+      });
+      git4 = new GitRepository(repo4.dir);
+      const loader4 = new ConfigLoader(new SopsDecryptor(key4.secret));
+      const drafts4 = new DraftStore(`${repo4.dir}/.drafts.json`);
+      app4 = await buildWebApp({
+        repository: git4,
+        loader: loader4,
+        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA4 }),
+        drafts: drafts4,
+        environmentOrder: async () =>
+          EnvironmentOrder.fromYaml(await git4.readFile('environments.yaml')),
+        writeService: new ConfigWriteService({
+          repository: git4,
+          loader: loader4,
+          encryptor: new SopsEncryptor(repo4.dir),
+          schemas: () => SchemaSet.fromFiles({ iam: SCHEMA4 }),
+          drafts: drafts4,
+        }),
+        environment: 'dev',
+      });
+    });
+
+    afterEach(async () => {
+      await app4?.close();
+      await rm(repo4.dir, { recursive: true, force: true });
+    });
+
+    it('renders both buttons the handler branches on', async () => {
+      const body = await page();
+
+      expect(body).toContain('name="intent" value="save"');
+      expect(body).toContain('name="intent" value="publish"');
+    });
+
+    it('offers a message field, since publishing requires one', async () => {
+      expect(await page()).toContain('name="message"');
+    });
+
+    it('keeps the ticks in the same form as the publish button', async () => {
+      // In separate forms the ticks are simply not submitted, and every publish would silently
+      // ship the whole draft instead of the selection.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+
+      const form =
+        (await page()).match(/<form[^>]*action="\/p\/iam\/dev"[\s\S]*?<\/form>/)?.[0] ?? '';
+
+      expect(form).toContain('name="select"');
+      expect(form).toContain('name="intent" value="publish"');
+      expect(form).toContain('name="message"');
+    });
+
+    it('disables publishing when there is nothing staged', async () => {
+      const body = await page();
+      const button = body.match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '';
+
+      expect(button).toContain('disabled');
+    });
+
+    it('enables it once something is staged', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+
+      const button = (await page()).match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '';
+
+      expect(button).not.toContain('disabled');
+    });
+
+    it('has no second, environment-scoped publish that would ignore the ticks', async () => {
+      // Publishing a whole product is a real action and keeps its own form. What must not
+      // survive is a button that publishes just this environment while skipping the selection —
+      // two ways to publish, one of which quietly ships more than was ticked.
+      const body = await page();
+      const productForm = body.match(/<form[^>]*action="\/publish"[\s\S]*?<\/form>/)?.[0] ?? '';
+
+      expect(productForm).toContain('value="iam/dev"');
+      expect(productForm).toContain('value="iam/prod"');
+      expect(body.match(/action="\/publish"/g) ?? []).toHaveLength(1);
+    });
+
+    it('offers a tick on every key, not only the changed ones', async () => {
+      // A tick is how you say what goes — to a publish and to the next environment — so a key
+      // the form will not offer is a key you cannot send along.
+      const body = await page();
+
+      for (const key of ['MFA_ENFORCEMENT', 'SESSION_TTL']) {
+        expect(body).toContain(`name="select" value="${key}"`);
+      }
+    });
+
+    it('starts a changed key ticked and an unchanged one clear', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const body = await page();
+
+      const tick = (key: string) =>
+        body.match(new RegExp(`<input type="checkbox" name="select" value="${key}"[^>]*>`))?.[0] ??
+        '';
+
+      expect(tick('MFA_ENFORCEMENT')).toContain('checked');
+      expect(tick('SESSION_TTL')).not.toContain('checked');
+    });
+  });
+});

@@ -74,7 +74,9 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   /* Hover detail. No script: :hover and :focus-within are enough, and a keyboard reaches it. */
   .pending { position: relative; display: inline-flex; align-items: center; gap: 5px;
              font-size: .75rem; color: #b45309; cursor: help; }
-  .detail { display: none; position: absolute; top: 20px; left: 0; z-index: 5; width: 320px;
+  /* Above the trigger, not below: opening downward covered the value field the panel is
+     describing, which is the one thing you are looking at when you open it. */
+  .detail { display: none; position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 5; width: 320px;
             background: #fff; border: 1px solid #e2e5ea; border-radius: 6px; padding: 10px 12px;
             box-shadow: 0 4px 14px rgba(22,24,29,.10); color: #16181d; font-weight: 400;
             cursor: default; }
@@ -106,7 +108,7 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .switch input:checked ~ .state::after { content: 'true'; }
   /* Hover peek on a key name — same mechanics as the pending detail, no script. */
   .peek { position: relative; display: inline-flex; cursor: help; border-bottom: 1px dotted #cbd0d9; }
-  .peek .detail { top: 21px; }
+  .peek .detail { bottom: calc(100% + 6px); }
   .peek:hover .detail, .peek:focus-within .detail { display: block; }
   .detail .envname { color: #9aa0ad; font-size: .75rem; }
   .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: .25rem; }
@@ -150,12 +152,14 @@ function renderField(row: KeyRow): SafeHtml {
   const definition = row.definition;
   const hint = definition?.description ?? typeHint(definition);
 
-  // A checkbox only where there is something to publish: an unchanged key cannot be shipped, so
-  // a control there would be a dead one.
-  const pick = row.pending
-    ? html`<span class="keypick"><input type="checkbox" name="select" value="${row.key}" checked
-             title="Include in the next publish"></span>`
-    : html`<span class="keypick"></span>`;
+  // Every key gets one, not only the changed ones. A tick is how you say what goes — to a
+  // publish, and to the next environment — and you cannot say "send this one along" about a key
+  // the form refuses to offer. Changed keys start ticked because that is almost always the
+  // intent; the rest start clear.
+  const pick = html`<span class="keypick">
+    <input type="checkbox" name="select" value="${row.key}"${row.pending ? ' checked' : ''}
+           title="Include when publishing or promoting">
+  </span>`;
 
   const header = html`<div class="keyline">
     <label for="${name}" style="margin: 0;">${peek(row)}</label>
@@ -188,10 +192,10 @@ function renderField(row: KeyRow): SafeHtml {
       (value) =>
         html`<option value="${value}"${row.value === value ? ' selected' : ''}>${value}</option>`,
     );
-    return html`<div class="field">${header}
+    return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
       <select id="${name}" name="${name}"><option value=""></option>${options}</select>
       ${error}
-    </div>`;
+    </div></div>`;
   }
 
   if (definition?.type === 'int') {
@@ -536,19 +540,28 @@ export function renderProduct(options: {
               : html`Everything in ${options.active} is published.`
           }
         </div>
-        <form method="post" action="/publish" style="display:flex;gap:8px;">
-          <input type="hidden" name="namespace" value="${options.service}/${options.active}">
-          <input type="hidden" name="message" value="Publish ${options.service}/${options.active}">
-          <button type="submit" ${!activeEnv || activeEnv.pending.length === 0 ? 'disabled' : ''}>
-            Publish ${options.active}
-          </button>
-        </form>
       </div>
 
+      <!-- One form: the ticks, the message and both buttons. The checkboxes have to be inside
+           it or a publish would carry no selection at all. -->
       <form method="post" action="/p/${options.service}/${options.active}"
             hx-post="/p/${options.service}/${options.active}" hx-target="#page" hx-swap="innerHTML">
         <div class="card" style="padding:.5rem 1.25rem 1rem;">${fields}</div>
-        <button type="submit">Save as draft</button>
+        <div class="card" style="padding:.85rem 1.25rem;">
+          <div class="field">
+            <label for="message">Publish message
+              <span class="hint">becomes the commit subject; the ticks choose what goes</span>
+            </label>
+            <input type="text" id="message" name="message" value="${options.message ?? ''}">
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;">
+            <button type="submit" name="intent" value="save" class="ghost">Save as draft</button>
+            <button type="submit" name="intent" value="publish"
+                    ${activeEnv && activeEnv.pending.length > 0 ? '' : 'disabled'}>
+              Publish ticked in ${options.active}
+            </button>
+          </div>
+        </div>
       </form>
     `;
   return options.fragment ? body : layout(options.service, body);
