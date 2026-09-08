@@ -24,7 +24,11 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+# The cache mount is what keeps a dependency change cheap: adding one package invalidates this
+# layer, and without a persistent store that means re-fetching every package and rebuilding
+# koffi from source — minutes, inside the Docker Desktop VM. With it, seconds.
+RUN --mount=type=cache,target=/pnpm-store \
+    pnpm config set store-dir /pnpm-store && pnpm install --frozen-lockfile
 
 # Runs as a non-root uid, matching how services actually run — and without it the peer-credential
 # test cannot distinguish "the kernel reported the truth" from "the kernel reported 0 and the

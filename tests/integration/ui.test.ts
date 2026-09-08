@@ -1006,8 +1006,53 @@ describe('the tick and button behaviour the page depends on', () => {
       ]);
       const staged = await page();
 
-      expect(staged).toContain('data-label="Publish {n} in dev"');
+      expect(staged).toContain('data-label="Publish {n} in dev?"');
       expect(staged).toContain('data-needs-ticks');
+    });
+
+    it('states what is selected as a sentence the script can recount', async () => {
+      const body = await page();
+
+      expect(body).toContain('data-label="{n} unpublished change{s} selected."');
+      expect(body).toContain('data-zero=');
+    });
+
+    it('renders the actions as links in the sentence, not as boxed buttons', async () => {
+      // They read as the end of the sentence — "1 unpublished change selected. Save as draft?" —
+      // rather than as a control bar bolted above the fields.
+      const save = (await page()).match(/<button[^>]*value="save"[^>]*>/)?.[0] ?? '';
+
+      expect(save).toContain('class="linkbtn"');
+      expect(save).not.toContain('ghost');
+    });
+
+    it('keeps the publish action in the same register once a draft exists', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const publish = (await page()).match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '';
+
+      expect(publish).toContain('linkbtn');
+    });
+
+    it('leaves the draft count hoverable, so you can see what is in it', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const body = await page();
+
+      // The same hover panel the tabs and the product list use: the count is the trigger.
+      expect(body).toContain('class="pending"');
+      expect(body).toContain('MFA_ENFORCEMENT');
+    });
+
+    it('styles a tick you are not allowed to clear differently from one you are', async () => {
+      const body = await page();
+
+      expect(body).toContain('.keypick input.locked');
+      expect(body).toContain('.linkbtn:disabled');
     });
 
     it('serves the script that does all of it', async () => {

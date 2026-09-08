@@ -1,0 +1,155 @@
+// @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+
+/**
+ * The tick script runs in a browser and nowhere else, so asserting on its source text — which
+ * is all the route tests can do — proves only that a string is present. These drive the real
+ * DOM: build the markup the page renders, run the script against it, and act on it.
+ */
+// Not `import.meta.url`: under the jsdom environment that is an http URL, not a file one.
+const source = readFileSync(join(process.cwd(), 'src/views/assets/ticks.js'), 'utf8');
+
+const markup = `
+  <form data-keys>
+    <input type="checkbox" name="select" value="A" data-select="A">
+    <input type="text" name="key.A" value="one" data-key="A" data-original="one">
+    <input type="checkbox" name="select" value="B" data-select="B">
+    <input type="checkbox" name="key.B" data-key="B" data-original="false">
+    <span data-label="{n} unpublished change{s} selected." data-zero="No changes selected.">No changes selected.</span>
+    <button type="submit" name="intent" value="save" data-needs-ticks data-label="Save {n}" disabled>Save 0</button>
+  </form>
+`;
+
+const tick = (key: string) =>
+  document.querySelector<HTMLInputElement>(`input[data-select="${key}"]`) as HTMLInputElement;
+const field = (key: string) =>
+  document.querySelector<HTMLInputElement>(`input[data-key="${key}"]`) as HTMLInputElement;
+const button = () => document.querySelector('button') as HTMLButtonElement;
+const sentence = () => document.querySelector('span[data-label]') as HTMLSpanElement;
+
+/** What a person doing it with a mouse does: the click both toggles and fires `change`. */
+const clickTick = (key: string) => {
+  const box = tick(key);
+  box.checked = !box.checked;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
+};
+
+const type = (key: string, value: string) => {
+  field(key).value = value;
+  field(key).dispatchEvent(new Event('input', { bubbles: true }));
+};
+
+const run = () => {
+  document.body.innerHTML = markup;
+  new Function(source)();
+};
+
+beforeEach(run);
+
+describe('ticks follow the value', () => {
+  it('ticks a key once its value differs', () => {
+    type('A', 'two');
+    expect(tick('A').checked).toBe(true);
+  });
+
+  it('unticks it again when the value is typed back', () => {
+    type('A', 'two');
+    type('A', 'one');
+    expect(tick('A').checked).toBe(false);
+  });
+
+  it('follows a switch, whose value is its checked state', () => {
+    field('B').checked = true;
+    field('B').dispatchEvent(new Event('change', { bubbles: true }));
+    expect(tick('B').checked).toBe(true);
+  });
+});
+
+describe('a changed value cannot be unticked', () => {
+  // Publishing is per key, so an unticked-but-edited key would be written to the draft document
+  // by the form post and then left out of the change set — the edit would look accepted on
+  // screen and vanish. If you do not want the change, undo the change.
+  it('snaps the tick back when you try to clear it', () => {
+    type('A', 'two');
+
+    clickTick('A');
+
+    expect(tick('A').checked).toBe(true);
+  });
+
+  it('says why, rather than appearing to be a broken checkbox', () => {
+    type('A', 'two');
+    expect(tick('A').title).toMatch(/chang/i);
+  });
+
+  it('marks the box so it does not look like an ordinary one you may clear', () => {
+    type('A', 'two');
+    expect(tick('A').classList.contains('locked')).toBe(true);
+
+    type('A', 'one');
+    expect(tick('A').classList.contains('locked')).toBe(false);
+  });
+
+  it('keeps the button count right when the untick is refused', () => {
+    type('A', 'two');
+    clickTick('A');
+    expect(button().textContent).toBe('Save 1');
+  });
+
+  it('lets go the moment the value is back to what it was', () => {
+    type('A', 'two');
+    type('A', 'one');
+
+    clickTick('A');
+
+    expect(tick('A').checked).toBe(true);
+    expect(tick('A').title).toBe('');
+  });
+});
+
+describe('ticks you set by hand', () => {
+  it('stay where you put them on an unchanged key', () => {
+    clickTick('A');
+    type('B', 'x');
+
+    expect(tick('A').checked).toBe(true);
+  });
+
+  it('can be cleared again, because nothing was changed', () => {
+    clickTick('A');
+    clickTick('A');
+    expect(tick('A').checked).toBe(false);
+  });
+});
+
+describe('the running sentence', () => {
+  it('names nothing while nothing is ticked', () => {
+    expect(sentence().textContent).toBe('No changes selected.');
+  });
+
+  it('counts, and says "change" of one', () => {
+    type('A', 'two');
+    expect(sentence().textContent).toBe('1 unpublished change selected.');
+  });
+
+  it('says "changes" of more than one', () => {
+    type('A', 'two');
+    clickTick('B');
+    expect(sentence().textContent).toBe('2 unpublished changes selected.');
+  });
+});
+
+describe('the buttons', () => {
+  it('start disabled with nothing ticked', () => {
+    expect(button().disabled).toBe(true);
+    expect(button().textContent).toBe('Save 0');
+  });
+
+  it('enable and count once something is ticked', () => {
+    type('A', 'two');
+    expect(button().disabled).toBe(false);
+    expect(button().textContent).toBe('Save 1');
+  });
+});

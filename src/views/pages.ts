@@ -87,6 +87,18 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .detail .is { color: #16181d; }
   .toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
   .ghost { background: #fff; color: #16181d; border: 1px solid #cbd0d9; }
+  /* The two actions belong to the sentence that states what is selected, so they are set as
+     part of it rather than as a boxed control bar sitting above the fields. */
+  .linkbtn { background: none; border: 0; padding: 0; font: inherit; font-weight: 600;
+             color: #1d4ed8; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+  .linkbtn:hover:not(:disabled) { color: #1e3fa8; }
+  .linkbtn:disabled { color: #9aa0ad; text-decoration: none; cursor: not-allowed; }
+  /* Publishing is the consequential one, and carries the same amber as everything else that
+     means "unpublished" on these pages. */
+  .linkbtn.go { color: #b45309; }
+  .linkbtn.go:hover:not(:disabled) { color: #8a4108; }
+  .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: .875rem; }
+  .actionline .sep { color: #cbd0d9; }
   input[type=number] { max-width: 12rem; font-variant-numeric: tabular-nums; }
   select { max-width: 20rem; }
   .chip-item { display: inline-flex; align-items: center; gap: 6px; font-size: .8125rem;
@@ -115,6 +127,10 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .keyrow { display: flex; align-items: flex-start; gap: 14px; }
   .keypick { width: 16px; flex-shrink: 0; padding-top: 2px; }
   .keypick input { width: 16px; height: 16px; accent-color: #16181d; cursor: pointer; margin: 0; }
+  /* A tick on a value you have actually changed cannot be cleared — the change goes with the
+     draft either way. It must not look like an ordinary box that simply failed to respond. */
+  .keypick input.locked { accent-color: #b45309; cursor: not-allowed; }
+  .keypick input:disabled { accent-color: #cbd0d9; cursor: not-allowed; opacity: .55; }
 </style>
 </head>
 <body>
@@ -547,30 +563,31 @@ export function renderProduct(options: {
             hx-post="/p/${options.service}/${options.active}" hx-target="#page" hx-swap="innerHTML"
             data-keys>
         <div class="card" style="padding:.85rem 1.25rem;">
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-            <button type="submit" name="intent" value="save" class="ghost"
-                    data-needs-ticks data-label="Save {n} as draft"
-                    ${ticked === 0 ? 'disabled' : ''}>Save ${ticked} as draft</button>
+          <div class="actionline">
+            <span data-label="{n} unpublished change{s} selected."
+                  data-zero="No changes selected.">${
+                    ticked === 0
+                      ? html`No changes selected.`
+                      : html`${ticked} unpublished change${ticked === 1 ? '' : 's'} selected.`
+                  }</span>
+            <button type="submit" name="intent" value="save" class="linkbtn"
+                    data-needs-ticks data-label="Save {n} as draft?"
+                    ${ticked === 0 ? 'disabled' : ''}>Save ${ticked} as draft?</button>
             ${
               // Publishing appears only once something is actually saved. Not disabled —
               // absent: you cannot publish what has not been written down, and a permanently
-              // greyed button invites clicking at it to find out why.
+              // greyed action invites clicking at it to find out why.
               hasDraft
-                ? html`<button type="submit" name="intent" value="publish"
-                        data-needs-ticks data-label="Publish {n} in ${options.active}"
-                        ${ticked === 0 ? 'disabled' : ''}>Publish ${ticked} in ${options.active}</button>`
+                ? html`<span class="sep">·</span>
+                    ${pendingDetail(`Waiting in ${options.active}`, activeEnv?.pending ?? [])}
+                    <button type="submit" name="intent" value="publish" class="linkbtn go"
+                            data-needs-ticks data-label="Publish {n} in ${options.active}?"
+                            ${ticked === 0 ? 'disabled' : ''}>Publish ${ticked} in ${options.active}?</button>`
                 : html``
             }
-            <span class="hint" style="margin-left:auto;">
-              ${
-                hasDraft
-                  ? pendingDetail(`Waiting in ${options.active}`, activeEnv?.pending ?? [])
-                  : html`Everything in ${options.active} is published.`
-              }
-            </span>
           </div>
           ${
-            // The message comes with the publish button, and takes focus when it arrives: it is
+            // The message comes with the publish action, and takes focus when it arrives: it is
             // the only thing left to supply, and it is required.
             hasDraft
               ? html`<div class="field" style="margin:.85rem 0 0;">
