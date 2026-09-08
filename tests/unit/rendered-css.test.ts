@@ -119,3 +119,21 @@ describe('the switch reflects the checkbox', () => {
     expect(page()).toMatch(/\.switch input:focus-visible ~ \.track/);
   });
 });
+
+describe('a hidden element is actually hidden', () => {
+  // `hidden` is a UA style of `display: none`, and ANY author rule setting display beats it —
+  // so `.selection { display: inline-flex }` left the selection count on screen on a clean
+  // slate, reading "0 of 4 unpublished changes" beside the idle line. Every element the script
+  // hides is display-typed like this, which makes the override the mechanism, not a nicety.
+  it('overrides display for [hidden], which every author display rule otherwise wins against', () => {
+    const css = productPage([]);
+
+    expect(css).toMatch(/\[hidden\][^{]*\{[^}]*display:\s*none\s*!important/);
+  });
+
+  it('sets display on the elements the script hides, which is why it is needed', () => {
+    const css = productPage([]);
+
+    expect(css).toMatch(/\.selection \{[^}]*display:/);
+  });
+});

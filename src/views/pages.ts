@@ -107,6 +107,10 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .actionline .count { color: #b45309; }
   .actionline .idle { color: #5b6070; }
   .selection { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  /* The hidden attribute is only a UA "display: none", so any author display rule — the one
+     on .selection, for instance — beats it and leaves a hidden element on screen. Everything
+     the script hides is display-typed, which makes this the mechanism, not a nicety. */
+  [hidden] { display: none !important; }
   .actionline .sep { color: #cbd0d9; }
   /* The selection count is a hover trigger like the others, but it is ordinary running text
      rather than an amber "unpublished" marker — it states what you are about to do, not a
