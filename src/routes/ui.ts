@@ -32,6 +32,11 @@ export interface UiRouteOptions {
    * `environments.yaml` takes effect without a restart; absent means promotion is not offered.
    */
   readonly environmentOrder?: () => Promise<EnvironmentOrder>;
+  /**
+   * The push remote's browser address, for linking the commit being served. Absent renders the
+   * sha as plain text: a wrong link sends an operator mid-incident to somebody else's history.
+   */
+  readonly repoWebUrl?: string | null;
 }
 
 interface NamespaceParams {
@@ -52,6 +57,9 @@ const KEY_PREFIX = 'key.';
 
 export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions): void {
   const { repository, loader, schemas, writeService, drafts } = options;
+  // Destructured here because productPage takes its own `options`, and the two would otherwise
+  // read alike at the point of use.
+  const repoWebUrl = options.repoWebUrl ?? null;
   const readOrder = options.environmentOrder ?? (async () => EnvironmentOrder.none());
 
   /**
@@ -181,6 +189,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           active,
           rows: buildRows(schemaSet, service, shown, {}, {}, { committed, elsewhere }),
           commit: sources.commit,
+          repoWebUrl,
           nextEnvironment,
           // The audit trail's latest entry for this namespace, shown where the operator is
           // about to add to it.

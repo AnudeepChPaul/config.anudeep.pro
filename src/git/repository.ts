@@ -72,6 +72,38 @@ export function buildSshCommand(options: SshOptions): string {
   return parts.join(' ');
 }
 
+/** Hosts whose commit URL layout is known. Guessing one for anything else produces a link that
+ *  404s at best, and at worst sends an operator mid-incident to somebody else's repository. */
+const WEB_HOSTS = new Set(['github.com', 'gitlab.com', 'bitbucket.org']);
+
+/**
+ * The browser address for a push remote, or null when there is not one to be sure of.
+ *
+ * git pushes over SSH and a reader clicks HTTPS, so the two forms have to be converted between.
+ * Credentials embedded in an https remote are dropped rather than rendered into a page.
+ */
+export function webUrlFor(remote: string | null | undefined): string | null {
+  if (!remote) return null;
+
+  const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(remote);
+  const url = /^(?:ssh|git|https?):\/\//.test(remote)
+    ? (() => {
+        try {
+          const parsed = new URL(remote);
+          return { host: parsed.hostname, path: parsed.pathname.replace(/^\//, '') };
+        } catch {
+          return null;
+        }
+      })()
+    : scp && !remote.startsWith('/')
+      ? { host: scp[1] ?? '', path: scp[2] ?? '' }
+      : null;
+
+  if (!url || !WEB_HOSTS.has(url.host)) return null;
+  const path = url.path.replace(/\.git$/, '');
+  return path ? `https://${url.host}/${path}` : null;
+}
+
 export class GitRepositoryError extends Error {}
 
 export class GitRepository {

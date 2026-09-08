@@ -99,19 +99,24 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .linkbtn.go:hover:not(:disabled) { color: #8a4108; }
   /* Quieter than the fields it sits above: it states what you have selected, it is not the
      thing you came to the page to read. */
+  /* One size across the whole bar, actions included: a link-styled action a step larger than
+     the sentence it belongs to reads as a button pretending to be a word. */
   .actions, .actionline { font-size: .8125rem; }
+  .actionline button, .actionline input, .actionline code { font-size: inherit; }
   /* One line of .8125rem text, the card's padding and its bottom margin. */
   .actionslot { min-height: 3.35rem; }
   .actionslot .card { margin-bottom: 0; }
   .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   .actionline .count { color: #b45309; }
   .actionline .idle { color: #5b6070; }
+  .actionline .drift { border-bottom: 1px dotted #b0b6c2; }
   .selection { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one
      on .selection, for instance — beats it and leaves a hidden element on screen. Everything
      the script hides is display-typed, which makes this the mechanism, not a nicety. */
   [hidden] { display: none !important; }
-  .actionline .sep { color: #cbd0d9; }
+  /* #cbd0d9 on white is under 2:1 — the dots were invisible and the facts ran together. */
+  .sep { color: #8a90a0; }
   /* The selection count is a hover trigger like the others, but it is ordinary running text
      rather than an amber "unpublished" marker — it states what you are about to do, not a
      warning about the environment. */
@@ -452,6 +457,7 @@ function idleLine(options: {
   active: string;
   rows: readonly KeyRow[];
   commit: string;
+  repoWebUrl?: string | null;
   nextEnvironment?: string | null;
   lastChange?: { subject: string; author: string; at: string } | null;
 }): SafeHtml {
@@ -459,21 +465,43 @@ function idleLine(options: {
     html`${options.rows.length} variable${options.rows.length === 1 ? '' : 's'} in ${options.active}`,
   ];
 
-  if (options.nextEnvironment) {
+  const next = options.nextEnvironment;
+  if (next) {
     // Counted against what the next environment actually holds, including keys it has not got
     // at all — those are drift too, and the ones a promotion would create.
-    const drift = options.rows.filter((row) => {
-      const there = row.elsewhere?.find((env) => env.environment === options.nextEnvironment);
+    const drifted = options.rows.filter((row) => {
+      const there = row.elsewhere?.find((env) => env.environment === next);
       return !there || format(there.value) !== format(row.value);
-    }).length;
+    });
+
     parts.push(
-      drift === 0
-        ? html`identical to ${options.nextEnvironment}`
-        : html`${drift} differ from ${options.nextEnvironment}`,
+      drifted.length === 0
+        ? html`identical to ${next}`
+        : // The count alone means opening the other tab and comparing by eye, so it opens the
+          // same panel everything else on these pages uses: from what is there, to what is here.
+          html`<span class="pending sel" tabindex="0">
+            <span class="drift">${drifted.length} differ from ${next}</span>
+            ${detailPanel(
+              `Differs from ${next}`,
+              drifted.map((row) => ({
+                key: row.key,
+                from: row.definition?.secret
+                  ? undefined
+                  : format(row.elsewhere?.find((env) => env.environment === next)?.value),
+                to: row.definition?.secret ? undefined : format(row.value),
+                secret: row.definition?.secret ?? false,
+              })),
+            )}
+          </span>`,
     );
   }
 
-  parts.push(html`serving <code>${options.commit.slice(0, 8)}</code>`);
+  parts.push(
+    options.repoWebUrl
+      ? html`serving <a href="${options.repoWebUrl}/commit/${options.commit}" target="_blank"
+              rel="noreferrer"><code>${options.commit.slice(0, 8)}</code></a>`
+      : html`serving <code>${options.commit.slice(0, 8)}</code>`,
+  );
 
   if (options.lastChange) {
     parts.push(
@@ -592,6 +620,8 @@ export function renderProduct(options: {
   active: string;
   rows: readonly KeyRow[];
   commit: string;
+  /** Where this repository lives in a browser, for linking the commit being served. */
+  repoWebUrl?: string | null;
   /** The environment this one promotes into, for the drift count. */
   nextEnvironment?: string | null;
   /** The audit trail's most recent entry for this namespace. */
@@ -680,8 +710,8 @@ export function renderProduct(options: {
                    as ticks move, because before a draft is saved the server has never seen the
                    edits the panel is describing. -->
               <span class="pending sel" tabindex="0">
-                <span class="count" data-label="{n} of {t} unpublished changes."
-                  >${ticked} of ${options.rows.length} unpublished changes.</span>
+                <span class="count" data-label="{n} unpublished change{s}."
+                  >${ticked} unpublished change${ticked === 1 ? '' : 's'}.</span>
                 ${detailPanel('Selected', activeEnv?.pending ?? [])}
               </span>
               <button type="submit" name="intent" value="save" class="linkbtn"

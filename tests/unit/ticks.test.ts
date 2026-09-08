@@ -21,7 +21,7 @@ const markup = `
     <input type="checkbox" name="select" value="B" data-select="B">
     <input type="checkbox" name="key.B" data-key="B" data-original="false">
     <span class="pending" tabindex="0">
-        <span data-label="{n} of {t} unpublished changes.">0 of 2 unpublished changes.</span>
+        <span data-label="{n} unpublished change{s}.">0 unpublished changes.</span>
       <span class="detail" data-detail><h3>Selected</h3></span>
     </span>
     <button type="submit" name="intent" value="save" data-needs-ticks data-label="Save {n}" disabled>Save 0</button>
@@ -136,15 +136,15 @@ describe('ticks you set by hand', () => {
 });
 
 describe('the running sentence', () => {
-  it('counts the ticked against every key on the tab', () => {
+  it('counts what is ticked, and says "change" of one', () => {
     type('A', 'two');
-    expect(sentence().textContent).toBe('1 of 2 unpublished changes.');
+    expect(sentence().textContent).toBe('1 unpublished change.');
   });
 
   it('recounts as more are ticked', () => {
     type('A', 'two');
     clickTick('B');
-    expect(sentence().textContent).toBe('2 of 2 unpublished changes.');
+    expect(sentence().textContent).toBe('2 unpublished changes.');
   });
 });
 

@@ -120,6 +120,24 @@ describe('the switch reflects the checkbox', () => {
   });
 });
 
+describe('the toolbar reads as one line', () => {
+  it('sizes its text and its actions the same', () => {
+    // A link-styled action set a step larger than the sentence it belongs to reads as a button
+    // pretending to be a word.
+    const css = productPage([]);
+
+    expect(css).toMatch(/\.actionline[^{]*,?[^{]*\{[^}]*font-size:\s*\.8125rem/);
+    expect(css).toMatch(/\.actionline button[^{]*\{[^}]*font-size:\s*inherit/);
+  });
+
+  it('gives the separator enough contrast to read as one', () => {
+    // #cbd0d9 against #fff is under 2:1 — the dots were invisible, so the facts ran together.
+    const css = productPage([]);
+
+    expect(css).toMatch(/\.sep \{[^}]*color:\s*#(?!cbd0d9)[0-9a-f]{6}/);
+  });
+});
+
 describe('a hidden element is actually hidden', () => {
   // `hidden` is a UA style of `display: none`, and ANY author rule setting display beats it —
   // so `.selection { display: inline-flex }` left the selection count on screen on a clean

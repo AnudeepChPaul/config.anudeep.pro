@@ -5,7 +5,7 @@ import { BreakGlass, type BreakGlassRecord } from './auth/break-glass.js';
 import { OidcClient } from './auth/oidc.js';
 import { SessionCodec } from './auth/session.js';
 import { loadConfig, type ServiceConfig } from './config.js';
-import { GitRepository } from './git/repository.js';
+import { GitRepository, webUrlFor } from './git/repository.js';
 import { GitSyncer } from './git/syncer.js';
 import { AccessGuard } from './identity/access-guard.js';
 import { PeerCredentialResolver, platformPeerCredentialReader } from './identity/peercred.js';
@@ -82,6 +82,7 @@ async function main(): Promise<void> {
   let currentSchemas = await loadSchemas().catch(() => schemas());
   const web = await buildWebApp({
     repository,
+    repoWebUrl: webUrlFor(config.gitRemote),
     loader,
     schemas: () => currentSchemas,
     drafts,

@@ -892,6 +892,7 @@ describe('the tick and button behaviour the page depends on', () => {
       const drafts5 = new DraftStore(`${repo5.dir}/.drafts.json`);
       app5 = await buildWebApp({
         repository: git5,
+        repoWebUrl: 'https://github.com/AnudeepChPaul/config.bare.anudeep.pro',
         loader: loader5,
         schemas: () => SchemaSet.fromFiles({ iam: SCHEMA5 }),
         drafts: drafts5,
@@ -1051,7 +1052,7 @@ describe('the tick and button behaviour the page depends on', () => {
     it('states what is selected as a sentence the script can recount', async () => {
       const body = await page();
 
-      expect(body).toContain('data-label="{n} of {t} unpublished changes."');
+      expect(body).toContain('data-label="{n} unpublished change{s}."');
     });
 
     it('hides the selection while nothing is selected, showing where you are instead', async () => {
@@ -1072,6 +1073,28 @@ describe('the tick and button behaviour the page depends on', () => {
       // What this environment holds, and what is being served.
       expect(line).toMatch(/4 variables in dev/);
       expect(line).toContain('serving');
+    });
+
+    it('shows the drift key by key on hover, not just how many', async () => {
+      // The count is only useful if you can find out which keys it is talking about without
+      // opening the other tab and comparing by eye.
+      const line = idleLine(await page());
+
+      expect(line).toContain('data-detail');
+      expect(line).toContain('SESSION_TTL');
+      // dev holds 900 against prod's 3600.
+      expect(line).toContain('3600');
+      expect(line).toContain('900');
+    });
+
+    it('links the commit it is serving to the commit on GitHub', async () => {
+      const line = idleLine(await page());
+
+      expect(line).toMatch(
+        /href="https:\/\/github\.com\/AnudeepChPaul\/config\.bare\.anudeep\.pro\/commit\/[0-9a-f]{40}"/,
+      );
+      // A link off the console opens away from it, and carries no referrer.
+      expect(line).toContain('rel="noreferrer"');
     });
 
     it('says how far dev has drifted from the environment it promotes into', async () => {
