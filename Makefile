@@ -27,7 +27,16 @@ logs:
 down:
 	docker compose down
 
+# The repository, its age key and the break-glass credential are all regenerable, so reset takes
+# them. The git remote and the deploy key path are not: nothing can derive them, and deleting
+# .env wholesale disarmed publishing without saying so - dev-up.sh wrote empty placeholders back,
+# and compose then mounted a DIRECTORY where the deploy key belongs, so every push failed with
+# "Permission denied (publickey)" long after the reset that caused it.
 reset:           ## Throw away the local repository, drafts and credentials, and start over
 	docker compose down -v
-	rm -f .env
-	@echo "Removed the local volumes and .env. Run 'make dev' to rebuild from nothing." 
+	./scripts/env-keep.sh .env CONFIG_GIT_REMOTE CONFIG_DEPLOY_KEY CONFIG_REPO_WEB_URL
+	@# Compose creates a directory for a bind mount whose source is missing. Left behind, it is
+	@# the thing ssh is handed as a private key on the next run.
+	rmdir deploy/no-deploy-key 2>/dev/null || true
+	@echo "Removed the local volumes and the generated credentials. Kept the git remote and"
+	@echo "deploy key path in .env. Run 'make dev' to rebuild from nothing."

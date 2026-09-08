@@ -68,6 +68,9 @@ services:
     volumes:
       - ./src:/app/src:ro
       - ./tests:/app/tests:ro
+      # The dev scripts are tested too: env-keep.sh decides what survives `make reset`, and
+      # getting that wrong disarms publishing without saying so.
+      - ./scripts:/app/scripts:ro
       - ./tsconfig.json:/app/tsconfig.json:ro
       - ./vitest.config.ts:/app/vitest.config.ts:ro
     environment:
