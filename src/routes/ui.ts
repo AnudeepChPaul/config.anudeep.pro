@@ -13,6 +13,7 @@ import {
   type KeyRow,
   type PendingChange,
   type ProductSummary,
+  renderDrafts,
   renderProduct,
   renderProducts,
 } from '../views/pages.js';
@@ -142,6 +143,73 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       drafts: draftSaves.get(`${service}/${name}`) ?? 0,
     }));
 
+  app.get('/drafts', async (request: FastifyRequest<{ Querystring: { notice?: string } }>, reply) =>
+    reply.type('text/html; charset=utf-8').send(
+      String(
+        renderDrafts({
+          drafts: (await drafts.all())
+            .slice()
+            .sort((a, b) => a.namespace.localeCompare(b.namespace))
+            .map((draft) => ({
+              namespace: draft.namespace,
+              saves: draft.saves.map((save) => ({
+                keys: [...save.keys],
+                actor: save.actor,
+                at: save.at,
+              })),
+            })),
+          ...(request.query?.notice ? { notice: request.query.notice } : {}),
+          fragment: isHtmx(request),
+        }),
+      ),
+    ),
+  );
+
+  app.post(
+    '/drafts/drop',
+    async (request: FastifyRequest<{ Body: { namespace?: string; index?: string } }>, reply) => {
+      const body = request.body ?? {};
+      const session = request.session;
+      const dropped = await writeService.dropSave(
+        String(body.namespace ?? ''),
+        Number(body.index ?? -1),
+        {
+          email: session?.email ?? 'unauthenticated@localhost',
+          id: session?.id ?? 'anonymous',
+          ...(session?.via ? { via: session.via } : {}),
+        },
+      );
+
+      const notice = dropped.ok ? 'Draft dropped.' : dropped.error.detail;
+      if (!isHtmx(request)) {
+        return reply
+          .code(303)
+          .header('location', `/drafts?notice=${encodeURIComponent(notice)}`)
+          .send();
+      }
+
+      return reply
+        .header('hx-push-url', '/drafts')
+        .type('text/html; charset=utf-8')
+        .send(
+          String(
+            renderDrafts({
+              drafts: (await drafts.all()).map((draft) => ({
+                namespace: draft.namespace,
+                saves: draft.saves.map((save) => ({
+                  keys: [...save.keys],
+                  actor: save.actor,
+                  at: save.at,
+                })),
+              })),
+              notice,
+              fragment: true,
+            }),
+          ),
+        );
+    },
+  );
+
   app.get('/', async (request: FastifyRequest<{ Querystring: { notice?: string } }>, reply) => {
     const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
 
@@ -168,6 +236,9 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         // it is the fact that decides which process may read this product's configuration.
         name: `${service.name} (${service.uid})`,
         service: service.name,
+        // A product with no schema cannot be edited at all: validate() refuses an unknown
+        // service, so every save would fail at the last step, after the values were typed.
+        schemaMissing: !schemas().has(service.name),
         keys: keys.slice(0, 3).join(', ') + (keys.length > 3 ? ` +${keys.length - 3}` : ''),
         environments,
       };
@@ -178,6 +249,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         renderProducts({
           products,
           commit: sources.commit,
+          draftCount: [...draftsByNamespace.values()].reduce((total, n) => total + n, 0),
           ...(request.query?.notice ? { notice: request.query.notice } : {}),
         }),
       ),
@@ -195,6 +267,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     service: string;
     env?: string | undefined;
     notice?: string | undefined;
+    /** The create-this-environment offer was declined; the action stays, the prompt goes. */
+    offerDeclined?: boolean;
     /** A confirmation the page clears itself, as opposed to something still to act on. */
     transientNotice?: boolean;
     published?: readonly string[];
@@ -205,6 +279,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     // files present, every service name would otherwise render a page — including one nobody
     // declared, which no process could ever read.
     if (!(await declaredServices()).some((entry) => entry.name === service)) return null;
+    // No schema, no page. Rendering one would offer a form whose every submission is refused.
+    if (!schemas().has(service)) return null;
     const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
     const environments = environmentsOf(
       service,
@@ -220,7 +296,15 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
     const draft = await drafts.get(namespace);
     const committed = (tree.namespaces.get(namespace) ?? {}) as Record<string, unknown>;
-    const shown = draft ? await loader.resolveOne(namespace, draft.document) : committed;
+    const schemaSet = schemas();
+    // Declared by environments.yaml but not written yet. Nothing is editable until the file
+    // exists, so the page shows what it WOULD hold and offers to create it.
+    const missingFile = !sources.sources.has(namespace) && !draft;
+    const shown = draft
+      ? await loader.resolveOne(namespace, draft.document)
+      : missingFile
+        ? schemaSet.defaultsFor(service)
+        : committed;
 
     const elsewhere = environments
       .filter((env) => env.name !== active)
@@ -230,7 +314,6 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         pending: env.pending,
       }));
 
-    const schemaSet = schemas();
     const published = options.published ?? [];
     const nextEnvironment = (await readOrder()).next(active);
     const targetValues = nextEnvironment
@@ -277,6 +360,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           // What revision of this namespace the console is showing. Read from the draft when
           // there is one, since that is the document on screen.
           revision: versionOf(shown),
+          ...(missingFile ? { missingFile: true } : {}),
+          ...(options.offerDeclined ? { offerDeclined: true } : {}),
           // The audit trail's latest entry for this namespace, shown where the operator is
           // about to add to it.
           lastChange: await repository.lastChange(`config/${namespace}.yaml`),
@@ -335,7 +420,13 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     async (
       request: FastifyRequest<{
         Params: { service: string };
-        Querystring: { env?: string; notice?: string; published?: string; done?: string };
+        Querystring: {
+          env?: string;
+          notice?: string;
+          published?: string;
+          done?: string;
+          create?: string;
+        };
       }>,
       reply,
     ) => {
@@ -344,6 +435,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         env: request.query?.env,
         notice: request.query?.notice,
         ...(request.query?.done ? { transientNotice: true } : {}),
+        ...(request.query?.create === 'no' ? { offerDeclined: true } : {}),
         published: (request.query?.published ?? '').split(',').filter(Boolean),
         fragment: isHtmx(request),
       });
@@ -384,6 +476,25 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         id: session?.id ?? 'anonymous',
         ...(session?.via ? { via: session.via } : {}),
       };
+      if (String(body.intent ?? '') === 'create') {
+        // One draft holding the schema's defaults: reviewable on the draft list, droppable, and
+        // committed with a generated message like anything else.
+        const created = await writeService.stage(
+          { service, environment, changes: schemaSet.defaultsFor(service) },
+          actor,
+        );
+        return respond(reply, request, {
+          service,
+          env: environment,
+          ...(created.ok
+            ? {
+                notice: `Drafted ${service}/${environment}.yaml from the schema defaults.`,
+                transientNotice: true,
+              }
+            : { notice: created.error.detail }),
+        });
+      }
+
       const publishing = String(body.intent ?? '') === 'publish';
       const result = await writeService.stage(
         {

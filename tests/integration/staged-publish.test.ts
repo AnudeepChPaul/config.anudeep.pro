@@ -257,6 +257,95 @@ withSops('staging and scoped publishing', () => {
     });
   });
 
+  describe('dropping a draft, as git drops a commit', () => {
+    // The save's effect is removed and the others replay onto the committed state. Where git
+    // would stop on a conflicting replay, a later save's value simply wins: every delta here is
+    // "set this key to this value", so there is nothing to resolve.
+    it('removes the effect of the save that is dropped', async () => {
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      await stage('iam', 'dev', { SESSION_TTL: 1800 });
+
+      const result = await service.dropSave('iam/dev', 0, ACTOR);
+      expect(result.ok).toBe(true);
+
+      const draft = await drafts.get('iam/dev');
+      const document = await new ConfigLoader(new SopsDecryptor(key.secret)).resolveOne(
+        'iam/dev',
+        draft?.document ?? '',
+      );
+
+      expect(document.SESSION_TTL).toBe(1800);
+      expect(document.MFA_ENFORCEMENT).toBe('optional');
+      expect(draft?.saves).toHaveLength(1);
+    });
+
+    it('replays a later save that set the same key, so its value wins', async () => {
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'admins' });
+
+      await service.dropSave('iam/dev', 0, ACTOR);
+      const draft = await drafts.get('iam/dev');
+      const document = await new ConfigLoader(new SopsDecryptor(key.secret)).resolveOne(
+        'iam/dev',
+        draft?.document ?? '',
+      );
+
+      expect(document.MFA_ENFORCEMENT).toBe('admins');
+    });
+
+    it('restores exactly what an earlier save had set, not just the committed value', async () => {
+      // The reason each save keeps its own snapshot: without one, dropping the second save here
+      // would revert the key all the way to `optional` rather than to `all`.
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'admins' });
+
+      await service.dropSave('iam/dev', 1, ACTOR);
+      const draft = await drafts.get('iam/dev');
+      const document = await new ConfigLoader(new SopsDecryptor(key.secret)).resolveOne(
+        'iam/dev',
+        draft?.document ?? '',
+      );
+
+      expect(document.MFA_ENFORCEMENT).toBe('all');
+    });
+
+    it('removes the draft entirely when its only save is dropped', async () => {
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+
+      const result = await service.dropSave('iam/dev', 0, ACTOR);
+
+      expect(result.ok && result.value).toBeNull();
+      expect(await drafts.get('iam/dev')).toBeNull();
+    });
+
+    it('commits nothing: a drop is not a change to the repository', async () => {
+      const before = await git.headCommit();
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+
+      await service.dropSave('iam/dev', 0, ACTOR);
+
+      expect(await git.headCommit()).toBe(before);
+    });
+
+    it('carries a secret through a replay as ciphertext', async () => {
+      await stage('iam', 'prod', { SMTP_PASSWORD: 'hunter2' });
+      await stage('iam', 'prod', { SESSION_TTL: 1800 });
+
+      await service.dropSave('iam/prod', 1, ACTOR);
+      const draft = await drafts.get('iam/prod');
+
+      expect(draft?.document).not.toContain('hunter2');
+      expect(draft?.document).toContain('ENC[AES256_GCM');
+    });
+
+    it('refuses a save index that is not there', async () => {
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+
+      expect((await service.dropSave('iam/dev', 7, ACTOR)).ok).toBe(false);
+      expect((await service.dropSave('iam/nope', 0, ACTOR)).ok).toBe(false);
+    });
+  });
+
   describe('staging a selection with no edit in it', () => {
     // Ticking a key whose value has not changed is how you say "send this one along" — to a
     // publish, and from there to the next environment. It has to be possible to write that

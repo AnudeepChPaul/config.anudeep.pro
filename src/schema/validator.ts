@@ -24,6 +24,15 @@ const URL_SCHEMES = new Set(['http:', 'https:']);
 
 export interface KeyDefinition {
   readonly type: KeyType;
+  /**
+   * What a newly created environment file is written with.
+   *
+   * Not a suggestion: once that file exists, every key in it is an override, so this is the
+   * value the service will run on. Checked against the key's own type and bounds — a schema that
+   * declares a default it would itself reject writes a file that fails validation the moment
+   * anyone saves it.
+   */
+  readonly default?: unknown;
   readonly values?: readonly string[];
   readonly min?: number;
   readonly max?: number;
@@ -60,6 +69,21 @@ export class SchemaSet {
    */
   definitionsFor(service: string): ReadonlyMap<string, KeyDefinition> {
     return this.services.get(service) ?? new Map();
+  }
+
+  /** Whether a schema exists at all. A product without one cannot be edited: every save fails
+   *  validation at the last step, after the operator has typed the values. */
+  has(service: string): boolean {
+    return this.services.has(service);
+  }
+
+  /** The declared defaults, for creating an environment file that does not exist yet. */
+  defaultsFor(service: string): Record<string, unknown> {
+    const defaults: Record<string, unknown> = {};
+    for (const [key, definition] of this.definitionsFor(service)) {
+      if (definition.default !== undefined) defaults[key] = definition.default;
+    }
+    return defaults;
   }
 
   /** Whether this key must be SOPS-encrypted before it is committed. */
@@ -221,7 +245,7 @@ function parseKey(service: string, key: string, raw: unknown): KeyDefinition {
     throw new SchemaError(`${where} has min ${min} greater than max ${max}`);
   }
 
-  return {
+  const definition: KeyDefinition = {
     type: type as KeyType,
     ...(Array.isArray(values) ? { values: values.map(String) } : {}),
     ...(typeof min === 'number' ? { min } : {}),
@@ -229,4 +253,14 @@ function parseKey(service: string, key: string, raw: unknown): KeyDefinition {
     secret: secret === true,
     ...(typeof description === 'string' ? { description } : {}),
   };
+
+  const fallback = (raw as Record<string, unknown>).default;
+  if (fallback === undefined) return definition;
+
+  // Checked by the same rule that checks a written value, so a default cannot be something the
+  // schema would refuse the moment it reached a file.
+  const problem = checkValue(key, definition, fallback);
+  if (problem) throw new SchemaError(`${where} declares a default it rejects: ${problem.message}`);
+
+  return { ...definition, default: fallback };
 }

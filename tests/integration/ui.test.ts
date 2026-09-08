@@ -24,6 +24,10 @@ import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.j
 
 const withSops = hasSops() ? describe : describe.skip;
 
+/** Whatever a hostile file happens to hold: the point of those fixtures is the rendering. */
+const EVIL_SCHEMA =
+  'keys:\n  A:\n    type: string\n  "<img src=x onerror=alert(1)>":\n    type: int\n';
+
 const SCHEMA = `keys:
   MFA_ENFORCEMENT:
     type: enum
@@ -64,13 +68,15 @@ withSops('the CRUD UI', () => {
     app = await buildWebApp({
       repository: git,
       loader,
-      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+      // `evil` is declared by the escaping fixtures; a product with no schema does not render
+      // at all now, so it needs one like any other.
+      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA, evil: EVIL_SCHEMA }),
       drafts,
       writeService: new ConfigWriteService({
         repository: git,
         loader,
         encryptor: new SopsEncryptor(repo.dir),
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA, evil: EVIL_SCHEMA }),
         drafts,
       }),
       environment: options.environment ?? 'dev',
@@ -859,7 +865,9 @@ describe('the environment tab offers the controls its routes accept', () => {
       }
     });
 
-    it('starts a changed key ticked and an unchanged one clear', async () => {
+    it('starts every key clear, including one the draft holds', async () => {
+      // A tick is a selection an action consumes. The save took it; publishing does not read
+      // ticks at all, so nothing on a freshly loaded page is selected for anything.
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
@@ -870,7 +878,7 @@ describe('the environment tab offers the controls its routes accept', () => {
         body.match(new RegExp(`<input type="checkbox" name="select" value="${key}"[^>]*>`))?.[0] ??
         '';
 
-      expect(tick('MFA_ENFORCEMENT')).toContain('checked');
+      expect(tick('MFA_ENFORCEMENT')).not.toContain('checked');
       expect(tick('SESSION_TTL')).not.toContain('checked');
     });
   });
@@ -883,6 +891,10 @@ describe('the tick and button behaviour the page depends on', () => {
    * the buttons it enables. If any of that stops being rendered the behaviour dies silently,
    * which is exactly how the publish button went missing for three commits.
    */
+  /** A default, so a declared environment with no file can be created from it. */
+  const API_SCHEMA5 =
+    'keys:\n  RATE_LIMIT:\n    type: int\n    min: 1\n    max: 1000\n    default: 100\n';
+
   const SCHEMA5 = `keys:
   MFA_ENFORCEMENT:
     type: enum
@@ -920,9 +932,13 @@ describe('the tick and button behaviour the page depends on', () => {
       repo5 = await TestRepo.create();
       await repo5.commit({
         'schema/iam.yaml': SCHEMA5,
+        'schema/api.yaml': API_SCHEMA5,
         'environments.yaml': 'order: [dev, prod]\n',
         'services.yaml':
-          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n' +
+          '  - name: api\n    uid: 1003\n    namespaces: [api/prod]\n',
+        // api has prod and no dev: the declared dev tab is the one with no file behind it.
+        'config/api/prod.yaml': 'RATE_LIMIT: 50\n',
         'config/iam/dev.yaml':
           'FP_COMPONENTS: [ua, lang]\nKILL_PASSWORD_LOGIN: false\nMFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
@@ -935,7 +951,7 @@ describe('the tick and button behaviour the page depends on', () => {
         repository: git5,
         repoWebUrl: 'https://github.com/AnudeepChPaul/config.bare.anudeep.pro',
         loader: loader5,
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA5 }),
+        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA5, api: API_SCHEMA5 }),
         drafts: drafts5,
         environmentOrder: async () =>
           EnvironmentOrder.fromYaml(await git5.readFile('environments.yaml')),
@@ -943,7 +959,7 @@ describe('the tick and button behaviour the page depends on', () => {
           repository: git5,
           loader: loader5,
           encryptor: new SopsEncryptor(repo5.dir),
-          schemas: () => SchemaSet.fromFiles({ iam: SCHEMA5 }),
+          schemas: () => SchemaSet.fromFiles({ iam: SCHEMA5, api: API_SCHEMA5 }),
           drafts: drafts5,
         }),
         environment: 'dev',
@@ -1078,9 +1094,9 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(publish).not.toContain('disabled');
     });
 
-    it('ticks a key the draft holds even when its value never moved', async () => {
-      // A tick-only draft: the values match what is committed, so comparing values alone would
-      // show the key as untouched and publish nothing.
+    it('drafts a tick-only selection, and publishing it needs no tick at all', async () => {
+      // A tick-only draft moves no value, so the count comes from the saves rather than from
+      // comparing values — and the tick itself is cleared, having been acted on.
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'optional'],
         ['select', 'MFA_ENFORCEMENT'],
@@ -1088,8 +1104,8 @@ describe('the tick and button behaviour the page depends on', () => {
       ]);
       const body = await page();
 
-      expect(body).toMatch(/data-select="MFA_ENFORCEMENT"[^>]*checked/);
-      expect(body.match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '').not.toContain('disabled');
+      expect(body).not.toMatch(/data-select="MFA_ENFORCEMENT"[^>]*checked/);
+      expect(body).toMatch(/Publish 1 draft in dev\?/);
     });
 
     it('brings the draft action back the moment something else moves', async () => {
@@ -1223,6 +1239,131 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(plain.headers.location).toMatch(/notice=/);
     });
 
+    it('offers to create a declared environment that has no file yet', async () => {
+      // api/dev is declared by environments.yaml and has no file. The tab renders, and asks
+      // before creating anything: a click should not write a file nobody reviewed.
+      const page = (await app5.inject({ method: 'GET', url: '/p/api?env=dev' })).body;
+
+      expect(page).toMatch(/no file/i);
+      expect(page).toContain('name="intent" value="create"');
+      // Read-only until it exists: there is nothing to edit before the file does.
+      expect(page).not.toContain('name="key.RATE_LIMIT"');
+      expect(page).toContain('RATE_LIMIT');
+    });
+
+    it('keeps offering after the offer is declined', async () => {
+      const page = (await app5.inject({ method: 'GET', url: '/p/api?env=dev&create=no' })).body;
+
+      // The prompt is gone; the action it offered is not.
+      expect(page).not.toContain('It is staged as a draft');
+      expect(page).toContain('name="intent" value="create"');
+    });
+
+    it('stages one draft of the schema defaults when the offer is accepted', async () => {
+      await post('/p/api/dev', [['intent', 'create']]);
+
+      const page = (await app5.inject({ method: 'GET', url: '/p/api?env=dev' })).body;
+
+      expect(page).toMatch(/Publish 1 draft in dev\?/);
+      // The declared defaults, written as values: once the file exists they are what the
+      // service runs on.
+      expect(page).toMatch(/value="100"/);
+    });
+
+    it('clears the selection once the draft has taken it', async () => {
+      // The ticks said what to save. They have been acted on, so leaving them set reads as a
+      // selection still waiting for something.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['intent', 'save'],
+      ]);
+
+      const body = await page();
+
+      expect(body).not.toMatch(/data-select="MFA_ENFORCEMENT"[^>]*checked/);
+    });
+
+    it('lists every unpublished draft, with what each save changed', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      await post('/p/iam/dev', [
+        ['key.SESSION_TTL', '1200'],
+        ['intent', 'save'],
+      ]);
+
+      const list = (await app5.inject({ method: 'GET', url: '/drafts' })).body;
+
+      expect(list).toContain('iam/dev');
+      expect(list).toContain('MFA_ENFORCEMENT');
+      expect(list).toContain('SESSION_TTL');
+      // One Drop per save, addressed by its position.
+      expect(list).toMatch(/name="index" value="0"/);
+      expect(list).toMatch(/name="index" value="1"/);
+    });
+
+    it('says so plainly when nothing is drafted anywhere', async () => {
+      expect((await app5.inject({ method: 'GET', url: '/drafts' })).body).toMatch(/nothing/i);
+    });
+
+    it('drops the save it is asked to drop, and leaves the other', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      await post('/p/iam/dev', [
+        ['key.SESSION_TTL', '1200'],
+        ['intent', 'save'],
+      ]);
+
+      await post('/drafts/drop', [
+        ['namespace', 'iam/dev'],
+        ['index', '0'],
+      ]);
+      const list = (await app5.inject({ method: 'GET', url: '/drafts' })).body;
+
+      expect(list).toContain('SESSION_TTL');
+      expect(list).not.toContain('MFA_ENFORCEMENT');
+    });
+
+    it('asks before dropping, since a draft is not in git and nothing undoes it', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+
+      expect((await app5.inject({ method: 'GET', url: '/drafts' })).body).toContain('hx-confirm');
+    });
+
+    it('links the draft list from the product list, with the count on it', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+
+      expect((await app5.inject({ method: 'GET', url: '/' })).body).toContain('href="/drafts"');
+    });
+
+    it('marks a declared product whose schema is missing, and refuses to open it', async () => {
+      // Without a schema every save fails validation at the last step, after the values are
+      // typed. Better to say so on the list than to let someone find out at the end.
+      await repo5.commit({
+        'services.yaml':
+          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n' +
+          '  - name: audit\n    uid: 1004\n    namespaces: [audit/prod]\n',
+      });
+
+      const list = (await app5.inject({ method: 'GET', url: '/' })).body;
+
+      expect(list).toContain('schema is missing');
+      expect(list).toContain('audit (1004)');
+      // Not a link: there is nowhere useful for it to go.
+      expect(list).not.toMatch(/href="\/p\/audit"/);
+      expect((await app5.inject({ method: 'GET', url: '/p/audit' })).statusCode).toBe(404);
+    });
+
     it('renders a tab for every declared environment, file or no file', async () => {
       // The tabs come from environments.yaml, not from what happens to be in the tree: you open
       // the tab in order to write to it, so requiring a file first is backwards.
@@ -1265,8 +1406,11 @@ describe('the tick and button behaviour the page depends on', () => {
       ]);
       const drafted = await page();
 
-      expect(drafted).toContain('data-label="{n} unpublished change{s}."');
-      expect(drafted).not.toContain('data-label="{n} unsaved change{s}."');
+      // Both labels are on the page: the script picks between them, because only it knows
+      // whether anything on the page is unsaved.
+      expect(drafted).toContain('data-label="{n} unsaved change{s}."');
+      expect(drafted).toContain('data-drafted-label="1 unpublished change."');
+      expect(drafted).toContain('1 unpublished change.');
     });
 
     it('says save for the draft action and publish for the publish action', async () => {

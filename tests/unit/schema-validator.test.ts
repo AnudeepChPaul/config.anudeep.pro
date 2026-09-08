@@ -228,3 +228,52 @@ describe('SchemaSet secrets', () => {
     ).toEqual(['MFA_ENFORCEMENT']);
   });
 });
+
+/**
+ * A default is what a newly created environment file is written with.
+ *
+ * Once that file exists every key in it is an override, so a default is not a suggestion — it is
+ * the value the service will run on. It is type-checked like any other value: a schema that
+ * declares `default: "fast"` for an int would otherwise write a file that fails its own schema
+ * the moment anyone saves.
+ */
+describe('key defaults', () => {
+  it('reads a default per key', () => {
+    const schemas = SchemaSet.fromFiles({
+      api: 'keys:\n  RATE_LIMIT:\n    type: int\n    default: 100\n  NAME:\n    type: string\n',
+    });
+
+    expect(schemas.defaultsFor('api')).toEqual({ RATE_LIMIT: 100 });
+  });
+
+  it('leaves out a key that declares none, which then writes nothing', () => {
+    const schemas = SchemaSet.fromFiles({ api: 'keys:\n  NAME:\n    type: string\n' });
+
+    expect(schemas.defaultsFor('api')).toEqual({});
+  });
+
+  it('refuses a default that does not match the key it belongs to', () => {
+    expect(() =>
+      SchemaSet.fromFiles({
+        api: 'keys:\n  RATE_LIMIT:\n    type: int\n    default: fast\n',
+      }),
+    ).toThrow(/RATE_LIMIT/);
+  });
+
+  it('refuses a default outside the bounds the key declares', () => {
+    expect(() =>
+      SchemaSet.fromFiles({
+        api: 'keys:\n  RATE_LIMIT:\n    type: int\n    min: 1\n    max: 10\n    default: 99\n',
+      }),
+    ).toThrow(/RATE_LIMIT/);
+  });
+
+  it('says whether a service has a schema at all', () => {
+    // A product with no schema cannot be edited: every save fails validation at the last step,
+    // after the operator has typed the values.
+    const schemas = SchemaSet.fromFiles({ api: 'keys:\n  NAME:\n    type: string\n' });
+
+    expect(schemas.has('api')).toBe(true);
+    expect(schemas.has('audit')).toBe(false);
+  });
+});

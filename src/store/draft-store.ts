@@ -34,6 +34,15 @@ export interface DraftChange {
 export interface DraftSave {
   /** The keys this save touched, named in its generated commit line. */
   readonly keys: readonly string[];
+  /**
+   * The document as it stood after this save — encrypted, exactly as it would be committed.
+   *
+   * Kept so a save can be dropped the way git drops a commit: the others replay onto the
+   * committed state, each contributing the values ITS snapshot holds. Without it, dropping a
+   * save could only revert its keys all the way to what is committed, losing an earlier save's
+   * value for the same key.
+   */
+  readonly document?: string;
   readonly actor: string;
   readonly at: number;
 }

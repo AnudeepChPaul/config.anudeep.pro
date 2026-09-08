@@ -225,18 +225,7 @@ describe('a freshly loaded environment', () => {
   it('recounts the swapped-in page immediately, without waiting for a click', () => {
     // A page swapped in with a draft already on it must show the draft's state, not the state
     // the previous page was left in.
-    swap(
-      render({
-        rows: [{ ...rows[0], pending: true, publishedValue: 'optional', value: 'all' } as KeyRow],
-        environments: [
-          {
-            name: 'dev',
-            namespace: 'iam/dev',
-            pending: [{ key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false }],
-          },
-        ],
-      }),
-    );
+    swap(drafted(['MFA_ENFORCEMENT']));
 
     expect(count().textContent).toBe('1 unpublished change.');
   });

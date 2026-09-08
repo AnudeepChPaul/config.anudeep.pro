@@ -308,6 +308,7 @@ export class ConfigWriteService {
             keys: [...new Set([...changes.map((change) => change.key), ...selectedOnly])],
             actor: actor.email,
             at: Date.now(),
+            document,
           },
         ],
         actor: actor.email,
@@ -456,6 +457,89 @@ export class ConfigWriteService {
       const push = await this.options.repository.push();
 
       return ok({ commit, changedKeys: keyChanges.map((k) => k.key), published: push.pushed });
+    });
+  }
+
+  /**
+   * Drops one save from a draft, the way git drops a commit.
+   *
+   * The dropped save's effect goes; every other save replays onto the committed state in order,
+   * each contributing the values its own snapshot holds. Where git would stop on a conflicting
+   * replay, a later save's value simply wins — every delta here is "set this key to this value",
+   * so there is nothing to resolve.
+   *
+   * Nothing is committed: a draft is not in the repository, so dropping one needs no revert.
+   */
+  async dropSave(
+    namespace: string,
+    index: number,
+    actor: Actor,
+  ): Promise<Result<Draft | null, SaveError>> {
+    const drafts = this.options.drafts;
+    if (!drafts) return err({ code: 'failed', detail: 'staging is not enabled' });
+
+    return this.lock.withLock(async () => {
+      const draft = await drafts.get(namespace);
+      if (!draft)
+        return err({ code: 'nothing_staged', detail: `nothing is staged for ${namespace}` });
+      if (index < 0 || index >= draft.saves.length) {
+        return err({ code: 'nothing_staged', detail: `${namespace} has no draft ${index + 1}` });
+      }
+
+      const remaining = draft.saves.filter((_, at) => at !== index);
+      if (remaining.length === 0) {
+        // A draft with no saves in it is not a draft: it would sit on the environment as a
+        // pending marker with nothing behind it.
+        await drafts.remove([namespace]);
+        return ok(null);
+      }
+
+      const sources = await this.options.repository.readSources();
+      const tree = await this.options.loader.resolve(sources);
+      const committed = tree.namespaces.get(namespace) ?? {};
+      const service = namespace.split('/')[0] ?? '';
+      const schemas = this.options.schemas();
+
+      const next: Record<string, unknown> = { ...committed };
+      const changes: DraftChange[] = [];
+      for (const save of remaining) {
+        // Each save's own snapshot, so a replayed key carries the value it had at that save and
+        // not the value the draft ended up with.
+        const at = await this.options.loader.resolveOne(namespace, save.document ?? draft.document);
+        for (const key of save.keys) {
+          if (key in at) next[key] = at[key];
+          else delete next[key];
+        }
+      }
+
+      for (const key of new Set(remaining.flatMap((save) => [...save.keys]))) {
+        changes.push(
+          schemas.isSecret(service, key)
+            ? { key, from: undefined, to: undefined, secret: true }
+            : { key, from: committed[key], to: next[key], secret: false },
+        );
+      }
+
+      // A revision of the document like any other write to it.
+      next[VERSION_KEY] = bumpedVersion(
+        await this.options.loader.resolveOne(namespace, draft.document),
+      );
+
+      const document = await this.options.encryptor.encrypt(
+        namespace,
+        stringifyYaml(sortKeys(next)),
+      );
+
+      const rebuilt: Draft = {
+        ...draft,
+        document,
+        changes: dedupeByKey(changes),
+        saves: remaining,
+        actor: actor.email,
+        updatedAt: Date.now(),
+      };
+      await drafts.put(rebuilt);
+      return ok(rebuilt);
     });
   }
 

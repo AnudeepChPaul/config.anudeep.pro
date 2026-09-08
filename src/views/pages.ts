@@ -208,12 +208,14 @@ function renderField(row: KeyRow): SafeHtml {
   const definition = row.definition;
   const hint = definition?.description ?? typeHint(definition);
 
-  // Every key gets one, not only the changed ones. A tick is how you say what goes — to a
-  // publish, and to the next environment — and you cannot say "send this one along" about a key
-  // the form refuses to offer. Changed keys start ticked because that is almost always the
-  // intent; the rest start clear.
+  // Every key gets one, not only the changed ones: a tick is how you say "send this one along",
+  // and you cannot say it about a key the form refuses to offer.
+  //
+  // None start ticked. A tick is a selection an action consumes — the save takes it, and after
+  // that it has been acted on; leaving it set reads as a selection still waiting for something.
+  // Publishing does not use it at all, since a draft publishes whole.
   const pick = html`<span class="keypick">
-    <input type="checkbox" name="select" value="${row.key}" data-select="${row.key}"${row.pending ? ' checked' : ''}
+    <input type="checkbox" name="select" value="${row.key}" data-select="${row.key}"
            ${row.pending && !definition?.secret ? html`data-published="${format(row.publishedValue)}"` : html``}
            ${definition?.secret ? html`data-secret="true"` : html``}
            title="Include when publishing or promoting">
@@ -432,6 +434,8 @@ export interface EnvironmentSummary {
 }
 
 export interface ProductSummary {
+  /** No schema file for this service: it cannot be edited, so the list says so and stops here. */
+  readonly schemaMissing?: boolean;
   /** What the reader sees: "iam (1002)". The uid decides which process may read this product. */
   readonly name: string;
   /** What the links and the form use. The label carries the uid; the address must not. */
@@ -518,8 +522,9 @@ function joinDots(parts: readonly SafeHtml[]): SafeHtml[] {
  * Coarse relative time. Deliberately not a precise one: "2h ago" is what the reader wants, and
  * a formatted timestamp would be in the server's timezone rather than theirs.
  */
-function ago(iso: string): string {
-  const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+function ago(when: string | number): string {
+  const at = typeof when === 'number' ? when : Date.parse(when);
+  const seconds = Math.max(0, (Date.now() - at) / 1000);
   if (!Number.isFinite(seconds)) return 'at an unknown time';
   if (seconds < 90) return 'just now';
   if (seconds >= 86_400) return `${Math.round(seconds / 86_400)}d ago`;
@@ -551,11 +556,81 @@ function detailPanel(title: string, changes: readonly PendingChange[]): SafeHtml
   return html`<span class="detail" data-detail><h3>${title}</h3>${changeLines(changes)}</span>`;
 }
 
+export interface DraftListEntry {
+  readonly namespace: string;
+  readonly saves: ReadonlyArray<{
+    readonly keys: readonly string[];
+    readonly actor: string;
+    readonly at: number;
+  }>;
+}
+
+/**
+ * Everything unpublished, in one place.
+ *
+ * A draft in an environment nobody has open is otherwise invisible: a number on the product
+ * list and no way to see what it holds, or to undo it short of publishing it and reverting the
+ * commit.
+ */
+export function renderDrafts(options: {
+  drafts: readonly DraftListEntry[];
+  notice?: string;
+  fragment?: boolean;
+}): SafeHtml {
+  const rows = options.drafts.map(
+    (entry) => html`<div class="row" style="flex-direction:column;align-items:stretch;gap:8px;">
+      <div class="keyline">
+        <strong>${entry.namespace}</strong>
+        <span class="hint">${entry.saves.length} draft${entry.saves.length === 1 ? '' : 's'}</span>
+        <a class="hint" style="margin-left:auto;"
+           href="/p/${entry.namespace.split('/')[0]}?env=${entry.namespace.split('/')[1]}"
+           hx-get="/p/${entry.namespace.split('/')[0]}?env=${entry.namespace.split('/')[1]}"
+           hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Open the environment</a>
+      </div>
+      ${entry.saves.map(
+        (save, index) => html`<div class="keyrow" style="align-items:center;gap:10px;">
+          <span class="hint" style="width:2.5rem;">#${index + 1}</span>
+          <span style="flex-grow:1;">${save.keys.join(', ')}</span>
+          <span class="hint">${ago(save.at)} · ${save.actor}</span>
+          <form method="post" action="/drafts/drop" hx-post="/drafts/drop" hx-target="#page"
+                hx-swap="innerHTML"
+                hx-confirm="Drop draft #${index + 1} of ${entry.namespace}? A draft is not in git, so this cannot be undone.">
+            <input type="hidden" name="namespace" value="${entry.namespace}">
+            <input type="hidden" name="index" value="${index}">
+            ${writeAction({ resting: html`Drop`, running: 'Dropping…' })}
+          </form>
+        </div>`,
+      )}
+    </div>`,
+  );
+
+  const body = html`
+      <div class="toolbar" style="margin-bottom:1.25rem;">
+        <div>
+          <div style="font-size:.8125rem;margin-bottom:.35rem;">
+            <a href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">All products</a>
+          </div>
+          <h1>Unpublished drafts</h1>
+        </div>
+      </div>
+      ${options.notice ? html`<div class="card" data-transient>${options.notice}</div>` : html``}
+      ${
+        options.drafts.length === 0
+          ? html`<div class="card">Nothing is drafted anywhere. Every environment is published.</div>`
+          : html`<div class="rows">${rows}</div>`
+      }
+    `;
+
+  return options.fragment ? body : layout('Unpublished drafts', body);
+}
+
 /** The landing page: products, not namespaces. */
 export function renderProducts(options: {
   products: readonly ProductSummary[];
   commit: string;
   unpushed?: readonly UnpushedCommit[];
+  /** How many presses of Save are waiting across every product, for the link to the draft list. */
+  draftCount?: number;
   notice?: string;
   error?: string;
   /** True when htmx asked: the body alone, to be swapped into the page. */
@@ -580,9 +655,15 @@ export function renderProducts(options: {
              style="width:16px;height:16px;margin:3px 0 0;accent-color:#16181d;">
       <div style="display:flex;flex-direction:column;gap:4px;flex-grow:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:10px;">
-          <a href="/p/${product.service}" hx-get="/p/${product.service}" hx-target="#page"
-             hx-swap="innerHTML" hx-push-url="true"
-             style="font-size:.9375rem;font-weight:500;">${product.name}</a>
+          ${
+            product.schemaMissing
+              ? html`<span style="font-size:.9375rem;font-weight:500;">${product.name}</span>
+                  <span class="chip wait" title="schema/${product.service}.yaml is absent"
+                    >schema is missing</span>`
+              : html`<a href="/p/${product.service}" hx-get="/p/${product.service}" hx-target="#page"
+                  hx-swap="innerHTML" hx-push-url="true"
+                  style="font-size:.9375rem;font-weight:500;">${product.name}</a>`
+          }
           ${pending.length > 0 ? pendingDetail('Waiting to publish', pending) : html``}
         </div>
         <div class="hint">${product.keys}</div>
@@ -597,7 +678,14 @@ export function renderProducts(options: {
           <div>
             <h1>Products</h1>
             <p class="sub" style="margin:0;">
-              Serving <code>${options.commit.slice(0, 8)}</code>${
+              ${
+                (options.draftCount ?? 0) > 0
+                  ? html`<a href="/drafts" hx-get="/drafts" hx-target="#page" hx-swap="innerHTML"
+                        hx-push-url="true">${options.draftCount} unpublished draft${
+                          options.draftCount === 1 ? '' : 's'
+                        }</a> · `
+                  : html``
+              }Serving <code>${options.commit.slice(0, 8)}</code>${
                 totalDrafts > 0
                   ? html` · ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'} to publish`
                   : html` · nothing unpublished`
@@ -649,6 +737,11 @@ export function renderProduct(options: {
   repoWebUrl?: string | null;
   /** True when the notice is a confirmation the page clears itself after a few seconds. */
   transientNotice?: boolean;
+  /** True when this environment is declared but has no file yet: nothing is editable until it
+   *  exists, and the page offers to create it from the schema's defaults. */
+  missingFile?: boolean;
+  /** True once the offer has been declined for this view; the action stays, the prompt goes. */
+  offerDeclined?: boolean;
   /** Keys the draft already holds, so the page can tell a fresh tick from a saved one. */
   drafted?: readonly string[];
   /** The document's revision counter, 0 for a file that has never carried one. */
@@ -694,12 +787,10 @@ export function renderProduct(options: {
   const tickedKeys = options.rows.filter((row) => row.pending).map((row) => row.key);
   // Unticking a drafted key narrows what a publish would ship; it does not create something new
   // to write down. So the action is about what is ticked and NOT yet drafted.
-  const nothingToDraft =
-    hasDraft &&
-    // Never on a page with nothing ticked: that is a page that failed validation or was just
-    // loaded, and hiding the action there leaves no way to save the fix.
-    tickedKeys.length > 0 &&
-    tickedKeys.every((key) => drafted.includes(key));
+  // Nothing on the page that the draft does not already hold. Ticks are cleared by a save, so a
+  // freshly loaded drafted page has none — which is exactly the state where publishing is the
+  // only thing left to offer.
+  const nothingToDraft = hasDraft && tickedKeys.every((key) => drafted.includes(key));
 
   const body = html`
 
@@ -744,6 +835,77 @@ export function renderProduct(options: {
       }
       ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
 
+      ${
+        // Declared but not yet written. Nothing is editable until the file exists, so the page
+        // shows what it WOULD contain and offers to create it — as a draft, like every other
+        // write, rather than committing something nobody reviewed.
+        options.missingFile
+          ? html`<form method="post" action="/p/${options.service}/${options.active}"
+                  hx-post="/p/${options.service}/${options.active}" hx-target="#page"
+                  hx-swap="innerHTML">
+              ${
+                options.offerDeclined
+                  ? html``
+                  : html`<div class="card" style="border-left:3px solid #b45309;">
+                      <div style="font-weight:600;">
+                        ${options.service}/${options.active} has no file yet.
+                      </div>
+                      <p class="sub" style="margin:3px 0 .85rem;">
+                        Create <code>config/${options.service}/${options.active}.yaml</code> from
+                        the schema's defaults? It is staged as a draft — nothing is committed
+                        until you publish it.
+                      </p>
+                      <div class="actionline">
+                        ${writeAction({
+                          className: 'linkbtn go',
+                          attributes: html`name="intent" value="create"`,
+                          resting: html`Create ${options.service}/${options.active}.yaml?`,
+                          running: 'Creating the draft…',
+                        })}
+                        <a class="hint"
+                           href="/p/${options.service}?env=${options.active}&create=no"
+                           hx-get="/p/${options.service}?env=${options.active}&create=no"
+                           hx-target="#page" hx-swap="innerHTML">Not now</a>
+                      </div>
+                    </div>`
+              }
+              ${
+                options.offerDeclined
+                  ? html`<div class="card actions" style="padding:.7rem 1.25rem;">
+                      <div class="actionline">
+                        <span class="idle">No file yet · every key below is the schema's default</span>
+                        <span class="sep">·</span>
+                        ${writeAction({
+                          className: 'linkbtn go',
+                          attributes: html`name="intent" value="create"`,
+                          resting: html`Create ${options.service}/${options.active}.yaml?`,
+                          running: 'Creating the draft…',
+                        })}
+                      </div>
+                    </div>`
+                  : html``
+              }
+            </form>
+            <div class="card" style="padding:.5rem 1.25rem 1rem;">${options.rows.map(
+              (row) =>
+                html`<div class="keyrow" style="padding:10px 0;">
+                <div style="flex-grow:1;">
+                  <div class="keyline"><strong>${row.key}</strong>
+                    <span class="hint">${typeHint(row.definition)}</span></div>
+                  <div class="hint">${
+                    row.definition?.secret
+                      ? 'secret — set it once the file exists'
+                      : format(row.value)
+                  }</div>
+                </div>
+              </div>`,
+            )}</div>`
+          : html``
+      }
+      ${
+        options.missingFile
+          ? html``
+          : html`
       <!-- One form, opened here so the actions can sit under the tabs while the ticks and
            fields below them are still what a submit carries. A button outside the form would
            send neither. -->
@@ -776,8 +938,19 @@ export function renderProduct(options: {
                      into the draft and not yet committed is UNPUBLISHED. They differ in where
                      they live and in which action leaves them, so one word would be wrong in
                      one of them. -->
-                <span class="count" data-label="{n} ${hasDraft ? 'unpublished' : 'unsaved'} change{s}."
-                  >${ticked} ${hasDraft ? 'unpublished' : 'unsaved'} change${ticked === 1 ? '' : 's'}.</span>
+                <!-- Two counts behind one sentence. What is UNSAVED is counted from the page,
+                     by the script, because the server has never seen it. What is UNPUBLISHED is
+                     counted from the draft, by the server, because that is where it lives —
+                     ticks have nothing to do with it now that a draft publishes whole. -->
+                <span class="count" data-label="{n} unsaved change{s}."
+                      data-drafted-label="${drafted.length} unpublished change${
+                        drafted.length === 1 ? '' : 's'
+                      }."
+                  >${
+                    nothingToDraft && hasDraft
+                      ? html`${drafted.length} unpublished change${drafted.length === 1 ? '' : 's'}.`
+                      : html`${ticked} unsaved change${ticked === 1 ? '' : 's'}.`
+                  }</span>
                 ${detailPanel(hasDraft ? 'Unpublished changes' : 'Unsaved changes', activeEnv?.pending ?? [])}
               </span>
               <!-- Hidden rather than absent: the script shows it again the moment something on
@@ -819,7 +992,8 @@ export function renderProduct(options: {
         </div>
 
         <div class="card" style="padding:.5rem 1.25rem 1rem;">${fields}</div>
-      </form>
+      </form>`
+      }
     `;
   return options.fragment ? body : layout(options.service, body);
 }

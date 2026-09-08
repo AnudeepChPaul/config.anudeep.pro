@@ -70,7 +70,24 @@
     // The count belongs wherever it is stated — the running sentence and the actions both — so
     // the number you are about to act on is the number you are looking at.
     const total = form.querySelectorAll('input[name="select"]').length;
+    const drafted = form.querySelector('[data-selection]')?.getAttribute('data-drafted');
+    const draftedKeys = (drafted ?? '').split(',').filter(Boolean);
+    const unsaved =
+      draftedKeys.length === 0 ||
+      [...form.querySelectorAll('input[name="select"]:checked')].some(
+        (box) => !draftedKeys.includes(box.value),
+      ) ||
+      [...form.querySelectorAll('[data-key]')].some((control) => isDirty(control));
+
     for (const el of form.querySelectorAll('[data-label]')) {
+      // The sentence says one of two things: what is unsaved on this page, counted here, or
+      // what the draft holds, counted by the server. Recounting the second from ticks would
+      // state a number that has nothing to do with what publishing would do.
+      const drafts = el.getAttribute('data-drafted-label');
+      if (drafts !== null && !unsaved) {
+        el.textContent = drafts;
+        continue;
+      }
       el.textContent = el
         .getAttribute('data-label')
         .replace('{n}', String(ticked))
