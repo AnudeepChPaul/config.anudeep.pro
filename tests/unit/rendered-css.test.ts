@@ -503,3 +503,32 @@ describe('a link action is the same size whichever element it is', () => {
     expect(rule('.linkbtn')).toMatch(/align-items:\s*center/);
   });
 });
+
+/**
+ * A negative action is danger-coloured.
+ *
+ * Drop, Not now and Clear all rendered in --accent, the colour for anything you can press, so
+ * declining an offer and accepting one looked like the same move. The operator's rule: a negative
+ * or destructive action is --danger. The palette note in
+ * `markdown_plans/config.anudeep.pro/console-ui-revamp-2026-09-09.md` was amended to match.
+ */
+describe('a negative action is danger-coloured', () => {
+  const rule = (selector: string) =>
+    (productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '').match(
+      new RegExp(`\\${selector} \\{[^}]*\\}`),
+    )?.[0] ?? '';
+
+  it('paints the negative modifier with the danger token', () => {
+    expect(rule('.linkbtn.no')).toMatch(/color:\s*var\(--danger\)/);
+  });
+
+  // It is a modifier, not a second button: restating a size here would re-open the bug that
+  // put Search and Clear on two baselines.
+  it('leaves the size to .linkbtn', () => {
+    expect(rule('.linkbtn.no')).not.toMatch(/font-size/);
+  });
+
+  it('does not weight the trail link, so both halves of the heading match', () => {
+    expect(rule('.pagehead h1 a')).not.toMatch(/font-weight/);
+  });
+});

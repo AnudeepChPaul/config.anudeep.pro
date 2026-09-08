@@ -102,7 +102,7 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
                          height: var(--control-h); margin-bottom: .6rem; }
   /* The heading IS the trail: "Products › iam", with Products the way back. A separate crumb
      row said where you were above a heading that said it again, and cost a row of height. */
-  .pagehead h1 a { color: var(--muted); text-decoration: none; font-weight: 500; }
+  .pagehead h1 a { color: var(--muted); text-decoration: none; }
   .pagehead h1 a:hover { color: var(--accent); text-decoration: underline; }
   .pagehead .crumb-sep { color: var(--line); font-weight: 400; margin: 0 .35rem; }
   .pagehead .titlerow { display: flex; align-items: center; justify-content: space-between;
@@ -174,6 +174,12 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
      Painting this one in the state colour made the publish action and the count it sits beside
      look like the same kind of thing, while Save, equally an action, looked like another. */
   .linkbtn.go { font-weight: 600; }
+  /* A negative or destructive action — Drop, Not now, Clear — is danger-coloured. Accepting an
+     offer and declining it were both --accent, so the two read as the same kind of move. A
+     modifier only: size, box and underline stay with .linkbtn, because restating a size here is
+     exactly what put Search and Clear on two baselines. */
+  .linkbtn.no { color: var(--danger); }
+  .linkbtn.no:hover:not(:disabled) { color: var(--ink); }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
      .selection, for instance — beats it and leaves a hidden element on screen. Everything the
@@ -742,7 +748,7 @@ function searchBox(options: { action: string; query: string; placeholder: string
       // underlined — so two controls on one row sat on different baselines and read as
       // misaligned. They are both actions, so they look like actions.
       options.query
-        ? html`<a class="linkbtn" href="${options.action}" hx-get="${options.action}"
+        ? html`<a class="linkbtn no" href="${options.action}" hx-get="${options.action}"
               hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Clear</a>`
         : html``
     }
@@ -795,7 +801,7 @@ export function renderDrafts(options: {
                 hx-confirm="Drop draft #${index + 1} of ${entry.namespace}? A draft is not in git, so this cannot be undone.">
             <input type="hidden" name="namespace" value="${entry.namespace}">
             <input type="hidden" name="index" value="${index}">
-            ${writeAction({ resting: html`Drop`, running: 'Dropping…' })}
+            ${writeAction({ className: 'linkbtn no', resting: html`Drop`, running: 'Dropping…' })}
           </form>
         </div>`,
       )}
@@ -1095,7 +1101,7 @@ export function renderProduct(options: {
                           resting: html`Create ${options.service}/${options.active}.yaml?`,
                           running: 'Creating the draft…',
                         })}
-                        <a class="linkbtn"
+                        <a class="linkbtn no"
                            href="/p/${options.service}?env=${options.active}&create=no"
                            hx-get="/p/${options.service}?env=${options.active}&create=no"
                            hx-target="#page" hx-swap="innerHTML">Not now</a>
@@ -1287,7 +1293,7 @@ function promoteOffer(options: {
               running: 'Saving the draft…',
             })
       }
-      <a class="linkbtn" href="/p/${options.service}?env=${options.active}">Not now</a>
+      <a class="linkbtn no" href="/p/${options.service}?env=${options.active}">Not now</a>
     </form>
   </div>`;
 }

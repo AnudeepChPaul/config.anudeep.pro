@@ -209,6 +209,18 @@ describe('the rules hold in every state, not just the ones anyone looked at', ()
     }
   });
 
+  // Colouring the rule is not colouring the control: the modifier only reaches a negative action
+  // if every one of them wears it, in every state that renders one.
+  it('marks every negative action as negative', () => {
+    for (const [name, html] of everyState()) {
+      const negatives =
+        bodyOf(html).match(/<(?:a|button)[^>]*>[\s\S]{0,120}?(?:Not now|Clear|Drop)\b/g) ?? [];
+      for (const control of negatives) {
+        expect(control, `${name}: ${control}`).toMatch(/class="linkbtn no"/);
+      }
+    }
+  });
+
   it('gives every page exactly one heading', () => {
     for (const [name, html] of everyState()) {
       expect((bodyOf(html).match(/<h1/g) ?? []).length, name).toBe(1);
