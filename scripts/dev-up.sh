@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# Brings the whole service up so the editor works end to end, from nothing.
+#
+# Everything it creates is for LOCAL DEVELOPMENT: the age key and the break-glass password are
+# generated here, printed once, and kept in the compose .env. None of it belongs on a real host.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+# --- the secrets compose passes in -------------------------------------------------------
+# Kept in .env (gitignored) rather than exported per shell, so a restart does not invalidate
+# the session cookie you are already holding.
+touch .env
+grep -q '^CONFIG_SESSION_SECRET=' .env 2>/dev/null || {
+  printf 'CONFIG_SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env
+}
+# iam does not exist locally. Pointing the health check at a dead port makes it unreachable,
+# which is what opens the break-glass sign-in — the only way in without an identity provider.
+grep -q '^CONFIG_IAM_HEALTH_URL=' .env 2>/dev/null || {
+  printf 'CONFIG_IAM_HEALTH_URL=http://127.0.0.1:1/healthz\n' >> .env
+}
+
+say "Building"
+docker compose build app >/dev/null
+
+# --- the configuration repository --------------------------------------------------------
+if ! docker compose run --rm --entrypoint sh app -c 'test -d /var/lib/config/repo/.git' 2>/dev/null; then
+  say "Seeding a configuration repository"
+  docker compose run --rm -v ./scripts:/app/scripts:ro --entrypoint sh app /app/scripts/seed.sh
+fi
+
+AGE_KEY="$(docker compose run --rm --entrypoint sh app -c 'grep AGE-SECRET-KEY /var/lib/config/age.key' 2>/dev/null | tr -d '\r')"
+grep -q '^CONFIG_AGE_KEY=' .env 2>/dev/null || printf 'CONFIG_AGE_KEY=%s\n' "$AGE_KEY" >> .env
+
+# --- the break-glass credential ----------------------------------------------------------
+# Without iam there is no other way to sign in, and the editor refuses to run unguarded.
+if ! docker compose run --rm --entrypoint sh app -c 'test -f /var/lib/config/repo/break-glass.yaml' 2>/dev/null; then
+  say "Minting a break-glass credential"
+  pnpm -s tsx --conditions=development src/cli/bootstrap-breakglass.ts ops@anudeep.pro \
+    > /tmp/config-break-glass.yaml 2> /tmp/config-break-glass.txt
+  docker compose run --rm -v /tmp/config-break-glass.yaml:/tmp/record.yaml:ro --entrypoint sh app -c '
+    cp /tmp/record.yaml /var/lib/config/repo/break-glass.yaml
+    cd /var/lib/config/repo && git add break-glass.yaml &&
+    git commit -q -m "Add the break-glass credential"' >/dev/null
+  cat /tmp/config-break-glass.txt
+fi
+
+say "Starting"
+docker compose up -d app >/dev/null
+until curl -sf -o /dev/null http://localhost:8200/login 2>/dev/null; do sleep 1; done
+
+say "Ready — http://localhost:8200"
+cat <<'NOTE'
+  Sign in with break-glass (iam is deliberately unreachable locally).
+  The password was printed when the credential was minted; the six-digit code comes from
+  the TOTP URI in the same output — scan it, or run:
+
+      make code
+
+NOTE

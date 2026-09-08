@@ -1,4 +1,10 @@
-.PHONY: test check up seed logs down
+.PHONY: dev code test check up seed logs down reset
+
+dev:             ## Everything: seed, credentials, start. UI at http://localhost:8200
+	./scripts/dev-up.sh
+
+code:            ## Print the current break-glass sign-in code
+	./scripts/dev-code.sh
 
 test:            ## Run the suite on Linux, where SO_PEERCRED and sops exist
 	docker compose run --rm test
@@ -17,3 +23,8 @@ logs:
 
 down:
 	docker compose down
+
+reset:           ## Throw away the local repository, drafts and credentials, and start over
+	docker compose down -v
+	rm -f .env
+	@echo "Removed the local volumes and .env. Run 'make dev' to rebuild from nothing." 
