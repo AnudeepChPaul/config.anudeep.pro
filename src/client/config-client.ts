@@ -23,6 +23,8 @@ export interface ConfigClientOptions {
   readonly fetchTimeoutMs?: number;
   /** Called when a background refresh fails. Defaults to silence: this must never throw. */
   readonly onError?: (error: Error) => void;
+  /** How long to wait before reconnecting a dropped watch. */
+  readonly retryDelayMs?: number;
 }
 
 interface CacheFile {
@@ -44,6 +46,7 @@ export class ConfigClient<T extends Record<string, unknown>> {
   private resolved: T = {} as T;
   private currentCommit: string | null = null;
   private readonly handlers: Array<() => void> = [];
+  private watchAbort: AbortController | null = null;
 
   constructor(private readonly options: ConfigClientOptions) {}
 
@@ -103,14 +106,66 @@ export class ConfigClient<T extends Record<string, unknown>> {
 
     if (!served) return false;
 
+    const changed = served.commit !== this.currentCommit;
+    await this.apply(served);
+    return changed;
+  }
+
+  /**
+   * Holds a request open until config reports a change, then applies it and reconnects.
+   *
+   * This is the whole of the invalidate fan-out. The plan had config POST to each service,
+   * which would mean config holding an address for every consumer and every consumer exposing
+   * an inbound endpoint. Inverting it needs neither: the client waits on the socket it already
+   * uses, and the answer arrives when the commit moves.
+   *
+   * Returns a function that stops it. A watch that outlives its owner reconnects forever
+   * against a socket that may be gone.
+   */
+  watch(): () => void {
+    if (this.watchAbort) return () => this.stopWatching();
+    const abort = new AbortController();
+    this.watchAbort = abort;
+
+    const loop = async () => {
+      while (!abort.signal.aborted) {
+        try {
+          const served = await this.fetch(this.currentCommit ?? undefined);
+          if (abort.signal.aborted) return;
+          if (served) await this.apply(served);
+        } catch (error) {
+          this.options.onError?.(error as Error);
+          // An outage must not end the watch, or every service needs restarting after config
+          // is redeployed — the opposite of what this is for.
+          await new Promise((resolve) => setTimeout(resolve, this.options.retryDelayMs ?? 1_000));
+        }
+      }
+    };
+
+    void loop();
+    return () => this.stopWatching();
+  }
+
+  watching(): boolean {
+    return this.watchAbort !== null;
+  }
+
+  private stopWatching(): void {
+    this.watchAbort?.abort();
+    this.watchAbort = null;
+  }
+
+  /**
+   * Awaited, not fire-and-forget: a caller that awaits `refresh` is entitled to assume the
+   * last-known-good is on disk when it returns. Letting the write float meant a restart
+   * immediately after a refresh could find no cache at all.
+   */
+  private async apply(served: ServedConfig): Promise<void> {
     this.resolved = { ...this.defaults, ...served.config };
     const changed = served.commit !== this.currentCommit;
     this.currentCommit = served.commit;
-
     await this.writeCache(served).catch((error: Error) => this.options.onError?.(error));
-
     if (changed) this.notify();
-    return changed;
   }
 
   private notify(): void {
@@ -124,13 +179,15 @@ export class ConfigClient<T extends Record<string, unknown>> {
     }
   }
 
-  private fetch(): Promise<ServedConfig | null> {
+  /** `since` asks config to hold the request open until it has something newer. */
+  private fetch(since?: string): Promise<ServedConfig | null> {
     const { socketPath, service, environment } = this.options;
     const timeout = this.options.fetchTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const query = since ? `?since=${encodeURIComponent(since)}` : '';
 
     return new Promise((resolve, reject) => {
       const request = http.request(
-        { socketPath, path: `/config/${service}/${environment}`, method: 'GET', timeout },
+        { socketPath, path: `/config/${service}/${environment}${query}`, method: 'GET', timeout },
         (response) => {
           let body = '';
           response.setEncoding('utf8');
@@ -139,7 +196,8 @@ export class ConfigClient<T extends Record<string, unknown>> {
           });
           response.on('end', () => {
             // A 403 or 404 is an answer, not a failure: the grant is missing or the namespace
-            // has no file. Either way the compiled-in defaults are the right values to keep.
+            // has no file. A 304 means the watch waited and nothing moved. All of them keep
+            // the values already in hand.
             if (response.statusCode !== 200) return resolve(null);
             try {
               const parsed = JSON.parse(body) as ServedConfig;

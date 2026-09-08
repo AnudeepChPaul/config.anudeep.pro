@@ -24,6 +24,8 @@ export interface InternalRouteOptions {
   readonly cache: ConfigCache;
   readonly guard: AccessGuard;
   readonly onRead: (entry: ReadLogEntry) => void;
+  /** How long a caller that is already current is held before being told "no change". */
+  readonly waitTimeoutMs?: number;
 }
 
 interface ConfigParams {
@@ -31,12 +33,49 @@ interface ConfigParams {
   environment: string;
 }
 
+interface ConfigQuery {
+  /** The commit the caller already has. Present means "hold until this stops being current". */
+  since?: string;
+}
+
+/** Long enough to be worth holding, short enough to survive any proxy or idle timeout. */
+const DEFAULT_WAIT_MS = 25_000;
+
+/**
+ * Resolves when the cache moves past `since`, or when the timeout expires.
+ *
+ * This is the whole of the invalidate fan-out. The plan had config POST to each service, which
+ * would mean config holding an address for every consumer and every consumer exposing an
+ * inbound endpoint. Inverting it needs neither: the caller holds a request open on the socket
+ * it already uses, and the answer arrives when the commit changes.
+ */
+function waitForChange(cache: ConfigCache, since: string, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+
+    const unsubscribe = cache.onChange(() => {
+      if (cache.commit() !== since) finish();
+    });
+    const timer = setTimeout(finish, timeoutMs);
+
+    // The commit may already have moved between the caller's read and this subscription.
+    if (cache.commit() !== since) finish();
+  });
+}
+
 export function registerInternalRoutes(app: FastifyInstance, options: InternalRouteOptions): void {
   const { cache, guard, onRead } = options;
 
   app.get(
     '/config/:service/:environment',
-    async (request: FastifyRequest<{ Params: ConfigParams }>, reply) => {
+    async (request: FastifyRequest<{ Params: ConfigParams; Querystring: ConfigQuery }>, reply) => {
       const { service, environment } = request.params;
       const namespace = `${service}/${environment}`;
 
@@ -49,6 +88,19 @@ export function registerInternalRoutes(app: FastifyInstance, options: InternalRo
       }
 
       const identity = authorised.value;
+
+      // Authorisation first, then waiting: holding a request open must not become a way around
+      // the grant table, nor a way to learn that a namespace exists.
+      const since = request.query?.since;
+      if (since && since === cache.commit()) {
+        await waitForChange(cache, since, options.waitTimeoutMs ?? DEFAULT_WAIT_MS);
+        if (cache.commit() === since) {
+          // Nothing moved. The caller reconnects; a held-open request that never ends would be
+          // indistinguishable from a hung service.
+          return reply.code(304).send();
+        }
+      }
+
       const config = cache.get(service, environment);
 
       if (config === null) {

@@ -28,6 +28,8 @@ export interface ServiceConfig {
   } | null;
   readonly iamHealthUrl: string | null;
   readonly breakGlassPath: string;
+  readonly webhookSecret: string | null;
+  readonly webhookPort: number;
   readonly pushRetryIntervalMs: number;
   readonly pollIntervalMs: number;
 }
@@ -66,6 +68,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     // must mean "reachable" — never "assume down and open the emergency door".
     iamHealthUrl: env.CONFIG_IAM_HEALTH_URL ?? null,
     breakGlassPath: env.CONFIG_BREAK_GLASS_PATH ?? 'break-glass.yaml',
+    // Null closes the webhook route. It is the one thing here the internet can reach, so an
+    // unset secret must lock it rather than open it.
+    webhookSecret: env.CONFIG_WEBHOOK_SECRET ?? null,
+    webhookPort: Number(env.CONFIG_WEBHOOK_PORT ?? 8201),
     pushRetryIntervalMs: Number(env.CONFIG_PUSH_RETRY_INTERVAL_MS ?? 60_000),
     pollIntervalMs: Number(env.CONFIG_POLL_INTERVAL_MS ?? 60_000),
   };

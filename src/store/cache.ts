@@ -13,6 +13,8 @@ import type { ConfigTree, RawConfig, Sha } from './types.js';
 
 export class ConfigCache {
   private tree: ConfigTree | null = null;
+  /** Called after every reload, so a held-open read can answer the moment a change lands. */
+  private readonly listeners = new Set<() => void>();
 
   /** The config a service sees, or null when no file defines that namespace at all. */
   get(service: string, environment: string): RawConfig | null {
@@ -36,5 +38,21 @@ export class ConfigCache {
       namespaces.set(namespace, Object.freeze({ ...config }));
     }
     this.tree = { commit: tree.commit, namespaces };
+
+    for (const listener of [...this.listeners]) {
+      // One waiter throwing must not stop the rest from being woken, or a single bad consumer
+      // freezes propagation for every service on the host.
+      try {
+        listener();
+      } catch {
+        // Nothing useful to do here; the waiter's own timeout will release it.
+      }
+    }
+  }
+
+  /** Registers a waiter. The returned function removes it — always call it, or waiters leak. */
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 }

@@ -27,6 +27,16 @@ export class TestRepo {
     return repo;
   }
 
+  /** A clone of another repository, with it as origin — for exercising pull. */
+  static async cloneOf(source: string): Promise<TestRepo> {
+    const dir = await mkdtemp(join(tmpdir(), 'config-clone-'));
+    await run('git', ['clone', source, dir]);
+    const repo = new TestRepo(dir);
+    await repo.git('config', 'user.email', 'test@anudeep.pro');
+    await repo.git('config', 'user.name', 'config test');
+    return repo;
+  }
+
   async git(...args: string[]): Promise<string> {
     const { stdout } = await run('git', args, { cwd: this.dir });
     return stdout.trim();

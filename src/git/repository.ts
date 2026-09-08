@@ -238,6 +238,22 @@ export class GitRepository {
     }
   }
 
+  /**
+   * Fast-forwards to the remote, returning the commit now at HEAD.
+   *
+   * Fast-forward only. If local and remote have diverged, a merge here would produce
+   * configuration nobody wrote — and the local side is the durable, already-serving one. That
+   * is a human's decision, so this fails instead.
+   */
+  async pull(): Promise<Sha> {
+    const remote = await this.remoteName();
+    if (!remote) return this.headCommit();
+
+    await this.git('fetch', remote, 'main');
+    await this.git('merge', '--ff-only', `${remote}/main`);
+    return this.headCommit();
+  }
+
   /** One file's contents as committed at HEAD. */
   async readFile(path: string): Promise<string> {
     return this.git('show', `${await this.headCommit()}:${path}`);

@@ -1,6 +1,6 @@
 import pino from 'pino';
 import { parse as parseYaml } from 'yaml';
-import { buildReadApi, buildWebApp } from './app.js';
+import { buildReadApi, buildWebApp, buildWebhookApp } from './app.js';
 import { BreakGlass, type BreakGlassRecord } from './auth/break-glass.js';
 import { OidcClient } from './auth/oidc.js';
 import { SessionCodec } from './auth/session.js';
@@ -100,6 +100,35 @@ async function main(): Promise<void> {
   await web.listen({ host: config.httpHost, port: config.httpPort });
   log.info({ host: config.httpHost, port: config.httpPort }, 'configuration UI listening');
 
+  /**
+   * Pull, reload, and let every waiting service know.
+   *
+   * The fan-out is not a broadcast: services hold a request open on the read socket and the
+   * cache's own reload wakes them. So this function does nothing about notification beyond
+   * calling reload, which is the point — config holds no addresses for its consumers.
+   */
+  const reloadFromRepository = async (): Promise<boolean> => {
+    const sources = await repository.readSources();
+    if (sources.commit === cache.commit()) return false;
+    cache.reload(await loader.resolve(sources));
+    currentSchemas = await loadSchemas();
+    await snapshots.save(sources);
+    log.info({ commit: sources.commit }, 'reloaded configuration');
+    return true;
+  };
+
+  const webhooks = await buildWebhookApp({
+    secret: config.webhookSecret,
+    onPush: async () => {
+      await repository.pull();
+      await reloadFromRepository();
+    },
+    onError: (error) => log.error({ err: error }, 'webhook pull failed'),
+    logger: log,
+  });
+  await webhooks.listen({ host: '0.0.0.0', port: config.webhookPort });
+  log.info({ port: config.webhookPort }, 'webhook listener started');
+
   // A missed webhook self-heals, and unpushed commits publish themselves once GitHub returns.
   const syncer = new GitSyncer(repository);
   const retry = setInterval(() => {
@@ -108,15 +137,13 @@ async function main(): Promise<void> {
     });
   }, config.pushRetryIntervalMs);
 
+  // The fallback for a webhook that never arrived — a delivery GitHub dropped, or an outage
+  // while it was sent. Without it a missed webhook means stale config until someone notices.
   const reload = setInterval(() => {
     void (async () => {
       try {
-        const sources = await repository.readSources();
-        if (sources.commit === cache.commit()) return;
-        cache.reload(await loader.resolve(sources));
-        currentSchemas = await loadSchemas();
-        await snapshots.save(sources);
-        log.info({ commit: sources.commit }, 'reloaded configuration');
+        await repository.pull().catch(() => undefined);
+        await reloadFromRepository();
       } catch (error) {
         log.error({ err: error }, 'reload failed; continuing to serve the current configuration');
       }
@@ -128,6 +155,7 @@ async function main(): Promise<void> {
     clearInterval(reload);
     await readApi.close();
     await web.close();
+    await webhooks.close();
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);

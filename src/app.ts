@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { type AuthOptions, registerAuthRoutes } from './routes/auth.js';
 import { type InternalRouteOptions, registerInternalRoutes } from './routes/internal.js';
 import { registerUiRoutes, type UiRouteOptions } from './routes/ui.js';
+import { registerWebhookRoutes, type WebhookOptions } from './routes/webhook.js';
 
 /**
  * The read API, bound to a Unix socket and nothing else.
@@ -81,6 +82,7 @@ export interface ReadApi {
 }
 
 export interface ReadApiOptions extends InternalRouteOptions {
+  /** Overrides how long a current caller is held open. Tests use a short one. */
   /** A pino instance. Fastify 5 takes an existing logger as `loggerInstance`, not `logger`. */
   readonly logger?: FastifyInstance['log'];
 }
@@ -146,6 +148,22 @@ export async function buildWebApp(options: WebAppOptions): Promise<FastifyInstan
   // Before the UI routes, so its onRequest guard runs ahead of every handler they add.
   if (options.auth) registerAuthRoutes(app, options.auth, options.environment);
   registerUiRoutes(app, options);
+  await app.ready();
+  return app;
+}
+
+/**
+ * The webhook listener.
+ *
+ * Its own server, on its own port, because it is the one thing here that faces the internet.
+ * Sharing a server with the editor would mean one routing mistake exposes the editor, and one
+ * middleware ordering mistake puts a session guard in front of GitHub.
+ */
+export async function buildWebhookApp(
+  options: WebhookOptions & { logger?: FastifyInstance['log'] },
+): Promise<FastifyInstance> {
+  const app = Fastify(options.logger ? { loggerInstance: options.logger } : { logger: false });
+  registerWebhookRoutes(app, options);
   await app.ready();
   return app;
 }
