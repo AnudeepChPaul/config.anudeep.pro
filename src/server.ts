@@ -1,3 +1,4 @@
+import { dirname } from 'node:path';
 import pino from 'pino';
 import { parse as parseYaml } from 'yaml';
 import { buildReadApi, buildWebApp, buildWebhookApp } from './app.js';
@@ -5,6 +6,7 @@ import { BreakGlass, type BreakGlassRecord } from './auth/break-glass.js';
 import { OidcClient } from './auth/oidc.js';
 import { SessionCodec } from './auth/session.js';
 import { loadConfig, type ServiceConfig } from './config.js';
+import { prepareDeployKey } from './git/deploy-key.js';
 import { GitRepository } from './git/repository.js';
 import { GitSyncer } from './git/syncer.js';
 import { AccessGuard } from './identity/access-guard.js';
@@ -33,7 +35,21 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const log = pino({ level: config.logLevel });
 
-  const repository = new GitRepository(config.repoDir, config.ssh ?? undefined);
+  // Beside the repository and the age key, which is already the private state directory of
+  // this service: a 0600 copy of the deploy key, because ssh refuses one the mount leaves
+  // readable by others.
+  const keyPath = await prepareDeployKey(config.ssh?.keyPath, dirname(config.repoDir));
+  const ssh =
+    config.ssh && keyPath
+      ? { ...config.ssh, keyPath }
+      : config.ssh?.keyPath
+        ? undefined
+        : config.ssh;
+  if (config.ssh?.keyPath && !keyPath) {
+    log.warn({ key: config.ssh.keyPath }, 'deploy key unreadable; pushes will fail');
+  }
+
+  const repository = new GitRepository(config.repoDir, ssh ?? undefined);
   // Before anything is served, and never fatal: a registry that cannot reach its remote still
   // serves what it has, and the push failure shows up where an operator will see it.
   await repository.ensureRemote(config.gitRemote);
