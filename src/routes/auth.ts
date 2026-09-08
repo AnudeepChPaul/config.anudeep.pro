@@ -59,6 +59,7 @@ export function registerAuthRoutes(
     // The sign-in page needs the script too, and a redirect served as JavaScript is a
     // confusing failure to debug.
     '/assets/htmx.js',
+    '/assets/ticks.js',
   ]);
 
   // A guard that runs before every handler, rather than one each route opts into: the failure

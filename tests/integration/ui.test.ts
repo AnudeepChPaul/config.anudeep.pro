@@ -745,14 +745,23 @@ describe('the environment tab offers the controls its routes accept', () => {
       await rm(repo4.dir, { recursive: true, force: true });
     });
 
-    it('renders both buttons the handler branches on', async () => {
+    it('renders both buttons the handler branches on, once there is a draft', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
       const body = await page();
 
       expect(body).toContain('name="intent" value="save"');
       expect(body).toContain('name="intent" value="publish"');
     });
 
-    it('offers a message field, since publishing requires one', async () => {
+    it('offers a message field with the publish button, since publishing requires one', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+
       expect(await page()).toContain('name="message"');
     });
 
@@ -772,14 +781,13 @@ describe('the environment tab offers the controls its routes accept', () => {
       expect(form).toContain('name="message"');
     });
 
-    it('disables publishing when there is nothing staged', async () => {
-      const body = await page();
-      const button = body.match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '';
-
-      expect(button).toContain('disabled');
+    it('does not render publishing when there is nothing staged', async () => {
+      // Absent rather than disabled: you cannot publish what has not been written down, and a
+      // permanently greyed button invites clicking at it to find out why.
+      expect(await page()).not.toContain('value="publish"');
     });
 
-    it('enables it once something is staged', async () => {
+    it('renders it enabled once something is staged', async () => {
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
@@ -825,6 +833,190 @@ describe('the environment tab offers the controls its routes accept', () => {
 
       expect(tick('MFA_ENFORCEMENT')).toContain('checked');
       expect(tick('SESSION_TTL')).not.toContain('checked');
+    });
+  });
+});
+
+describe('the tick and button behaviour the page depends on', () => {
+  /**
+   * The live half of this is a script, and there is no browser here — so these assert what the
+   * script needs in order to work: the original value on every control, the tick it drives, and
+   * the buttons it enables. If any of that stops being rendered the behaviour dies silently,
+   * which is exactly how the publish button went missing for three commits.
+   */
+  const SCHEMA5 = `keys:
+  MFA_ENFORCEMENT:
+    type: enum
+    values: [optional, admins, all]
+  SESSION_TTL:
+    type: int
+    min: 60
+    max: 86400
+  KILL_PASSWORD_LOGIN:
+    type: bool
+  FP_COMPONENTS:
+    type: string[]
+`;
+
+  const withSops5 = hasSops() ? describe : describe.skip;
+
+  withSops5('as rendered', () => {
+    let key5: AgeKeypair;
+    let repo5: TestRepo;
+    let git5: GitRepository;
+    let app5: Awaited<ReturnType<typeof buildWebApp>>;
+
+    const page = async () => (await app5.inject({ method: 'GET', url: '/p/iam?env=dev' })).body;
+
+    const post = (url: string, fields: Array<[string, string]>) =>
+      app5.inject({
+        method: 'POST',
+        url,
+        payload: new URLSearchParams(fields).toString(),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+
+    beforeEach(async () => {
+      key5 = generateAgeKey();
+      repo5 = await TestRepo.create();
+      await repo5.commit({
+        'schema/iam.yaml': SCHEMA5,
+        'environments.yaml': 'order: [dev, prod]\n',
+        'config/iam/dev.yaml':
+          'FP_COMPONENTS: [ua, lang]\nKILL_PASSWORD_LOGIN: false\nMFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
+        'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
+        '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key5.recipient}\n`,
+      });
+      git5 = new GitRepository(repo5.dir);
+      const loader5 = new ConfigLoader(new SopsDecryptor(key5.secret));
+      const drafts5 = new DraftStore(`${repo5.dir}/.drafts.json`);
+      app5 = await buildWebApp({
+        repository: git5,
+        loader: loader5,
+        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA5 }),
+        drafts: drafts5,
+        environmentOrder: async () =>
+          EnvironmentOrder.fromYaml(await git5.readFile('environments.yaml')),
+        writeService: new ConfigWriteService({
+          repository: git5,
+          loader: loader5,
+          encryptor: new SopsEncryptor(repo5.dir),
+          schemas: () => SchemaSet.fromFiles({ iam: SCHEMA5 }),
+          drafts: drafts5,
+        }),
+        environment: 'dev',
+      });
+    });
+
+    afterEach(async () => {
+      await app5?.close();
+      await rm(repo5.dir, { recursive: true, force: true });
+    });
+
+    it('gives every control the value it started with', async () => {
+      // The script compares against this rather than tracking edits, so typing a value and
+      // typing it back leaves no tick behind.
+      const body = await page();
+
+      expect(body).toMatch(/name="key.MFA_ENFORCEMENT"[^>]*data-original="optional"/s);
+      expect(body).toMatch(/name="key.SESSION_TTL"[^>]*data-original="900"/s);
+      expect(body).toMatch(/name="key.KILL_PASSWORD_LOGIN"[^>]*data-original="false"/s);
+      expect(body).toMatch(/name="key.FP_COMPONENTS"[^>]*data-original="ua, lang"/s);
+    });
+
+    it('links each control to the tick it drives', async () => {
+      const body = await page();
+
+      for (const key of ['MFA_ENFORCEMENT', 'SESSION_TTL', 'KILL_PASSWORD_LOGIN']) {
+        expect(body).toContain(`data-key="${key}"`);
+        expect(body).toContain(`data-select="${key}"`);
+      }
+    });
+
+    it('marks the form the script attaches to', async () => {
+      expect(await page()).toMatch(/<form[^>]*data-keys/s);
+    });
+
+    it('puts the actions directly under the tabs, above the fields', async () => {
+      const body = await page();
+
+      expect(body.indexOf('class="tabs"')).toBeLessThan(body.indexOf('value="save"'));
+      expect(body.indexOf('value="save"')).toBeLessThan(body.indexOf('name="key.MFA_ENFORCEMENT"'));
+    });
+
+    it('keeps the actions inside the form that carries the ticks', async () => {
+      // Outside it they would submit neither the selection nor the values.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const form = (await page()).match(/<form[^>]*data-keys[\s\S]*?<\/form>/)?.[0] ?? '';
+
+      expect(form).toContain('value="publish"');
+      expect(form).toContain('value="save"');
+      expect(form).toContain('name="select"');
+      expect(form).toContain('name="key.MFA_ENFORCEMENT"');
+    });
+
+    it('disables saving when nothing is ticked, and offers no publish at all', async () => {
+      const body = await page();
+
+      expect(body.match(/<button[^>]*value="save"[^>]*>/)?.[0]).toContain('disabled');
+      expect(body).not.toContain('value="publish"');
+      // The toolbar's message box, not the publish-everything form's hidden one.
+      expect(body).not.toContain('id="message"');
+    });
+
+    it('enables saving and reveals publishing once a draft exists', async () => {
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const body = await page();
+
+      expect(body.match(/<button[^>]*value="save"[^>]*>/)?.[0]).not.toContain('disabled');
+      expect(body.match(/<button[^>]*value="publish"[^>]*>/)?.[0]).not.toContain('disabled');
+    });
+
+    it('puts focus on the message the moment it appears', async () => {
+      // It is the only thing left to supply and it is required, so landing anywhere else costs
+      // a click for no reason.
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+
+      expect((await page()).match(/<input[^>]*id="message"[^>]*>/)?.[0]).toContain('autofocus');
+    });
+
+    it('focuses it after an htmx swap too, which autofocus alone does not do', async () => {
+      const script = (await app5.inject({ method: 'GET', url: '/assets/ticks.js' })).body;
+
+      expect(script).toContain('htmx:afterSwap');
+      expect(script).toContain('[autofocus]');
+    });
+
+    it('gives the buttons a label the script can recount', async () => {
+      // The number on the button has to follow the ticks, or it states a count that was true
+      // when the page was built and is not now.
+
+      await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]);
+      const staged = await page();
+
+      expect(staged).toContain('data-label="Publish {n} in dev"');
+      expect(staged).toContain('data-needs-ticks');
+    });
+
+    it('serves the script that does all of it', async () => {
+      const body = await page();
+      expect(body).toContain('src="/assets/ticks.js"');
+
+      const script = await app5.inject({ method: 'GET', url: '/assets/ticks.js' });
+      expect(script.statusCode).toBe(200);
+      expect(script.body).toContain('data-original');
     });
   });
 });

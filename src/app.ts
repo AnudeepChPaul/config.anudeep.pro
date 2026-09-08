@@ -182,6 +182,8 @@ export async function buildWebhookApp(
 function registerAssetRoutes(app: FastifyInstance): void {
   const require = createRequire(import.meta.url);
   const script = readFileSync(require.resolve('htmx.org/dist/htmx.min.js'), 'utf8');
+  // Our own, beside it: the tick behaviour a server render cannot express.
+  const ticks = readFileSync(new URL('./views/assets/ticks.js', import.meta.url).pathname, 'utf8');
 
   app.get('/assets/htmx.js', async (_request, reply) =>
     reply
@@ -190,5 +192,13 @@ function registerAssetRoutes(app: FastifyInstance): void {
       // resolved from node_modules at boot.
       .header('cache-control', 'public, max-age=31536000, immutable')
       .send(script),
+  );
+
+  app.get('/assets/ticks.js', async (_request, reply) =>
+    reply
+      .type('application/javascript; charset=utf-8')
+      // Ours changes with a deploy, so it is revalidated rather than held for a year.
+      .header('cache-control', 'no-cache')
+      .send(ticks),
   );
 }

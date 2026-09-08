@@ -122,6 +122,7 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
 <!-- Served from this origin, never a CDN: an editor that cannot render because someone
      else's network is down is exactly backwards for a tool reached during an incident. -->
 <script src="/assets/htmx.js" defer></script>
+<script src="/assets/ticks.js" defer></script>
 </body>
 </html>`;
 
@@ -157,7 +158,7 @@ function renderField(row: KeyRow): SafeHtml {
   // the form refuses to offer. Changed keys start ticked because that is almost always the
   // intent; the rest start clear.
   const pick = html`<span class="keypick">
-    <input type="checkbox" name="select" value="${row.key}"${row.pending ? ' checked' : ''}
+    <input type="checkbox" name="select" value="${row.key}" data-select="${row.key}"${row.pending ? ' checked' : ''}
            title="Include when publishing or promoting">
   </span>`;
 
@@ -181,8 +182,8 @@ function renderField(row: KeyRow): SafeHtml {
   // otherwise leak it. The field sets a new value; it never shows the current one.
   if (definition?.secret) {
     return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
-      <input type="password" id="${name}" name="${name}" value=""
-             placeholder="leave blank to keep the current value" autocomplete="off">
+      <input type="password" id="${name}" name="${name}" value="" data-key="${row.key}"
+             data-original="" placeholder="leave blank to keep the current value" autocomplete="off">
       ${error}
     </div></div>`;
   }
@@ -193,7 +194,7 @@ function renderField(row: KeyRow): SafeHtml {
         html`<option value="${value}"${row.value === value ? ' selected' : ''}>${value}</option>`,
     );
     return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
-      <select id="${name}" name="${name}"><option value=""></option>${options}</select>
+      <select id="${name}" name="${name}" data-key="${row.key}" data-original="${row.value}"><option value=""></option>${options}</select>
       ${error}
     </div></div>`;
   }
@@ -203,7 +204,7 @@ function renderField(row: KeyRow): SafeHtml {
     // one round trip saved, and the constraint is visible in the control.
     return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
       <input type="number" id="${name}" name="${name}" value="${row.value}" step="1"
-             ${bounds(definition)}>
+             data-key="${row.key}" data-original="${row.value}" ${bounds(definition)}>
       ${error}
     </div></div>`;
   }
@@ -220,7 +221,8 @@ function renderField(row: KeyRow): SafeHtml {
     return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
       ${explicitFalse}
       <label class="switch">
-        <input type="checkbox" id="${name}" name="${name}" value="true"${on ? ' checked' : ''}>
+        <input type="checkbox" id="${name}" name="${name}" value="true"${on ? ' checked' : ''}
+               data-key="${row.key}" data-original="${on ? 'true' : 'false'}">
         <span class="track"><span class="knob"></span></span>
         <span class="state"></span>
       </label>
@@ -234,13 +236,14 @@ function renderField(row: KeyRow): SafeHtml {
     return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
       ${items.length > 0 ? html`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:.4rem;">${chips}</div>` : html``}
       <input type="text" id="${name}" name="${name}" value="${items.join(', ')}"
-             placeholder="comma separated">
+             data-key="${row.key}" data-original="${items.join(', ')}" placeholder="comma separated">
       ${error}
     </div></div>`;
   }
 
   return html`<div class="field keyrow">${pick}<div style="flex-grow:1;min-width:0;">${header}
-    <input type="${definition?.type === 'url' ? 'url' : 'text'}" id="${name}" name="${name}" value="${row.value}">
+    <input type="${definition?.type === 'url' ? 'url' : 'text'}" id="${name}" name="${name}"
+           value="${row.value}" data-key="${row.key}" data-original="${row.value}">
     ${error}
   </div></div>`;
 }
@@ -504,6 +507,11 @@ export function renderProduct(options: {
   );
 
   const fields = options.rows.map((row) => renderField(row));
+  // The buttons follow the TICKS, not what happens to be staged: a tick is the statement of
+  // intent, and the script keeps the count in step as values change.
+  const ticked = options.rows.filter((row) => row.pending).length;
+  // Something is written down, as opposed to merely typed into the page.
+  const hasDraft = (activeEnv?.pending.length ?? 0) > 0;
 
   const body = html`
 
@@ -532,36 +540,50 @@ export function renderProduct(options: {
       ${options.notice ? html`<div class="card">${options.notice}</div>` : html``}
       ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
 
-      <div class="toolbar" style="align-items:center;margin-bottom:.85rem;">
-        <div class="hint">
+      <!-- One form, opened here so the actions can sit under the tabs while the ticks and
+           fields below them are still what a submit carries. A button outside the form would
+           send neither. -->
+      <form method="post" action="/p/${options.service}/${options.active}"
+            hx-post="/p/${options.service}/${options.active}" hx-target="#page" hx-swap="innerHTML"
+            data-keys>
+        <div class="card" style="padding:.85rem 1.25rem;">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <button type="submit" name="intent" value="save" class="ghost"
+                    data-needs-ticks data-label="Save {n} as draft"
+                    ${ticked === 0 ? 'disabled' : ''}>Save ${ticked} as draft</button>
+            ${
+              // Publishing appears only once something is actually saved. Not disabled —
+              // absent: you cannot publish what has not been written down, and a permanently
+              // greyed button invites clicking at it to find out why.
+              hasDraft
+                ? html`<button type="submit" name="intent" value="publish"
+                        data-needs-ticks data-label="Publish {n} in ${options.active}"
+                        ${ticked === 0 ? 'disabled' : ''}>Publish ${ticked} in ${options.active}</button>`
+                : html``
+            }
+            <span class="hint" style="margin-left:auto;">
+              ${
+                hasDraft
+                  ? pendingDetail(`Waiting in ${options.active}`, activeEnv?.pending ?? [])
+                  : html`Everything in ${options.active} is published.`
+              }
+            </span>
+          </div>
           ${
-            activeEnv && activeEnv.pending.length > 0
-              ? pendingDetail(`Waiting in ${options.active}`, activeEnv.pending)
-              : html`Everything in ${options.active} is published.`
+            // The message comes with the publish button, and takes focus when it arrives: it is
+            // the only thing left to supply, and it is required.
+            hasDraft
+              ? html`<div class="field" style="margin:.85rem 0 0;">
+                  <label for="message">Publish message
+                    <span class="hint">becomes the commit subject; the ticks choose what goes</span>
+                  </label>
+                  <input type="text" id="message" name="message" value="${options.message ?? ''}" autofocus>
+                </div>`
+              : html``
           }
         </div>
-      </div>
 
-      <!-- One form: the ticks, the message and both buttons. The checkboxes have to be inside
-           it or a publish would carry no selection at all. -->
-      <form method="post" action="/p/${options.service}/${options.active}"
-            hx-post="/p/${options.service}/${options.active}" hx-target="#page" hx-swap="innerHTML">
         <div class="card" style="padding:.5rem 1.25rem 1rem;">${fields}</div>
-        <div class="card" style="padding:.85rem 1.25rem;">
-          <div class="field">
-            <label for="message">Publish message
-              <span class="hint">becomes the commit subject; the ticks choose what goes</span>
-            </label>
-            <input type="text" id="message" name="message" value="${options.message ?? ''}">
-          </div>
-          <div style="display:flex;align-items:center;gap:12px;">
-            <button type="submit" name="intent" value="save" class="ghost">Save as draft</button>
-            <button type="submit" name="intent" value="publish"
-                    ${activeEnv && activeEnv.pending.length > 0 ? '' : 'disabled'}>
-              Publish ticked in ${options.active}
-            </button>
-          </div>
-        </div>
       </form>
     `;
   return options.fragment ? body : layout(options.service, body);

@@ -106,7 +106,11 @@ describe('the switch reflects the checkbox', () => {
       },
     ]);
 
-    expect(body).toMatch(/<input type="checkbox"[^>]*checked>/);
+    // Not anchored to attribute order: `checked` may sit anywhere in the tag, and pinning it
+    // to the end broke the moment another attribute was added after it.
+    const input =
+      body.match(/<input type="checkbox"[^>]*name="key.KILL_PASSWORD_LOGIN"[^>]*>/s)?.[0] ?? '';
+    expect(input).toContain('checked');
   });
 
   it('keeps focus visible, since the real checkbox is hidden', () => {

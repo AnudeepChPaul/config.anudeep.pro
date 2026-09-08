@@ -78,10 +78,10 @@ linuxOnly('SO_PEERCRED over a real Unix socket', () => {
         });
       });
       servers.push(server);
-      server.listen(sockPath + '.2');
+      server.listen(`${sockPath}.2`);
     });
 
-    const client = net.connect(sockPath + '.2');
+    const client = net.connect(`${sockPath}.2`);
     client.write(JSON.stringify({ uid: 0, service: 'iam' }));
     const uid = await seen;
     client.destroy();
