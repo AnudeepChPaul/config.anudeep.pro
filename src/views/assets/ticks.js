@@ -68,11 +68,71 @@
     }
   };
 
+  /**
+   * The panel behind the count: which keys are selected, and what each one is about to change.
+   *
+   * The server cannot render this before a draft is saved — it has never seen these edits — so
+   * it is built from the page. Text nodes throughout: a config value is arbitrary text, and
+   * assembling this as markup would let a value close a tag.
+   */
+  const refreshDetail = () => {
+    const panel = form.querySelector('[data-detail]');
+    if (!panel) return;
+
+    const heading = panel.querySelector('h3');
+    panel.textContent = '';
+    if (heading) panel.append(heading);
+
+    const line = (parts) => {
+      const row = document.createElement('div');
+      for (const [text, className] of parts) {
+        const span = document.createElement(className === 'key' ? 'strong' : 'span');
+        if (className && className !== 'key') span.className = className;
+        span.textContent = text;
+        row.append(span, document.createTextNode(' '));
+      }
+      panel.append(row);
+    };
+
+    for (const tick of form.querySelectorAll('input[name="select"]:checked')) {
+      const key = tick.value;
+      const control = controlFor(key);
+      if (!control) continue;
+
+      if (tick.getAttribute('data-secret') !== null) {
+        line([
+          [key, 'key'],
+          ['changed — value hidden', 'hint'],
+        ]);
+        continue;
+      }
+
+      // What it is published as, when that is known: `data-original` is what the field was
+      // rendered with, which for a saved draft is the draft's own value.
+      const was = tick.getAttribute('data-published') ?? control.getAttribute('data-original');
+      const now = currentValue(control);
+
+      if (was === now)
+        line([
+          [key, 'key'],
+          ['unchanged — selected to promote', 'hint'],
+        ]);
+      else
+        line([
+          [key, 'key'],
+          [was || '(unset)', 'was'],
+          ['→', 'hint'],
+          [now || '(removed)', 'is'],
+        ]);
+    }
+  };
+
   form.addEventListener('input', (event) => {
     const control = event.target.closest('[data-key]');
     if (!control) return;
     syncTick(control);
     refreshButtons();
+    refreshDetail();
   });
 
   form.addEventListener('change', (event) => {
@@ -88,6 +148,7 @@
     }
 
     refreshButtons();
+    refreshDetail();
   });
 
   refreshButtons();

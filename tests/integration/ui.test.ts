@@ -1010,6 +1010,43 @@ describe('the tick and button behaviour the page depends on', () => {
       expect(staged).toContain('data-needs-ticks');
     });
 
+    it('answers a save that changes nothing with a notice, not a 422', async () => {
+      // A tick is not an edit. Ticking three keys and saving used to fall through the
+      // validation branch and return 422 with a per-key error page that had no per-key errors
+      // on it — the operator saw a red page and no cause.
+      const fields = new URLSearchParams([
+        ['key.MFA_ENFORCEMENT', 'optional'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['intent', 'save'],
+      ]).toString();
+
+      // The page htmx sees: the answer itself, rather than a redirect to it.
+      const swapped = await app5.inject({
+        method: 'POST',
+        url: '/p/iam/dev',
+        payload: fields,
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'hx-request': 'true',
+        },
+      });
+
+      expect(swapped.statusCode).toBe(200);
+      expect(swapped.body).toMatch(/nothing changed/i);
+      // And nothing was written down, so there is still nothing to publish.
+      expect(swapped.body).not.toContain('value="publish"');
+
+      // Without htmx it is the same answer through a redirect, not an error page.
+      const plain = await post('/p/iam/dev', [
+        ['key.MFA_ENFORCEMENT', 'optional'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['intent', 'save'],
+      ]);
+
+      expect(plain.statusCode).toBe(303);
+      expect(plain.headers.location).toMatch(/notice=/);
+    });
+
     it('states what is selected as a sentence the script can recount', async () => {
       const body = await page();
 
@@ -1043,9 +1080,10 @@ describe('the tick and button behaviour the page depends on', () => {
       ]);
       const body = await page();
 
-      // The same hover panel the tabs and the product list use: the count is the trigger.
-      expect(body).toContain('class="pending"');
-      expect(body).toContain('MFA_ENFORCEMENT');
+      // The same hover panel the tabs and the product list use, hung off the count itself.
+      expect(body).toContain('class="pending sel"');
+      expect(body).toContain('data-detail');
+      expect(body.slice(body.indexOf('data-detail'))).toContain('MFA_ENFORCEMENT');
     });
 
     it('styles a tick you are not allowed to clear differently from one you are', async () => {

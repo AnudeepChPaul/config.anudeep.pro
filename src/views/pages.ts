@@ -99,6 +99,10 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .linkbtn.go:hover:not(:disabled) { color: #8a4108; }
   .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: .875rem; }
   .actionline .sep { color: #cbd0d9; }
+  /* The selection count is a hover trigger like the others, but it is ordinary running text
+     rather than an amber "unpublished" marker — it states what you are about to do, not a
+     warning about the environment. */
+  .pending.sel { color: inherit; font-size: inherit; }
   input[type=number] { max-width: 12rem; font-variant-numeric: tabular-nums; }
   select { max-width: 20rem; }
   .chip-item { display: inline-flex; align-items: center; gap: 6px; font-size: .8125rem;
@@ -175,6 +179,8 @@ function renderField(row: KeyRow): SafeHtml {
   // intent; the rest start clear.
   const pick = html`<span class="keypick">
     <input type="checkbox" name="select" value="${row.key}" data-select="${row.key}"${row.pending ? ' checked' : ''}
+           ${row.pending && !definition?.secret ? html`data-published="${format(row.publishedValue)}"` : html``}
+           ${definition?.secret ? html`data-secret="true"` : html``}
            title="Include when publishing or promoting">
   </span>`;
 
@@ -402,7 +408,15 @@ export interface ProductSummary {
  * rendering two blanks, which would read as a bug.
  */
 function pendingDetail(title: string, changes: readonly PendingChange[]): SafeHtml {
-  const rows = changes.map((change) =>
+  return html`<span class="pending" tabindex="0">
+    <span class="dot"></span>${changes.length} unpublished
+    ${detailPanel(title, changes)}
+  </span>`;
+}
+
+/** One line per change: what it was, what it becomes — and for a secret, neither. */
+function changeLines(changes: readonly PendingChange[]): SafeHtml[] {
+  return changes.map((change) =>
     change.secret
       ? html`<div><strong>${change.key}</strong> <span class="hint">changed — value hidden</span></div>`
       : html`<div>
@@ -412,11 +426,11 @@ function pendingDetail(title: string, changes: readonly PendingChange[]): SafeHt
           <span class="is">${change.to ?? '(removed)'}</span>
         </div>`,
   );
+}
 
-  return html`<span class="pending" tabindex="0">
-    <span class="dot"></span>${changes.length} unpublished
-    <span class="detail"><h3>${title}</h3>${rows}</span>
-  </span>`;
+/** The panel alone, for a trigger that is not the standard "N unpublished" marker. */
+function detailPanel(title: string, changes: readonly PendingChange[]): SafeHtml {
+  return html`<span class="detail" data-detail><h3>${title}</h3>${changeLines(changes)}</span>`;
 }
 
 /** The landing page: products, not namespaces. */
@@ -564,12 +578,18 @@ export function renderProduct(options: {
             data-keys>
         <div class="card" style="padding:.85rem 1.25rem;">
           <div class="actionline">
-            <span data-label="{n} unpublished change{s} selected."
-                  data-zero="No changes selected.">${
-                    ticked === 0
-                      ? html`No changes selected.`
-                      : html`${ticked} unpublished change${ticked === 1 ? '' : 's'} selected.`
-                  }</span>
+            <!-- The count says how many; hovering it says which. The script rebuilds the panel
+                 as ticks move, because before a draft is saved the server has never seen the
+                 edits the panel is describing. -->
+            <span class="pending sel" tabindex="0">
+              <span data-label="{n} unpublished change{s} selected."
+                    data-zero="No changes selected.">${
+                      ticked === 0
+                        ? html`No changes selected.`
+                        : html`${ticked} unpublished change${ticked === 1 ? '' : 's'} selected.`
+                    }</span>
+              ${detailPanel('Selected', activeEnv?.pending ?? [])}
+            </span>
             <button type="submit" name="intent" value="save" class="linkbtn"
                     data-needs-ticks data-label="Save {n} as draft?"
                     ${ticked === 0 ? 'disabled' : ''}>Save ${ticked} as draft?</button>
@@ -579,7 +599,6 @@ export function renderProduct(options: {
               // greyed action invites clicking at it to find out why.
               hasDraft
                 ? html`<span class="sep">·</span>
-                    ${pendingDetail(`Waiting in ${options.active}`, activeEnv?.pending ?? [])}
                     <button type="submit" name="intent" value="publish" class="linkbtn go"
                             data-needs-ticks data-label="Publish {n} in ${options.active}?"
                             ${ticked === 0 ? 'disabled' : ''}>Publish ${ticked} in ${options.active}?</button>`

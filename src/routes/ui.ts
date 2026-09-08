@@ -308,6 +308,17 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         return respond(reply, request, { service, env: environment, published: keys });
       }
 
+      // A tick is a statement of intent, not an edit, so ticking keys and saving is a normal
+      // thing to do and simply has nothing to write down. It is not a validation failure: the
+      // 422 branch below renders a per-key error page, which here had no per-key errors on it.
+      if (result.error.code === 'nothing_staged') {
+        return respond(reply, request, {
+          service,
+          env: environment,
+          notice: 'Nothing changed — a tick on its own does not make a draft.',
+        });
+      }
+
       const { sources, tree, pendingByNamespace } = await readState();
       const perKey = Object.fromEntries(
         (result.error.errors ?? []).map((error) => [error.key, error.message]),

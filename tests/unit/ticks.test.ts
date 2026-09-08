@@ -17,7 +17,10 @@ const markup = `
     <input type="text" name="key.A" value="one" data-key="A" data-original="one">
     <input type="checkbox" name="select" value="B" data-select="B">
     <input type="checkbox" name="key.B" data-key="B" data-original="false">
-    <span data-label="{n} unpublished change{s} selected." data-zero="No changes selected.">No changes selected.</span>
+    <span class="pending" tabindex="0">
+      <span data-label="{n} unpublished change{s} selected." data-zero="No changes selected.">No changes selected.</span>
+      <span class="detail" data-detail><h3>Selected</h3></span>
+    </span>
     <button type="submit" name="intent" value="save" data-needs-ticks data-label="Save {n}" disabled>Save 0</button>
   </form>
 `;
@@ -28,6 +31,7 @@ const field = (key: string) =>
   document.querySelector<HTMLInputElement>(`input[data-key="${key}"]`) as HTMLInputElement;
 const button = () => document.querySelector('button') as HTMLButtonElement;
 const sentence = () => document.querySelector('span[data-label]') as HTMLSpanElement;
+const detail = () => document.querySelector('[data-detail]') as HTMLElement;
 
 /** What a person doing it with a mouse does: the click both toggles and fires `change`. */
 const clickTick = (key: string) => {
@@ -138,6 +142,56 @@ describe('the running sentence', () => {
     type('A', 'two');
     clickTick('B');
     expect(sentence().textContent).toBe('2 unpublished changes selected.');
+  });
+});
+
+describe('the hover panel on the sentence', () => {
+  // The count says how many; this says which. Before a draft is saved the server has never seen
+  // these edits, so the panel is built from the page itself.
+  it('names each ticked key, with what it was and what it now is', () => {
+    type('A', 'two');
+
+    expect(detail().textContent).toContain('A');
+    expect(detail().textContent).toContain('one');
+    expect(detail().textContent).toContain('two');
+  });
+
+  it('marks a ticked key that was not edited, rather than showing a diff that is not one', () => {
+    clickTick('A');
+
+    expect(detail().textContent).toMatch(/unchanged/i);
+  });
+
+  it('drops a key from the panel when it is untickable no more', () => {
+    type('A', 'two');
+    type('A', 'one');
+
+    expect(detail().textContent).not.toContain('two');
+  });
+
+  it('never prints a secret, whose value the panel has no business showing', () => {
+    document.body.innerHTML = markup.replace(
+      'data-select="A"',
+      'data-select="A" data-secret="true"',
+    );
+    new Function(source)();
+    type('A', 'hunter2');
+
+    expect(detail().textContent).not.toContain('hunter2');
+    expect(detail().textContent).toMatch(/hidden/i);
+  });
+
+  it('shows the published value, not the draft one, once a draft exists', () => {
+    document.body.innerHTML = markup.replace(
+      'data-select="A"',
+      'data-select="A" data-published="zero"',
+    );
+    new Function(source)();
+    type('A', 'two');
+
+    // data-original is what the field was rendered with — the draft. What it is being compared
+    // against for the operator is what is actually published.
+    expect(detail().textContent).toContain('zero');
   });
 });
 
