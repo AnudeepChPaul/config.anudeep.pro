@@ -93,7 +93,11 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .ghost { background: #fff; color: #16181d; border: 1px solid #cbd0d9; }
   /* The two actions belong to the sentence that states what is selected, so they are set as
      part of it rather than as a boxed control bar sitting above the fields. */
-  .linkbtn { background: none; border: 0; padding: 0; font: inherit; color: #1d4ed8;
+  /* Deliberately no font shorthand here: it resets font-size to the inherited value, which
+     overrode the size the base button rule sets — so a link action was one size inside .actions
+     and another in the drafts list, the promote card and the product list. Family and weight
+     inherit on their own; the size stays the base rule's, which is the toolbar's. */
+  .linkbtn { background: none; border: 0; padding: 0; color: #1d4ed8;
              text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
   .linkbtn:hover:not(:disabled) { color: #1e3fa8; }
   .linkbtn:disabled { color: #9aa0ad; text-decoration: none; cursor: not-allowed; }
@@ -700,11 +704,15 @@ export function renderProducts(options: {
         </div>
         <div class="hint">${
           product.matched && product.matched.length > 0
-            ? html`${product.matched.map(
-                (key) => html`<a href="/p/${product.service}?env=dev&hl=${key}"
-                    hx-get="/p/${product.service}?env=dev&hl=${key}" hx-target="#page"
-                    hx-swap="innerHTML" hx-push-url="true">${key}</a> `,
-              )}`
+            ? html`${product.matched.map((key) => {
+                // The first environment this service declares — which is where the page lands
+                // anyway. `dev` was hard-coded here from before tabs came from environments.yaml,
+                // so the link named an environment a service need not have.
+                const landing = product.environments[0]?.name ?? '';
+                return html`<a href="/p/${product.service}?env=${landing}&hl=${key}"
+                    hx-get="/p/${product.service}?env=${landing}&hl=${key}" hx-target="#page"
+                    hx-swap="innerHTML" hx-push-url="true">${key}</a> `;
+              })}`
             : html`${product.keys}`
         }</div>
         <div style="display:flex;gap:6px;margin-top:2px;">${chips}</div>
@@ -713,6 +721,15 @@ export function renderProducts(options: {
   });
 
   const body = html`
+      <!-- The search form is opened and closed BEFORE the publish form. A form inside another
+           form is dropped by every parser, which left its input and its button belonging to the
+           publish form — so pressing Search published whatever was ticked. -->
+      ${searchBox({ action: '/', query: options.query ?? '', placeholder: 'Find a variable' })}
+      ${
+        options.query && options.products.length === 0
+          ? html`<div class="card">No key matches “${options.query}”.</div>`
+          : html``
+      }
       <form method="post" action="/publish" hx-post="/publish" hx-target="#page" hx-swap="innerHTML">
         <div class="toolbar" style="margin-bottom:1.75rem;">
           <div>
@@ -747,12 +764,6 @@ export function renderProducts(options: {
         ${options.notice ? html`<div class="card">${options.notice}</div>` : html``}
         ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
         ${unpushedBanner(options.unpushed ?? [])}
-        ${searchBox({ action: '/', query: options.query ?? '', placeholder: 'Find a variable' })}
-        ${
-          options.query && options.products.length === 0
-            ? html`<div class="card">No key matches “${options.query}”.</div>`
-            : html``
-        }
         <div class="rows">${rows}</div>
       </form>
     `;

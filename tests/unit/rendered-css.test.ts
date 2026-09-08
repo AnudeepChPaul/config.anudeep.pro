@@ -137,6 +137,25 @@ describe('the toolbar reads as one line', () => {
   });
 });
 
+describe('every link button matches the toolbar', () => {
+  // .linkbtn set `font: inherit`, and the shorthand RESETS font-size to whatever is inherited —
+  // overriding the base button rule. So a link action was 13px inside .actions and 15px in the
+  // drafts list, the promote card and the product list. Three sizes for one control.
+  it('does not reset the size with a font shorthand', () => {
+    const rule = productPage([]).match(/\.linkbtn \{[^}]*\}/)?.[0] ?? '';
+
+    expect(rule).not.toMatch(/font:\s/);
+  });
+
+  it('leaves the size to the base button rule, which the toolbar shares', () => {
+    const css = productPage([]);
+    const base = css.match(/\n\s*button \{[\s\S]*?\}/)?.[0] ?? '';
+
+    expect(base).toMatch(/font-size:\s*\.8125rem/);
+    expect(css).toMatch(/\.actions \{[^}]*font-size:\s*\.8125rem/);
+  });
+});
+
 describe('button styling is global', () => {
   // It was a toolbar-local rule, so every button outside the toolbar — Sign in, the product
   // list's actions — was set at a different size from the ones beside them.
@@ -230,7 +249,12 @@ describe('every publish action reads the same way', () => {
     );
 
   it('renders the products publish as a link, phrased as a question', () => {
-    const button = productsPage(2).match(/<button[^>]*>[\s\S]*?<\/button>/)?.[0] ?? '';
+    // The search button comes first on the page now, so this names the publish one rather than
+    // taking whichever button happens to be first.
+    const button =
+      productsPage(2)
+        .match(/<button[\s\S]*?<\/button>/g)
+        ?.find((markup) => markup.includes('Publish')) ?? '';
 
     expect(button).toContain('linkbtn');
     expect(button).toContain('go');
