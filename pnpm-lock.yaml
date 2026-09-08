@@ -17,6 +17,9 @@ importers:
       fastify:
         specifier: 5.12.3
         version: 5.12.3
+      htmx.org:
+        specifier: ^2.0.10
+        version: 2.0.10
       koffi:
         specifier: ^3.2.1
         version: 3.2.1
@@ -751,6 +754,9 @@ packages:
 
   help-me@5.0.0:
     resolution: {integrity: sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg==}
+
+  htmx.org@2.0.10:
+    resolution: {integrity: sha512-kdeJe7ZVwaS6QMz/ebBIVtZdpwen6L0OQ5GOhPV9MKBb196TCZeZu4yA7ZIQsaLKv7EpXz+So7KSXNuHXhj7Cw==}
 
   ipaddr.js@2.5.0:
     resolution: {integrity: sha512-aq+t5NAc+cS6rZQQVWC2x98CPqGtKKTMDd4Gaodv0wShnItdKg/51djkGJ1hqH+Oy0ivDftCbSLCQob8zso01w==}
@@ -1590,6 +1596,8 @@ snapshots:
     optional: true
 
   help-me@5.0.0: {}
+
+  htmx.org@2.0.10: {}
 
   ipaddr.js@2.5.0: {}
 

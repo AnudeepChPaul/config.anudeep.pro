@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { GitRepository } from '../git/repository.js';
 import type { KeyDefinition, SchemaSet } from '../schema/validator.js';
 import type { DraftStore } from '../store/draft-store.js';
@@ -38,6 +38,14 @@ interface NamespaceParams {
   service: string;
   environment: string;
 }
+
+/**
+ * htmx sets this on every request it makes.
+ *
+ * When present the handler answers with the page body alone, to be swapped in place; otherwise
+ * it answers as it always did, with a document or a redirect a browser can follow on its own.
+ */
+const isHtmx = (request: FastifyRequest): boolean => request.headers['hx-request'] === 'true';
 
 /** Form field prefix. Everything else in the body is metadata, not configuration. */
 const KEY_PREFIX = 'key.';
@@ -108,6 +116,110 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     );
   });
 
+  /**
+   * The product page, however it was asked for.
+   *
+   * GET renders it, and every POST answers with it when htmx asked — so a swap shows exactly
+   * what a reload would. Two render paths would drift, and the drift would only show up for
+   * whichever half nobody was looking at.
+   */
+  const productPage = async (options: {
+    service: string;
+    env?: string | undefined;
+    notice?: string | undefined;
+    published?: readonly string[];
+    fragment: boolean;
+  }): Promise<{ html: string; active: string } | null> => {
+    const { service } = options;
+    const { sources, tree, pendingByNamespace } = await readState();
+    const environments = environmentsOf(service, sources.sources.keys(), pendingByNamespace);
+    if (environments.length === 0) return null;
+
+    const active =
+      environments.find((env) => env.name === options.env)?.name ?? environments[0]?.name ?? '';
+    const namespace = `${service}/${active}`;
+
+    const draft = await drafts.get(namespace);
+    const committed = (tree.namespaces.get(namespace) ?? {}) as Record<string, unknown>;
+    const shown = draft ? await loader.resolveOne(namespace, draft.document) : committed;
+
+    const elsewhere = environments
+      .filter((env) => env.name !== active)
+      .map((env) => ({
+        environment: env.name,
+        values: (tree.namespaces.get(env.namespace) ?? {}) as Record<string, unknown>,
+        pending: env.pending,
+      }));
+
+    const schemaSet = schemas();
+    const published = options.published ?? [];
+    const nextEnvironment = (await readOrder()).next(active);
+    const targetValues = nextEnvironment
+      ? ((tree.namespaces.get(`${service}/${nextEnvironment}`) ?? {}) as Record<string, unknown>)
+      : {};
+
+    const offer =
+      nextEnvironment && published.length > 0
+        ? {
+            nextEnvironment,
+            movable: published
+              .filter((key) => !schemaSet.isSecret(service, key))
+              .map((key) => ({ key, value: committed[key], target: targetValues[key] })),
+            blocked: published
+              .filter((key) => schemaSet.isSecret(service, key))
+              .map((key) => ({ key, reason: `secret — set it directly in ${nextEnvironment}` })),
+          }
+        : undefined;
+
+    return {
+      active,
+      html: String(
+        renderProduct({
+          fragment: options.fragment,
+          service,
+          environments,
+          active,
+          rows: buildRows(schemaSet, service, shown, {}, {}, { committed, elsewhere }),
+          commit: sources.commit,
+          ...(options.notice ? { notice: options.notice } : {}),
+          ...(offer ? { offer } : {}),
+        }),
+      ),
+    };
+  };
+
+  /**
+   * Answers a form post: a swapped fragment for htmx, a redirect for a plain browser.
+   *
+   * The redirect is what makes the page work without the script — and it is also what stops a
+   * reload from re-submitting the form, so it stays even now that most requests swap instead.
+   */
+  const respond = async (
+    reply: FastifyReply,
+    request: FastifyRequest,
+    options: { service: string; env: string; notice?: string; published?: readonly string[] },
+  ) => {
+    const back =
+      `/p/${options.service}?env=${encodeURIComponent(options.env)}` +
+      (options.notice ? `&notice=${encodeURIComponent(options.notice)}` : '') +
+      (options.published?.length
+        ? `&published=${encodeURIComponent(options.published.join(','))}`
+        : '');
+
+    if (!isHtmx(request)) return reply.code(303).header('location', back).send();
+
+    const page = await productPage({
+      service: options.service,
+      env: options.env,
+      notice: options.notice,
+      published: options.published ?? [],
+      fragment: true,
+    });
+    if (!page) return reply.code(404).type('text/html; charset=utf-8').send('Not found');
+
+    return reply.header('hx-push-url', back).type('text/html; charset=utf-8').send(page.html);
+  };
+
   app.get(
     '/p/:service',
     async (
@@ -117,75 +229,26 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       }>,
       reply,
     ) => {
-      const { service } = request.params;
-      const { sources, tree, pendingByNamespace } = await readState();
-      const environments = environmentsOf(service, sources.sources.keys(), pendingByNamespace);
+      const page = await productPage({
+        service: request.params.service,
+        env: request.query?.env,
+        notice: request.query?.notice,
+        published: (request.query?.published ?? '').split(',').filter(Boolean),
+        fragment: isHtmx(request),
+      });
 
-      if (environments.length === 0) {
-        return reply.code(404).type('text/html; charset=utf-8').send('Not found');
+      if (!page) return reply.code(404).type('text/html; charset=utf-8').send('Not found');
+
+      // The address bar has to follow the swap, or a reload lands somewhere other than what the
+      // screen is showing.
+      if (isHtmx(request)) {
+        reply.header(
+          'hx-push-url',
+          `/p/${request.params.service}?env=${encodeURIComponent(page.active)}`,
+        );
       }
 
-      // An unknown ?env is not an error worth a 404 — it is a stale bookmark. The first
-      // environment is a better answer than a dead end.
-      const active =
-        environments.find((env) => env.name === request.query?.env)?.name ??
-        environments[0]?.name ??
-        '';
-      const namespace = `${service}/${active}`;
-
-      // Values shown are the staged ones where a draft exists: the editor should show what
-      // will be published, not what was published last.
-      const draft = await drafts.get(namespace);
-      const committed = tree.namespaces.get(namespace) ?? {};
-      const shown = draft ? await loader.resolveOne(namespace, draft.document) : committed;
-
-      const elsewhere = environments
-        .filter((env) => env.name !== active)
-        .map((env) => ({
-          environment: env.name,
-          values: (tree.namespaces.get(env.namespace) ?? {}) as Record<string, unknown>,
-          pending: env.pending,
-        }));
-
-      // The offer names exactly the keys that were just published, carried across the redirect
-      // rather than recomputed — anything else could offer to move a change the operator did
-      // not make.
-      const published: string[] = (request.query?.published ?? '').split(',').filter(Boolean);
-      const nextEnvironment = (await readOrder()).next(active);
-      const schemaSet = schemas();
-      const targetValues = nextEnvironment
-        ? ((tree.namespaces.get(`${service}/${nextEnvironment}`) ?? {}) as Record<string, unknown>)
-        : {};
-
-      const offer =
-        nextEnvironment && published.length > 0
-          ? {
-              nextEnvironment,
-              movable: published
-                .filter((key) => !schemaSet.isSecret(service, key))
-                .map((key) => ({ key, value: committed[key], target: targetValues[key] })),
-              blocked: published
-                .filter((key) => schemaSet.isSecret(service, key))
-                .map((key) => ({
-                  key,
-                  reason: `secret — set it directly in ${nextEnvironment}`,
-                })),
-            }
-          : undefined;
-
-      return reply.type('text/html; charset=utf-8').send(
-        String(
-          renderProduct({
-            service,
-            environments,
-            active,
-            rows: buildRows(schemaSet, service, shown, {}, {}, { committed, elsewhere }),
-            commit: sources.commit,
-            ...(request.query?.notice ? { notice: request.query.notice } : {}),
-            ...(offer ? { offer } : {}),
-          }),
-        ),
-      );
+      return reply.type('text/html; charset=utf-8').send(page.html);
     },
   );
 
@@ -213,11 +276,10 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
       if (result.ok) {
         const body = (request.body ?? {}) as Record<string, string | string[]>;
-        const back = `/p/${service}?env=${encodeURIComponent(environment)}`;
 
         // Two buttons, one form: saving keeps the draft, publishing ships what is ticked.
         if (String(body.intent ?? '') !== 'publish') {
-          return reply.code(303).header('location', back).send();
+          return respond(reply, request, { service, env: environment });
         }
 
         // Only ticks that are still staged. A stale tick — a key published from another tab
@@ -234,18 +296,16 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         );
 
         if (!published.ok) {
-          return reply
-            .code(303)
-            .header('location', `${back}&notice=${encodeURIComponent(published.error.detail)}`)
-            .send();
+          return respond(reply, request, {
+            service,
+            env: environment,
+            notice: published.error.detail,
+          });
         }
 
-        // The published keys ride the redirect so the promote offer names exactly them, rather
-        // than recomputing a set that could include something the operator did not just ship.
-        return reply
-          .code(303)
-          .header('location', `${back}&published=${encodeURIComponent(keys.join(','))}`)
-          .send();
+        // The published keys are carried through so the promote offer names exactly them,
+        // rather than recomputing a set that could include something not just shipped.
+        return respond(reply, request, { service, env: environment, published: keys });
       }
 
       const { sources, tree, pendingByNamespace } = await readState();
@@ -306,13 +366,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
       // Lands on the target environment: the change is there to review, and that is where the
       // next decision is made.
-      return reply
-        .code(303)
-        .header(
-          'location',
-          `/p/${service}?env=${encodeURIComponent(result.ok ? to : from)}&notice=${encodeURIComponent(notice)}`,
-        )
-        .send();
+      return respond(reply, request, { service, env: result.ok ? to : from, notice });
     },
   );
 

@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { stat, unlink } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import net from 'node:net';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
@@ -145,6 +147,7 @@ export async function buildWebApp(options: WebAppOptions): Promise<FastifyInstan
   const app = Fastify(options.logger ? { loggerInstance: options.logger } : { logger: false });
   await app.register(cookie);
   await app.register(formbody);
+  registerAssetRoutes(app);
   // Before the UI routes, so its onRequest guard runs ahead of every handler they add.
   if (options.auth) registerAuthRoutes(app, options.auth, options.environment);
   registerUiRoutes(app, options);
@@ -166,4 +169,26 @@ export async function buildWebhookApp(
   registerWebhookRoutes(app, options);
   await app.ready();
   return app;
+}
+
+/**
+ * The one static asset this service serves: htmx, from its own origin.
+ *
+ * Read once at boot and held in memory — it is 50KB and never changes without a deploy. Serving
+ * it ourselves rather than from a CDN matters more here than usual: this editor is reached
+ * *during* an incident, and a page that cannot render because someone else's network is down
+ * is exactly the wrong failure.
+ */
+function registerAssetRoutes(app: FastifyInstance): void {
+  const require = createRequire(import.meta.url);
+  const script = readFileSync(require.resolve('htmx.org/dist/htmx.min.js'), 'utf8');
+
+  app.get('/assets/htmx.js', async (_request, reply) =>
+    reply
+      .type('application/javascript; charset=utf-8')
+      // Immutable for a year: the path changes when the dependency does, because the file is
+      // resolved from node_modules at boot.
+      .header('cache-control', 'public, max-age=31536000, immutable')
+      .send(script),
+  );
 }

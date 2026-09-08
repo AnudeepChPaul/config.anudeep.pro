@@ -24,6 +24,13 @@ export interface KeyRow {
   }>;
 }
 
+/**
+ * Wraps a page body in the document.
+ *
+ * htmx asks for the body alone, so every page is authored as a fragment and this is the only
+ * thing that turns one into a document. One render path serves both; two would drift, and the
+ * drift would show up only for whichever half nobody was looking at.
+ */
 const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
 <html lang="en">
 <head>
@@ -108,7 +115,12 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   .keypick input { width: 16px; height: 16px; accent-color: #16181d; cursor: pointer; margin: 0; }
 </style>
 </head>
-<body><main>${body}</main></body>
+<body>
+<main id="page">${body}</main>
+<!-- Served from this origin, never a CDN: an editor that cannot render because someone
+     else's network is down is exactly backwards for a tool reached during an incident. -->
+<script src="/assets/htmx.js" defer></script>
+</body>
 </html>`;
 
 /**
@@ -391,6 +403,8 @@ export function renderProducts(options: {
   unpushed?: readonly UnpushedCommit[];
   notice?: string;
   error?: string;
+  /** True when htmx asked: the body alone, to be swapped into the page. */
+  fragment?: boolean;
 }): SafeHtml {
   const totalPending = options.products.reduce(
     (total, product) => total + product.environments.reduce((n, env) => n + env.pending.length, 0),
@@ -410,7 +424,9 @@ export function renderProducts(options: {
              style="width:16px;height:16px;margin:3px 0 0;accent-color:#16181d;">
       <div style="display:flex;flex-direction:column;gap:4px;flex-grow:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:10px;">
-          <a href="/p/${product.name}" style="font-size:.9375rem;font-weight:500;">${product.name}</a>
+          <a href="/p/${product.name}" hx-get="/p/${product.name}" hx-target="#page"
+             hx-swap="innerHTML" hx-push-url="true"
+             style="font-size:.9375rem;font-weight:500;">${product.name}</a>
           ${pending.length > 0 ? pendingDetail('Waiting to publish', pending) : html``}
         </div>
         <div class="hint">${product.keys}</div>
@@ -419,10 +435,8 @@ export function renderProducts(options: {
     </div>`;
   });
 
-  return layout(
-    'Products',
-    html`
-      <form method="post" action="/publish">
+  const body = html`
+      <form method="post" action="/publish" hx-post="/publish" hx-target="#page" hx-swap="innerHTML">
         <div class="toolbar" style="margin-bottom:1.75rem;">
           <div>
             <h1>Products</h1>
@@ -445,8 +459,9 @@ export function renderProducts(options: {
         </div>
         <div class="rows">${rows}</div>
       </form>
-    `,
-  );
+    `;
+
+  return options.fragment ? body : layout('Products', body);
 }
 
 /** Inside a product: environments as tabs, each flagged when it holds unpublished changes. */
@@ -468,13 +483,16 @@ export function renderProduct(options: {
   notice?: string;
   error?: string;
   offer?: PromoteOffer;
+  fragment?: boolean;
 }): SafeHtml {
   const activeEnv = options.environments.find((env) => env.name === options.active);
   const productPending = options.environments.reduce((n, env) => n + env.pending.length, 0);
 
   const tabs = options.environments.map(
     (env) => html`<a class="tab ${env.name === options.active ? 'on' : ''}"
-                     href="/p/${options.service}?env=${env.name}">${env.name}${
+                     href="/p/${options.service}?env=${env.name}"
+                     hx-get="/p/${options.service}?env=${env.name}" hx-target="#page"
+                     hx-swap="innerHTML" hx-push-url="true">${env.name}${
                        env.pending.length > 0
                          ? html` <span class="dot" title="unpublished changes"></span>`
                          : html``
@@ -483,12 +501,14 @@ export function renderProduct(options: {
 
   const fields = options.rows.map((row) => renderField(row));
 
-  return layout(
-    options.service,
-    html`
+  const body = html`
+
+
       <div class="toolbar" style="margin-bottom:1.25rem;">
         <div>
-          <div style="font-size:.8125rem;margin-bottom:.35rem;"><a href="/">All products</a></div>
+          <div style="font-size:.8125rem;margin-bottom:.35rem;">
+            <a href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">All products</a>
+          </div>
           <h1>${options.service}</h1>
         </div>
         <form method="post" action="/publish" style="display:flex;gap:8px;align-items:flex-start;">
@@ -525,12 +545,13 @@ export function renderProduct(options: {
         </form>
       </div>
 
-      <form method="post" action="/p/${options.service}/${options.active}">
+      <form method="post" action="/p/${options.service}/${options.active}"
+            hx-post="/p/${options.service}/${options.active}" hx-target="#page" hx-swap="innerHTML">
         <div class="card" style="padding:.5rem 1.25rem 1rem;">${fields}</div>
         <button type="submit">Save as draft</button>
       </form>
-    `,
-  );
+    `;
+  return options.fragment ? body : layout(options.service, body);
 }
 
 /**
@@ -576,7 +597,8 @@ function promoteOffer(options: {
       is published in ${offer.nextEnvironment}.
     </p>
     <div style="display:flex;flex-direction:column;gap:7px;margin-bottom:1rem;">${rows}${blocked}</div>
-    <form method="post" action="/promote" style="display:flex;align-items:center;gap:12px;">
+    <form method="post" action="/promote" hx-post="/promote" hx-target="#page" hx-swap="innerHTML"
+          style="display:flex;align-items:center;gap:12px;">
       <input type="hidden" name="service" value="${options.service}">
       <input type="hidden" name="from" value="${options.active}">
       <input type="hidden" name="to" value="${offer.nextEnvironment}">
