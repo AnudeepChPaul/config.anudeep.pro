@@ -56,8 +56,14 @@ export interface Draft {
   readonly saves: readonly DraftSave[];
   readonly actor: string;
   readonly updatedAt: number;
-  /** The committed file text this draft was built from, for detecting a change underneath it. */
-  readonly basedOn?: string;
+  /**
+   * The committed file text this draft was built from, for detecting a change underneath it.
+   *
+   * `null` means there was no file: the draft creates the namespace. That is different from
+   * absent, which only means an older build wrote this draft and recorded nothing — and it is
+   * the difference between "the file appearing underneath me is a conflict" and "I cannot tell".
+   */
+  readonly basedOn?: string | null;
 }
 
 export class DraftError extends Error {}
@@ -90,6 +96,11 @@ const withSaves = (draft: Draft): Draft =>
             keys: draft.changes.map((change) => change.key),
             actor: draft.actor,
             at: draft.updatedAt,
+            // The document this save stood at IS the draft as it was written, so a later drop
+            // replays it from here rather than from whatever the draft becomes. Without it, the
+            // replay fell back to the final document — which holds exactly the values a drop is
+            // removing, so the drop restored them.
+            document: draft.document,
           },
         ],
       };

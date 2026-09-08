@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
 import { DraftStore } from '@config/src/store/draft-store.js';
@@ -338,11 +338,132 @@ withSops('staging and scoped publishing', () => {
       expect(draft?.document).toContain('ENC[AES256_GCM');
     });
 
+    it('refuses a save index that is not a number', async () => {
+      // NaN passed `index < 0 || index >= length` and `filter((_, at) => at !== NaN)` kept every
+      // save, so the draft was rebuilt identically, its version bumped, and the console said
+      // "Draft dropped."
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+
+      expect((await service.dropSave('iam/dev', Number.NaN, ACTOR)).ok).toBe(false);
+      expect((await drafts.get('iam/dev'))?.saves).toHaveLength(1);
+    });
+
+    it('does not restore what it dropped when the draft predates snapshots', async () => {
+      // A draft written by the old build, read back through the migration: its save carries the
+      // document it stood at, so dropping a LATER save replays it from there rather than from
+      // the final draft — which holds exactly the values being dropped.
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      const legacy = await drafts.get('iam/dev');
+      await writeFile(
+        `${repo.dir}/.drafts.json`,
+        JSON.stringify({
+          drafts: [
+            {
+              namespace: 'iam/dev',
+              document: legacy?.document,
+              changes: legacy?.changes,
+              actor: ACTOR.email,
+              updatedAt: 1,
+            },
+          ],
+        }),
+        'utf8',
+      );
+
+      await stage('iam', 'dev', { SESSION_TTL: 1800 });
+      await service.dropSave('iam/dev', 1, ACTOR);
+
+      const draft = await drafts.get('iam/dev');
+      const document = await new ConfigLoader(new SopsDecryptor(key.secret)).resolveOne(
+        'iam/dev',
+        draft?.document ?? '',
+      );
+
+      expect(document.SESSION_TTL).toBeUndefined();
+      expect(document.MFA_ENFORCEMENT).toBe('all');
+    });
+
+    it('refuses rather than guessing when a save carries no snapshot at all', async () => {
+      // Only a hand-edited drafts.json can produce this now. Replaying it would revert its keys
+      // further than the drop asked, which is a wrong answer offered as a right one.
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+      const draft = await drafts.get('iam/dev');
+      await drafts.put({
+        ...(draft as NonNullable<typeof draft>),
+        saves: [{ keys: ['MFA_ENFORCEMENT'], actor: ACTOR.email, at: 1 }, ...(draft?.saves ?? [])],
+      });
+
+      const result = await service.dropSave('iam/dev', 1, ACTOR);
+
+      expect(result.ok).toBe(false);
+      expect(result.ok ? '' : result.error.detail).toMatch(/snapshot/i);
+    });
+
     it('refuses a save index that is not there', async () => {
       await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
 
       expect((await service.dropSave('iam/dev', 7, ACTOR)).ok).toBe(false);
       expect((await service.dropSave('iam/nope', 0, ACTOR)).ok).toBe(false);
+    });
+  });
+
+  describe('a draft that created a namespace', () => {
+    // basedOn was only recorded when the file already existed, and the conflict check skips a
+    // draft that has none — so a draft creating a namespace overwrote whatever another host
+    // committed meanwhile, and wrote its own version over theirs.
+    it('records that there was no file to base it on', async () => {
+      await stage('api', 'dev', { RATE_LIMIT: 10 });
+
+      expect((await drafts.get('api/dev'))?.basedOn).toBeNull();
+    });
+
+    it('refuses to publish once that file exists', async () => {
+      await stage('api', 'dev', { RATE_LIMIT: 10 });
+      // Another host commits the file this draft believed did not exist.
+      await repo.commit({ 'config/api/dev.yaml': 'version: 41\nRATE_LIMIT: 99\n' });
+
+      const result = await service.publish(['api/dev'], ACTOR, REQUEST);
+
+      expect(result.ok).toBe(false);
+      expect(result.ok ? '' : result.error.code).toBe('conflict');
+    });
+
+    it('publishes normally when the file still does not exist', async () => {
+      await stage('api', 'dev', { RATE_LIMIT: 10 });
+
+      expect((await service.publish(['api/dev'], ACTOR, REQUEST)).ok).toBe(true);
+    });
+  });
+
+  describe('the version never goes backwards', () => {
+    it('refuses to lower it even when a draft carries a stale number', async () => {
+      // Reachable by restoring drafts.json from a backup: the draft's base still matches the
+      // file, so nothing is in conflict, but its document carries a number from before. A
+      // counter that goes backwards tells a consumer it is up to date when it is not.
+      await repo.commit({ 'config/iam/dev.yaml': 'version: 41\nMFA_ENFORCEMENT: optional\n' });
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+
+      const draft = await drafts.get('iam/dev');
+      const stale = await new SopsEncryptor(repo.dir).encrypt(
+        'iam/dev',
+        'version: 2\nMFA_ENFORCEMENT: all\n',
+      );
+      await drafts.put({ ...(draft as NonNullable<typeof draft>), document: stale });
+
+      await service.publish(['iam/dev'], ACTOR, REQUEST);
+
+      expect(versionOf((await served('iam/dev')) ?? {})).toBe(42);
+    });
+
+    it('publishes above whatever the committed file carries', async () => {
+      // A draft numbered 1 published over a file at 41 regressed the counter, and the counter
+      // exists so a consumer can tell whether it has the latest.
+      await repo.commit({ 'config/iam/dev.yaml': 'version: 41\nMFA_ENFORCEMENT: optional\n' });
+      await stage('iam', 'dev', { MFA_ENFORCEMENT: 'all' });
+
+      await service.publish(['iam/dev'], ACTOR, REQUEST);
+
+      expect(versionOf((await served('iam/dev')) ?? {})).toBeGreaterThan(41);
     });
   });
 

@@ -260,12 +260,11 @@ export class ConfigWriteService {
 
       // A revision of the document, so the counter moves here and nowhere else. Publishing
       // writes down what a draft already decided; counting that as a second revision would make
-      // the number mean nothing in particular. It is numbered from what is COMMITTED rather
-      // than from the draft in hand, so a namespace edited five times before publishing arrives
-      // at the next number rather than five past it.
-      // From the draft in hand, not from the committed file: five edits before a publish are
-      // five revisions of the document, and numbering from what is committed would collapse
-      // them into one.
+      // the number mean nothing in particular.
+      //
+      // Numbered from the draft in hand, not from the committed file: five edits before a
+      // publish are five revisions of the document, and numbering from what is committed would
+      // collapse them into one.
       next[VERSION_KEY] = bumpedVersion(base);
 
       const plaintext = stringifyYaml(sortKeys(next));
@@ -315,9 +314,12 @@ export class ConfigWriteService {
         updatedAt: Date.now(),
         // What the namespace looked like when this draft was built, so publishing can tell
         // whether the file moved underneath it.
-        ...(sources.sources.has(namespace)
-          ? { basedOn: existing?.basedOn ?? sources.sources.get(namespace) }
-          : {}),
+        // null when there is no file: this draft creates the namespace. Recorded rather than
+        // omitted, so publish can tell "there was nothing to base this on" apart from "an older
+        // build did not say".
+        basedOn: sources.sources.has(namespace)
+          ? (existing?.basedOn ?? sources.sources.get(namespace) ?? null)
+          : null,
       };
       await drafts.put(draft);
       return ok(draft);
@@ -372,10 +374,17 @@ export class ConfigWriteService {
         }
 
         const current = sources.sources.get(selection.namespace);
-        if (current !== undefined && draft.basedOn !== undefined && draft.basedOn !== current) {
+        // Two ways the file can have moved underneath a draft: it changed, or it appeared. The
+        // second was invisible while an absent base meant "not recorded" — so a draft that
+        // created a namespace overwrote whatever another host had committed meanwhile.
+        const changed = draft.basedOn != null && current !== undefined && draft.basedOn !== current;
+        const appeared = draft.basedOn === null && current !== undefined;
+        if (changed || appeared) {
           return err({
             code: 'conflict',
-            detail: `${selection.namespace} changed since this edit was made`,
+            detail: appeared
+              ? `${selection.namespace} was created elsewhere since this edit was made`
+              : `${selection.namespace} changed since this edit was made`,
             currentCommit: sources.commit,
           });
         }
@@ -398,9 +407,11 @@ export class ConfigWriteService {
           keyChanges.push({ key, oldValue: committed[key], newValue: stagedConfig[key] });
         }
 
-        // Carried from the draft, not recomputed: this commit IS that revision of the document,
-        // and rebuilding a subset must not leave the file numbered as if it had never moved.
-        next[VERSION_KEY] = versionOf(stagedConfig);
+        // Carried from the draft, not recomputed: this commit IS that revision of the document.
+        // Clamped above what is committed, because a draft built before the file existed carries
+        // a number that owes nothing to it — and a counter that goes backwards tells a consumer
+        // it is up to date when it is not.
+        next[VERSION_KEY] = Math.max(versionOf(stagedConfig), versionOf(committed) + 1);
 
         const validation = schemas.validate(service, next);
         if (!validation.ok) {
@@ -482,11 +493,24 @@ export class ConfigWriteService {
       const draft = await drafts.get(namespace);
       if (!draft)
         return err({ code: 'nothing_staged', detail: `nothing is staged for ${namespace}` });
-      if (index < 0 || index >= draft.saves.length) {
+      // Number.isInteger rather than a range check alone: NaN passes `< 0` and `>= length`, and
+      // `filter((_, at) => at !== NaN)` then keeps every save — so the draft was rebuilt
+      // identically, its version bumped, and the console reported a drop that never happened.
+      if (!Number.isInteger(index) || index < 0 || index >= draft.saves.length) {
         return err({ code: 'nothing_staged', detail: `${namespace} has no draft ${index + 1}` });
       }
 
       const remaining = draft.saves.filter((_, at) => at !== index);
+      // Every remaining save has to be replayable from its own state. Falling back to the draft
+      // document restored the values being dropped; falling back to the committed one reverts
+      // further than asked. Both are wrong answers offered as right ones, so this refuses.
+      const unreplayable = remaining.filter((save) => !save.document);
+      if (unreplayable.length > 0) {
+        return err({
+          code: 'failed',
+          detail: `${namespace} holds a draft with no snapshot to replay; drop the whole draft instead`,
+        });
+      }
       if (remaining.length === 0) {
         // A draft with no saves in it is not a draft: it would sit on the environment as a
         // pending marker with nothing behind it.
@@ -505,7 +529,9 @@ export class ConfigWriteService {
       for (const save of remaining) {
         // Each save's own snapshot, so a replayed key carries the value it had at that save and
         // not the value the draft ended up with.
-        const at = await this.options.loader.resolveOne(namespace, save.document ?? draft.document);
+        // Its own snapshot. There is no fallback to the draft document: that holds the values
+        // being dropped, so falling back to it restored them.
+        const at = await this.options.loader.resolveOne(namespace, save.document ?? '');
         for (const key of save.keys) {
           if (key in at) next[key] = at[key];
           else delete next[key];

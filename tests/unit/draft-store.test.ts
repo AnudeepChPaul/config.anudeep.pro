@@ -200,6 +200,30 @@ describe('the saves inside a draft', () => {
     expect(back?.saves[1]?.actor).toBe('me@anudeep.pro');
   });
 
+  it('gives the migrated save the document it stood at, so a drop can replay it', async () => {
+    // Without a document, dropping a later save replayed this one from the FINAL draft — which
+    // holds exactly the values being dropped, so the drop restored them.
+    await writeFile(
+      path,
+      JSON.stringify({
+        drafts: [
+          {
+            namespace: 'iam/dev',
+            document: 'A: 1\n',
+            changes: [{ key: 'A', from: 0, to: 1, secret: false }],
+            actor: 'me@anudeep.pro',
+            updatedAt: 1,
+          },
+        ],
+      }),
+      'utf8',
+    );
+
+    const back = await new DraftStore(path).get('iam/dev');
+
+    expect(back?.saves[0]?.document).toBe('A: 1\n');
+  });
+
   it('reads a draft written before saves existed as a single save', async () => {
     // Every draft on disk today. Treating it as zero would say "Publish 0 drafts" over a draft
     // that plainly holds changes.
