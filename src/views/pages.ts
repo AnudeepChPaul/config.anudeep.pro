@@ -71,6 +71,9 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
     --type-title: 1.15rem;    /* the page title */
   }
 
+  /* The gutter stays whether or not the page needs a scrollbar. Filtering the list shortens it,
+     the scrollbar goes, and without this everything slides sideways by its width. */
+  html { scrollbar-gutter: stable; }
   body { font: var(--type-base)/1.5 system-ui, -apple-system, sans-serif; margin: 0;
          background: var(--ground); color: var(--ink); }
   main { max-width: 54rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
@@ -82,14 +85,24 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
   /* ---------------------------------------------------------------- the page header
      Fixed row heights, rendered whether or not they hold anything, so the title sits at the
      same place on every page and navigating does not move it. */
+  /* Every row is a fixed HEIGHT, not a minimum, and each states the line-height its content
+     will use. A floor one pixel under the line box is not a floor: the row grew on the page
+     that had a breadcrumb and stayed short on the one that did not, so the title moved as you
+     navigated between them. */
   .pagehead { margin-bottom: 1.25rem; }
-  .pagehead .searchrow { display: flex; justify-content: flex-end; min-height: var(--control-h);
-                         margin-bottom: .5rem; }
-  .pagehead .crumb { min-height: 1.15rem; font-size: var(--type-sm); color: var(--muted); }
+  .pagehead .searchrow { display: flex; justify-content: flex-end; align-items: center;
+                         height: var(--control-h); margin-bottom: .6rem; }
+  .pagehead .crumb { height: 1.25rem; line-height: 1.25rem; font-size: var(--type-sm);
+                     color: var(--muted); display: flex; align-items: center; gap: 6px;
+                     white-space: nowrap; overflow: hidden; }
+  .pagehead .crumb-sep { color: var(--line); }
   .pagehead .titlerow { display: flex; align-items: center; justify-content: space-between;
-                        gap: 1rem; min-height: var(--control-h); }
-  .pagehead h1 { font-size: var(--type-title); font-weight: 600; margin: 0; letter-spacing: -.01em; }
-  .pagehead .facts { min-height: 1.25rem; font-size: var(--type-sm); color: var(--muted); }
+                        gap: 1rem; height: 2.25rem; }
+  .pagehead h1 { font-size: var(--type-title); line-height: 2.25rem; font-weight: 600; margin: 0;
+                 letter-spacing: -.01em; }
+  .pagehead .facts { height: 1.25rem; line-height: 1.25rem; font-size: var(--type-sm);
+                     color: var(--muted); white-space: nowrap; overflow: hidden;
+                     text-overflow: ellipsis; }
   .pagehead .actions-right { display: flex; align-items: center; gap: 10px; }
 
   /* ---------------------------------------------------------------- surfaces */
@@ -675,9 +688,16 @@ function pageHeader(options: {
   </div>`;
 }
 
-/** The link back to the product list, which every page but that one carries. */
-const allProducts = html`<a href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML"
-    hx-push-url="true">All products</a>`;
+/**
+ * The trail, read left to right: where you came from, then where you are.
+ *
+ * A lone link above the title says how to leave but not where you are, and stacks what should be
+ * one line. The last item is the current page and is not a link — there is nowhere for it to go.
+ */
+function breadcrumb(here: string): SafeHtml {
+  return html`<a href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML"
+      hx-push-url="true">All products</a><span class="crumb-sep">›</span><span>${here}</span>`;
+}
 
 /**
  * The search box.
@@ -686,11 +706,10 @@ const allProducts = html`<a href="/" hx-get="/" hx-target="#page" hx-swap="inner
  * result can be linked to. `hx-get` makes it a swap when the script is there.
  */
 function searchBox(options: { action: string; query: string; placeholder: string }): SafeHtml {
-  return html`<form method="get" action="${options.action}" hx-get="${options.action}"
-        hx-target="#page" hx-swap="innerHTML" hx-push-url="true"
-        style="display:flex;gap:8px;align-items:center;margin:0 0 1.25rem;">
+  return html`<form class="search" method="get" action="${options.action}"
+        hx-get="${options.action}" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">
     <input type="search" name="q" value="${options.query}" placeholder="${options.placeholder}"
-           style="max-width:22rem;" aria-label="${options.placeholder}">
+           aria-label="${options.placeholder}">
     ${writeAction({ resting: html`Search`, running: 'Searching…' })}
     ${
       options.query
@@ -756,7 +775,7 @@ export function renderDrafts(options: {
 
   const body = html`
       ${pageHeader({
-        breadcrumb: allProducts,
+        breadcrumb: breadcrumb('Unpublished drafts'),
         title: html`Unpublished drafts`,
         facts: html`${options.drafts.length} namespace${
           options.drafts.length === 1 ? '' : 's'
@@ -971,7 +990,7 @@ export function renderProduct(options: {
 
 
       ${pageHeader({
-        breadcrumb: allProducts,
+        breadcrumb: breadcrumb(options.service),
         title: html`${options.service}`,
         search: searchBox({
           action: `/p/${options.service}`,

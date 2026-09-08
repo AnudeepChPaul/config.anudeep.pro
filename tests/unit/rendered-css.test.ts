@@ -398,3 +398,44 @@ describe('nothing styles itself inline', () => {
     }
   });
 });
+
+/**
+ * The header holds its place, and the page does not jump.
+ *
+ * Three reported faults, each with a mechanism: a reserved row shorter than the line box it has
+ * to hold grows when it gets content; a margin inside a reserved row overflows it; and a page
+ * whose scrollbar comes and goes moves sideways by the width of it.
+ */
+describe('nothing moves when you navigate', () => {
+  const css = () => productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '';
+
+  it('fixes each header row to a height, rather than a floor it can exceed', () => {
+    // min-height 1.15rem against a 1.5 line box is 1px short: the row was taller on the page
+    // that had a breadcrumb than on the one that did not, so the title moved.
+    const sheet = css();
+
+    for (const row of ['crumb', 'titlerow', 'facts', 'searchrow']) {
+      expect(sheet, `${row} is fixed, not floored`).toMatch(
+        new RegExp(`\\.${row} \\{[^}]*\\bheight:`),
+      );
+    }
+  });
+
+  it('gives every reserved row a line-height, so its content cannot outgrow it', () => {
+    const sheet = css();
+
+    expect(sheet).toMatch(/\.crumb \{[^}]*line-height:/);
+    expect(sheet).toMatch(/\.facts \{[^}]*line-height:/);
+  });
+
+  it('keeps the scrollbar gutter, so filtering does not slide the page sideways', () => {
+    // Search shortens the list, the scrollbar goes, and everything shifts by its width.
+    expect(css()).toMatch(/scrollbar-gutter:\s*stable/);
+  });
+
+  it('puts no margin inside the search row it has to fit in', () => {
+    const markup = productPage([]).replace(/<style>[\s\S]*?<\/style>/, '');
+
+    expect(markup.match(/style="[^"]*margin/g) ?? []).toEqual([]);
+  });
+});

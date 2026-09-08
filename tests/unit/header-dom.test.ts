@@ -89,6 +89,33 @@ describe('every page has the same header', () => {
     }
   });
 
+  it('reads as one horizontal trail, not a stack', () => {
+    // "All products › iam", in one row, rather than a lone link sitting above the title.
+    document.body.innerHTML = pages().product;
+    const crumb = document.querySelector('.pagehead .crumb') as HTMLElement;
+
+    // One row, three parts in order: the link back, the separator, where you are. The spacing
+    // between them is the row's gap, not text, so this asserts the parts rather than the string.
+    expect([...crumb.children].map((child) => child.textContent)).toEqual([
+      'All products',
+      '›',
+      'iam',
+    ]);
+    expect(crumb.querySelector('a')?.getAttribute('href')).toBe('/');
+    expect(crumb.querySelector(':scope > span:last-child')?.tagName).toBe('SPAN');
+  });
+
+  it('names where you are on the drafts page too', () => {
+    document.body.innerHTML = pages().drafts;
+    const crumb = document.querySelector('.pagehead .crumb') as HTMLElement;
+
+    expect([...crumb.children].map((child) => child.textContent)).toEqual([
+      'All products',
+      '›',
+      'Unpublished drafts',
+    ]);
+  });
+
   it('right-aligns page actions on the title row, not below it', () => {
     const busy = String(
       renderProduct({
