@@ -98,6 +98,59 @@ keys:
       ACTOR,
     );
 
+  /**
+   * Retiring a product touches only its schema.
+   *
+   * Nothing about the values changes, so the namespace document must be left exactly as it was.
+   * Rewriting it would bump the revision counter for a change nobody made, and that counter is
+   * what a consumer uses to decide whether it is up to date — a false bump says "there is
+   * something new here" about a file that is byte-identical.
+   */
+  describe('marking a product retiring', () => {
+    const retire = (retiring: boolean) =>
+      service.stageSchemaFlag({ service: 'iam', retiring }, ACTOR);
+
+    it('stages a draft rather than writing the schema', async () => {
+      const before = await git.readFile('schema/iam.yaml');
+
+      expect((await retire(true)).ok).toBe(true);
+      expect(await git.readFile('schema/iam.yaml')).toBe(before);
+      expect((await drafts.all()).length).toBe(1);
+    });
+
+    it('carries the schema with the flag set', async () => {
+      await retire(true);
+      const draft = (await drafts.all())[0];
+
+      expect(String(draft?.files?.['schema/iam.yaml'])).toMatch(/retiring: true/);
+    });
+
+    it('publishes it without touching the values or their revision', async () => {
+      const before = await git.readFile('config/iam/prod.yaml');
+      await retire(true);
+      await service.publish(['iam/prod'], ACTOR, REQUEST);
+
+      expect(await git.readFile('schema/iam.yaml')).toMatch(/retiring: true/);
+      // Byte-identical: the revision counter did not move for a change nobody made.
+      expect(await git.readFile('config/iam/prod.yaml')).toBe(before);
+    });
+
+    it('takes the flag off again, which is how a retirement is cancelled', async () => {
+      await retire(true);
+      await service.publish(['iam/prod'], ACTOR, REQUEST);
+      await retire(false);
+      await service.publish(['iam/prod'], ACTOR, REQUEST);
+
+      expect(await git.readFile('schema/iam.yaml')).not.toMatch(/retiring: true/);
+    });
+
+    it('refuses a product with no schema to mark', async () => {
+      expect(
+        (await service.stageSchemaFlag({ service: 'nothing', retiring: true }, ACTOR)).ok,
+      ).toBe(false);
+    });
+  });
+
   it('stages one draft, not one per file', async () => {
     const staged = await addAudit();
 

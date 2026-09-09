@@ -253,6 +253,79 @@ export class ConfigWriteService {
    * duplicate uid makes ServiceRegistry throw at load, which takes the whole console down rather
    * than failing the request that caused it.
    */
+  /**
+   * Marks a product as retiring, or takes the mark off again.
+   *
+   * Touches the schema and nothing else. The values do not change, so the namespace document is
+   * left exactly as it is: rewriting it would bump the revision counter for a change nobody
+   * made, and that counter is what a consumer uses to decide whether it is up to date. A false
+   * bump says "there is something new here" about a file that is byte-identical.
+   *
+   * Staged like every other change, so it is reviewable, droppable, and published as a commit
+   * with the usual trailers.
+   */
+  async stageSchemaFlag(
+    request: { service: string; retiring: boolean },
+    actor: Actor,
+  ): Promise<Result<Draft, SaveError>> {
+    const drafts = this.options.drafts;
+    if (!drafts) return err({ code: 'failed', detail: 'staging is not enabled' });
+
+    return this.lock.withLock(async () => {
+      const path = `schema/${request.service}.yaml`;
+      let source: string;
+      try {
+        source = await this.options.repository.readFile(path);
+      } catch {
+        return err({ code: 'failed', detail: `${request.service} has no schema to mark` });
+      }
+
+      const parsed = (parseYaml(source) ?? {}) as Record<string, unknown>;
+      // Written when true and REMOVED when false, rather than left as `retiring: false`. A file
+      // that says false and a file that says nothing mean the same thing, and keeping the key
+      // would leave every cancelled retirement visible forever in the schema.
+      const next: Record<string, unknown> = { ...parsed };
+      if (request.retiring) next.retiring = true;
+      else delete next.retiring;
+
+      const sources = await this.options.repository.readSources();
+      const namespace = [...sources.sources.keys()]
+        .filter((entry) => entry.startsWith(`${request.service}/`))
+        .sort()[0];
+      if (!namespace) {
+        return err({
+          code: 'failed',
+          detail: `${request.service} has no environment to stage against`,
+        });
+      }
+
+      const existing = await drafts.get(namespace);
+      const document = existing?.document ?? (sources.sources.get(namespace) as string);
+      const save = {
+        keys: [request.retiring ? 'retiring' : 'retirement cancelled'],
+        actor: actor.email,
+        at: Date.now(),
+        document,
+      };
+
+      const draft: Draft = {
+        namespace,
+        document,
+        // No key moved. This is what tells publish to write the files and leave the document
+        // alone.
+        changes: existing?.changes ?? [],
+        saves: [...(existing?.saves ?? []), save],
+        actor: actor.email,
+        updatedAt: Date.now(),
+        basedOn: sources.sources.get(namespace) ?? null,
+        files: { ...(existing?.files ?? {}), [path]: stringifyYaml(next) },
+      };
+
+      await drafts.put(draft);
+      return ok(draft);
+    });
+  }
+
   async stageProduct(request: ProductRequest, actor: Actor): Promise<Result<Draft, SaveError>> {
     const drafts = this.options.drafts;
     if (!drafts) return err({ code: 'failed', detail: 'staging is not enabled' });
@@ -514,6 +587,16 @@ export class ConfigWriteService {
         }
 
         const chosen = draft.changes.map((change) => change.key);
+
+        // A draft that moved no key is not about the values: it carries files — a schema flag,
+        // a registry entry — and rewriting the namespace document would bump its revision for a
+        // change nobody made. That counter is how a consumer decides whether it is up to date.
+        if (chosen.length === 0 && draft.files && Object.keys(draft.files).length > 0) {
+          Object.assign(files, draft.files);
+          summaryLines.push(...draft.saves.map((save) => draftLine(selection.namespace, save)));
+          drafted += draft.saves.length;
+          continue;
+        }
 
         // The draft holds the whole document with secrets already encrypted, so it is decrypted
         // in memory to read the values this commit is about to carry.
