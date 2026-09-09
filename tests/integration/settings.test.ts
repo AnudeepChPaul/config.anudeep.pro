@@ -604,7 +604,7 @@ withSops('adding a product', () => {
 
   // If the products screen must not publish it, this page has to — otherwise a marked product
   // can never reach its consumers at all.
-  it('offers to publish a staged retirement from the retiring page', async () => {
+  it('offers one action on a staged retirement, which publishes it', async () => {
     const { app, headers } = await build({});
 
     await app.inject({
@@ -615,7 +615,13 @@ withSops('adding a product', () => {
     });
     const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
 
-    expect(page.body).toMatch(/Publish/);
+    // One action on the row; the publish is behind it, with a line saying what it does.
+    expect(page.body).toMatch(/Act on it/);
+    expect(page.body).toMatch(/Retire/);
+    // The line names the two acts, so the choice needs no interpreting. Stop is not named:
+    // it changes nothing, so there is nothing to explain about it.
+    expect(page.body).toMatch(/Retire to publish, Revert to undo/);
+    expect(page.body).toMatch(/Revert/);
     expect(page.body).toContain('iam/retiring');
     await app.close();
   });
@@ -635,14 +641,14 @@ withSops('adding a product', () => {
     await app.close();
   });
 
-  it('lists them at /p/retiring, with both ways out', async () => {
+  it('lists them at /p/retiring, with what can be done to each', async () => {
     const { app, headers } = await build({ retiring: ['iam'] });
 
     const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
 
     expect(page.statusCode).toBe(200);
     expect(page.body).toContain('iam');
-    expect(page.body).toMatch(/Bring back/);
+    // Published: archiving is what is left to do to it.
     expect(page.body).toMatch(/Archive the Product/);
     await app.close();
   });

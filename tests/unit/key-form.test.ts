@@ -308,52 +308,79 @@ describe('the secret checkbox', () => {
 });
 
 /**
- * Bringing a product back.
+ * Acting on a staged retirement.
  *
- * Asked in the row, like archiving and like discarding a form: the question is about this
- * product and belongs beside it, not in a browser dialog that answers from somewhere else.
- *
- * It is the gentler of the two acts on this page — nothing stops being served either way — so
- * the question exists to stop a misclick undoing a decision somebody made deliberately, not to
- * warn about damage.
+ * One action on the row rather than several: a staged retirement has exactly one thing worth
+ * doing to it, and the question of whether to do it belongs beside the product, not in a browser
+ * dialog answering from somewhere else.
  */
-describe('bringing a product back', () => {
-  const retiringMarkup = String(
+describe('acting on a retirement', () => {
+  const staged = String(
     renderRetiring({
-      products: [{ service: 'iam', name: 'iam (1002)', published: true }],
+      products: [{ service: 'iam', name: 'iam (1002)', published: false }],
       fragment: true,
     }),
   );
 
-  const load = () => {
-    document.body.innerHTML = retiringMarkup;
+  const load = (markup: string) => {
+    document.body.innerHTML = markup;
     new Function(source)();
   };
 
   const row = () => document.querySelector('[data-retiring-row]') as HTMLElement;
-  const start = () => row().querySelector('[data-bring-back]') as HTMLElement;
-  const ask = () => row().querySelector('[data-bring-back-confirm]') as HTMLElement;
+  const act = () => row().querySelector('[data-act]') as HTMLElement;
+  const ask = () => row().querySelector('[data-act-confirm]') as HTMLElement;
 
-  beforeEach(load);
+  beforeEach(() => load(staged));
 
-  it('asks in the row rather than acting at once', () => {
-    expect(ask().hidden).toBe(true);
-
-    start().click();
-
-    expect(ask().hidden).toBe(false);
-    expect(ask().textContent).toMatch(/retiring/i);
+  it('offers one action, not a publish sitting in the open', () => {
+    expect(act()).toBeTruthy();
+    expect(act().textContent).toMatch(/Act on it/);
+    expect(row().textContent).not.toMatch(/Publish this retirement/);
   });
 
-  it('puts the question back when it is declined', () => {
-    start().click();
-    (row().querySelector('[data-bring-back-keep]') as HTMLElement).click();
+  it('shows Retire, Revert and Stop once it is clicked', () => {
+    expect(ask().hidden).toBe(true);
+
+    act().click();
+
+    expect(ask().hidden).toBe(false);
+    expect(ask().textContent).toMatch(/Retire/);
+    expect(ask().textContent).toMatch(/Revert/);
+    expect(ask().textContent).toMatch(/Stop/);
+  });
+
+  // Three buttons, three different things: one publishes, one undoes, one closes.
+  it('sends Revert to the route that unmarks it', () => {
+    act().click();
+    const revert = [...ask().querySelectorAll('button')].find((button) =>
+      /Revert/.test(button.textContent ?? ''),
+    );
+
+    expect(revert?.getAttribute('hx-post')).toBe('/p/iam/retire');
+    expect(revert?.getAttribute('hx-vals')).toContain('false');
+  });
+
+  it('closes again on Stop, changing nothing', () => {
+    act().click();
+    (row().querySelector('[data-act-stop]') as HTMLElement).click();
 
     expect(ask().hidden).toBe(true);
-    expect(start().hidden).toBe(false);
+    expect(act().hidden).toBe(false);
+  });
+
+  // Retire is the act: it publishes the staged retirement, which is what tells consumers.
+  it('publishes the retirement when Retire is chosen', () => {
+    act().click();
+    const retire = ask().querySelector('button');
+
+    expect(retire?.getAttribute('hx-post')).toBe('/publish');
+    expect(ask().querySelector('input[name="namespace"]')?.getAttribute('value')).toBe(
+      'iam/retiring',
+    );
   });
 
   it('raises no browser dialog', () => {
-    expect(start().getAttribute('hx-confirm')).toBeNull();
+    expect(act().getAttribute('hx-confirm')).toBeNull();
   });
 });

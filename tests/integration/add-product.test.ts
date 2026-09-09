@@ -176,6 +176,31 @@ keys:
       expect(await git.readFile('schema/iam.yaml')).not.toMatch(/retiring: true/);
     });
 
+    // Reverting a retirement nobody published has nothing to undo: the mark never left this
+    // console. Staging "not retiring" on top of it would leave a draft that changes nothing and
+    // still has to be published to make the change nobody made go away.
+    it('drops the draft when a staged retirement is reverted', async () => {
+      await retire(true);
+      expect((await drafts.all()).length).toBe(1);
+
+      const reverted = await retire(false);
+
+      expect(reverted.ok).toBe(true);
+      expect(await drafts.all()).toEqual([]);
+    });
+
+    it('stages the undo when a published retirement is reverted', async () => {
+      await retire(true);
+      await service.publish(['iam/retiring'], ACTOR, REQUEST);
+
+      await retire(false);
+
+      // Published, so there IS something to undo, and it goes through the usual path.
+      const staged = await drafts.all();
+      expect(staged.length).toBe(1);
+      expect(String(staged[0]?.files?.['schema/iam.yaml'])).not.toMatch(/retiring: true/);
+    });
+
     it('refuses a product with no schema to mark', async () => {
       expect(
         (await service.stageSchemaFlag({ service: 'nothing', retiring: true }, ACTOR)).ok,

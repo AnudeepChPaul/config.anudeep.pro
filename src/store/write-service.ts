@@ -418,6 +418,27 @@ export class ConfigWriteService {
         });
       }
 
+      /**
+       * Reverting a retirement nobody published has nothing to undo.
+       *
+       * The mark never left this console, so the honest answer is to drop the draft. Staging
+       * "not retiring" on top of it would leave a draft that changes nothing against the
+       * committed schema and still has to be published to make a change nobody made go away.
+       */
+      const committedSchema = stringifyYaml(parseYaml(source) ?? {});
+      if (stringifyYaml(next) === committedSchema) {
+        await drafts.remove([namespace]);
+        return ok({
+          namespace,
+          document: '',
+          changes: [],
+          saves: [],
+          actor: actor.email,
+          updatedAt: Date.now(),
+          basedOn: null,
+          files: {},
+        } as Draft);
+      }
       const existing = await drafts.get(namespace);
       // Never written: this draft changes no values. A draft has to carry a document, and the
       // emptiest honest one is what the service already serves.

@@ -113,14 +113,14 @@
     (event) => {
       const target = event.target;
       if (!target || !target.closest) return;
-      const bringingBack = target.closest('[data-bring-back]');
-      if (bringingBack) {
+      const acting = target.closest('[data-act]');
+      if (acting) {
         event.preventDefault();
         event.stopPropagation();
-        const row = bringingBack.closest('[data-retiring-row]');
-        const ask = row && row.querySelector('[data-bring-back-confirm]');
+        const row = acting.closest('[data-retiring-row]');
+        const ask = row && row.querySelector('[data-act-confirm]');
         if (ask) ask.hidden = false;
-        bringingBack.hidden = true;
+        acting.hidden = true;
         return;
       }
 
@@ -160,11 +160,11 @@
     // question is about this product, and a browser dialog answers from somewhere that looks
     // nothing like the page. Unlike discard, there is nothing to lose by asking every time —
     // archiving commits immediately, so it is always worth a second look.
-    const bringBackKeep = target.closest('[data-bring-back-keep]');
-    if (bringBackKeep) {
-      const row = bringBackKeep.closest('[data-retiring-row]');
-      const ask = row && row.querySelector('[data-bring-back-confirm]');
-      const start = row && row.querySelector('[data-bring-back]');
+    const actStop = target.closest('[data-act-stop]');
+    if (actStop) {
+      const row = actStop.closest('[data-retiring-row]');
+      const ask = row && row.querySelector('[data-act-confirm]');
+      const start = row && row.querySelector('[data-act]');
       if (ask) ask.hidden = true;
       if (start) start.hidden = false;
       return;
