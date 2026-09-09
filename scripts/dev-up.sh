@@ -55,6 +55,21 @@ fi
 # says so, which is the only place that can tell the difference.
 grep -q '^CONFIG_AGE_KEY=' .env 2>/dev/null || printf 'CONFIG_AGE_KEY=\n' >> .env
 
+# --- the break-glass credential ----------------------------------------------------------
+# Without iam there is no other way to sign in, and the editor refuses to run unguarded.
+#
+# Written beside the repository, never into it. Committed, the credential is pushable, and on a
+# repository with a remote the first publish sent it to GitHub — the reason a history had to be
+# rewritten once already. A file the tree does not contain cannot be committed by accident.
+if ! docker compose run --rm --entrypoint sh app -c 'test -f /var/lib/config/break-glass.yaml' 2>/dev/null; then
+  say "Minting a break-glass credential"
+  pnpm -s tsx --conditions=development src/cli/bootstrap-breakglass.ts ops@anudeep.pro \
+    > /tmp/config-break-glass.yaml 2> /tmp/config-break-glass.txt
+  docker compose run --rm -v /tmp/config-break-glass.yaml:/tmp/record.yaml:ro --entrypoint sh app -c '
+    cp /tmp/record.yaml /var/lib/config/break-glass.yaml' >/dev/null
+  cat /tmp/config-break-glass.txt
+fi
+
 say "Starting"
 docker compose up -d app >/dev/null
 until curl -sf -o /dev/null http://localhost:8200/login 2>/dev/null; do sleep 1; done
