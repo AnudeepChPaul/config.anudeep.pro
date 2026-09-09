@@ -1103,11 +1103,15 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       // resolved here rather than posted, so a hand-edited form cannot name someone else's.
       const { pendingByNamespace, draftsByNamespace } = await readState();
       const environmentNames = await declaredEnvironments();
+      // Which environments of this product have a DRAFT, not which have pending changes. A
+      // product being created with no key defaults has no pending change anywhere — its draft
+      // carries a registry entry and a schema — so asking about changes resolved the product to
+      // nothing and the publish went quietly nowhere, reporting that nothing was selected.
       const namespaces = selected.flatMap((entry) =>
         entry.includes('/')
           ? [entry]
           : environmentsOf(entry, environmentNames, pendingByNamespace, draftsByNamespace)
-              .filter((env) => env.pending.length > 0)
+              .filter((env) => (env.drafts ?? 0) > 0)
               .map((env) => env.namespace),
       );
 

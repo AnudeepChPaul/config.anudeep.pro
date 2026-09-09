@@ -741,6 +741,47 @@ withSops('adding a product', () => {
     await app.close();
   });
 
+  /**
+   * Publishing a newly created product by name.
+   *
+   * The products screen posts a product NAME, and the route resolves it to the environments
+   * worth publishing. It asked which of them had pending CHANGES — and a product whose keys
+   * declare no defaults has none, so the answer was "nothing", and the publish went quietly
+   * nowhere with a 303 saying nothing was selected.
+   *
+   * The question is whether a draft is staged there, which is what publish publishes.
+   */
+  it('publishes a new product selected by name, defaults or not', async () => {
+    const { app, drafts, headers } = await build();
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/new',
+      payload: new URLSearchParams([
+        ['name', 'audit'],
+        ['uid', '1004'],
+        ['environment', 'dev'],
+        ['key.0.name', 'TOKEN'],
+        ['key.0.type', 'string'],
+        ['key.0.secret', '1'],
+      ]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    expect((await drafts.all()).length, 'staged').toBe(1);
+
+    const published = await app.inject({
+      method: 'POST',
+      url: '/publish',
+      payload: new URLSearchParams([['namespace', 'audit']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+
+    expect(String(published.headers.location)).not.toMatch(/nothing-selected/);
+    expect(await drafts.all(), 'the draft was published, not left staged').toEqual([]);
+    expect(await new GitRepository(repo.dir).readFile('schema/audit.yaml')).toMatch(/TOKEN/);
+    await app.close();
+  });
+
   it('stages one draft holding every file the product needs', async () => {
     const { response, staged } = await post(audit());
 
