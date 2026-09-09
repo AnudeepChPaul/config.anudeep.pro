@@ -350,7 +350,7 @@ withSops('adding a product', () => {
 
     const page = await app.inject({ method: 'GET', url: '/', headers });
 
-    expect(page.body).toMatch(/1 product in retiring state/);
+    expect(page.body).toMatch(/1 product retiring/);
     expect(page.body).toContain('/p/retiring');
     await app.close();
   });
@@ -360,7 +360,7 @@ withSops('adding a product', () => {
 
     const page = await app.inject({ method: 'GET', url: '/', headers });
 
-    expect(page.body).not.toMatch(/retiring state/);
+    expect(page.body).not.toMatch(/product retiring/);
     await app.close();
   });
 
@@ -466,22 +466,6 @@ withSops('adding a product', () => {
     await app.close();
   });
 
-  it('does not say nothing is unpublished while a retirement is staged', async () => {
-    const { app, headers } = await build({});
-
-    await app.inject({
-      method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
-    const page = await app.inject({ method: 'GET', url: '/', headers });
-
-    expect(page.body).not.toMatch(/nothing unpublished/);
-    expect(page.body).toMatch(/retirement to publish/);
-    await app.close();
-  });
-
   it('shows a staged retirement on the list, before it is published', async () => {
     const { app, headers } = await build({});
 
@@ -513,7 +497,7 @@ withSops('adding a product', () => {
     });
     const page = await app.inject({ method: 'GET', url: '/', headers });
 
-    expect(page.body).toMatch(/1 product in retiring state/);
+    expect(page.body).toMatch(/1 product retiring/);
     await app.close();
   });
 
@@ -528,8 +512,8 @@ withSops('adding a product', () => {
     });
     const page = await app.inject({ method: 'GET', url: '/', headers });
 
-    expect(page.body).toMatch(/1 product in retiring state/);
-    expect(page.body).not.toMatch(/2 products in retiring state/);
+    expect(page.body).toMatch(/1 product retiring/);
+    expect(page.body).not.toMatch(/2 products retiring/);
     await app.close();
   });
 

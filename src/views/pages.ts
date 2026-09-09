@@ -1061,8 +1061,7 @@ export function renderProducts(options: {
   draftCount?: number;
   /** How many products are marked retiring, for the link to that list. Zero renders nothing. */
   retiring?: number;
-  /** How many retirements are staged and not published: unpublished, but not environment work. */
-  retiringStaged?: number;
+
   notice?: PageNotice;
   error?: string;
   /** True when this viewer may open the settings page. Absent renders no link to it. */
@@ -1159,16 +1158,12 @@ export function renderProducts(options: {
                   }</a> · `
             : html``
         }Serving <code>${options.commit.slice(0, 8)}</code>${
-          // A retirement is unpublished but is not an environment update, so it is counted
-          // separately and never described as nothing. Saying "nothing unpublished" beside a
-          // count of unpublished drafts is two numbers for one thing, disagreeing in public.
+          // Environment drafts only. A retirement is reported by the count beside the title and
+          // by the marker on its own row, which is where it belongs: this line is about the
+          // values, and mixing the two is what made it contradict itself before.
           totalDrafts > 0
             ? html` · ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'} to publish`
-            : (options.retiringStaged ?? 0) > 0
-              ? html` · ${options.retiringStaged} retirement${
-                  options.retiringStaged === 1 ? '' : 's'
-                } to publish`
-              : html` · nothing unpublished`
+            : html` · nothing unpublished`
         }`,
         actions: html`${
           totalDrafts > 0
@@ -1186,10 +1181,10 @@ export function renderProducts(options: {
           // interval between marking one and archiving it is worth nothing if nobody remembers
           // it is running.
           (options.retiring ?? 0) > 0
-            ? html`<a class="linkbtn" href="/p/retiring" hx-get="/p/retiring" hx-target="#page"
-                  hx-swap="innerHTML" hx-push-url="true">you have ${options.retiring} product${
+            ? html`<a class="linkbtn no" href="/p/retiring" hx-get="/p/retiring" hx-target="#page"
+                  hx-swap="innerHTML" hx-push-url="true">${options.retiring} product${
                     options.retiring === 1 ? '' : 's'
-                  } in retiring state</a><span class="sep">·</span>`
+                  } retiring</a><span class="sep">·</span>`
             : html``
         }<a class="linkbtn"
             href="/p/new" hx-get="/p/new" hx-target="#page" hx-swap="innerHTML"

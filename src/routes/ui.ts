@@ -661,7 +661,6 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
                 .map((service) => service.name)
                 .filter((name) => schemaSet.isRetiring(name) || retiringDrafted.has(name)),
             ).size,
-            retiringStaged: retiringDrafted.size,
           }),
         ),
       );
