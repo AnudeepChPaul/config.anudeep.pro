@@ -8,9 +8,11 @@ import { EnvironmentOrder } from '../store/environment-order.js';
 import type { ConfigLoader } from '../store/loader.js';
 import { isMetadataKey, versionOf } from '../store/metadata.js';
 import type { ConfigWriteService } from '../store/write-service.js';
+import { noticeFor } from '../views/notices.js';
 import {
   type EnvironmentSummary,
   type KeyRow,
+  type PageNotice,
   type PendingChange,
   type ProductSummary,
   renderDrafts,
@@ -143,26 +145,28 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       drafts: draftSaves.get(`${service}/${name}`) ?? 0,
     }));
 
-  app.get('/drafts', async (request: FastifyRequest<{ Querystring: { notice?: string } }>, reply) =>
-    reply.type('text/html; charset=utf-8').send(
-      String(
-        renderDrafts({
-          drafts: (await drafts.all())
-            .slice()
-            .sort((a, b) => a.namespace.localeCompare(b.namespace))
-            .map((draft) => ({
-              namespace: draft.namespace,
-              saves: draft.saves.map((save) => ({
-                keys: [...save.keys],
-                actor: save.actor,
-                at: save.at,
+  app.get(
+    '/drafts',
+    async (request: FastifyRequest<{ Querystring: { done?: string; n?: string } }>, reply) =>
+      reply.type('text/html; charset=utf-8').send(
+        String(
+          renderDrafts({
+            drafts: (await drafts.all())
+              .slice()
+              .sort((a, b) => a.namespace.localeCompare(b.namespace))
+              .map((draft) => ({
+                namespace: draft.namespace,
+                saves: draft.saves.map((save) => ({
+                  keys: [...save.keys],
+                  actor: save.actor,
+                  at: save.at,
+                })),
               })),
-            })),
-          ...(request.query?.notice ? { notice: request.query.notice } : {}),
-          fragment: isHtmx(request),
-        }),
+            ...noticeQuery(request.query),
+            fragment: isHtmx(request),
+          }),
+        ),
       ),
-    ),
   );
 
   app.post(
@@ -180,12 +184,12 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         },
       );
 
-      const notice = dropped.ok ? 'Draft dropped.' : dropped.error.detail;
+      // A code, not a sentence: the wording lives in views/notices.ts, so nothing a URL carries
+      // can put words on the page. The detail of a failed drop is logged, not shown to a link.
+      const code = dropped.ok ? 'dropped' : 'drop-failed';
+      const notice = noticeFor(code) ?? undefined;
       if (!isHtmx(request)) {
-        return reply
-          .code(303)
-          .header('location', `/drafts?notice=${encodeURIComponent(notice)}`)
-          .send();
+        return reply.code(303).header('location', `/drafts?done=${code}`).send();
       }
 
       return reply
@@ -202,7 +206,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
                   at: save.at,
                 })),
               })),
-              notice,
+              ...(notice ? { notice } : {}),
               fragment: true,
             }),
           ),
@@ -212,7 +216,10 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
   app.get(
     '/',
-    async (request: FastifyRequest<{ Querystring: { notice?: string; q?: string } }>, reply) => {
+    async (
+      request: FastifyRequest<{ Querystring: { done?: string; n?: string; q?: string } }>,
+      reply,
+    ) => {
       const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
 
       // Declared, not discovered: a product is listed because services.yaml says it exists.
@@ -273,7 +280,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
             ...(request.query?.q ? { query: request.query.q } : {}),
             commit: sources.commit,
             draftCount: [...draftsByNamespace.values()].reduce((total, n) => total + n, 0),
-            ...(request.query?.notice ? { notice: request.query.notice } : {}),
+            ...noticeQuery(request.query),
           }),
         ),
       );
@@ -290,15 +297,13 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
   const productPage = async (options: {
     service: string;
     env?: string | undefined;
-    notice?: string | undefined;
+    notice?: PageNotice | undefined;
     /** The create-this-environment offer was declined; the action stays, the prompt goes. */
     offerDeclined?: boolean;
     /** Filters the fields to those whose key matches. Navigates nowhere. */
     query?: string | undefined;
     /** The key a search result linked to, marked so the eye lands on it. */
     highlight?: string | undefined;
-    /** A confirmation the page clears itself, as opposed to something still to act on. */
-    transientNotice?: boolean;
     published?: readonly string[];
     fragment: boolean;
   }): Promise<{ html: string; active: string } | null> => {
@@ -396,7 +401,6 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           // about to add to it.
           lastChange: await repository.lastChange(`config/${namespace}.yaml`),
           ...(options.notice ? { notice: options.notice } : {}),
-          ...(options.transientNotice ? { transientNotice: true } : {}),
           ...(offer ? { offer } : {}),
         }),
       ),
@@ -415,28 +419,31 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     options: {
       service: string;
       env: string;
-      notice?: string;
-      transientNotice?: boolean;
+      /** The outcome, as a code this console knows how to word. Never a sentence. */
+      done?: string;
+      /** What the code counts, when it counts something. */
+      n?: number;
       published?: readonly string[];
     },
   ) => {
+    // The URL names an outcome; views/notices.ts owns what that outcome SAYS. Free text here
+    // meant a link could render any message inside the console, and meant a stale confirmation
+    // replayed on every reload of the address it left behind.
     const back =
       `/p/${options.service}?env=${encodeURIComponent(options.env)}` +
-      (options.notice ? `&notice=${encodeURIComponent(options.notice)}` : '') +
-      // Survives the redirect, so the plain-browser path gets the same self-clearing
-      // confirmation as the swapped one rather than a notice that stays until the next action.
-      (options.transientNotice ? '&done=1' : '') +
+      (options.done ? `&done=${encodeURIComponent(options.done)}` : '') +
+      (options.n === undefined ? '' : `&n=${options.n}`) +
       (options.published?.length
         ? `&published=${encodeURIComponent(options.published.join(','))}`
         : '');
 
     if (!isHtmx(request)) return reply.code(303).header('location', back).send();
 
+    const notice = noticeFor(options.done, options.n === undefined ? {} : { n: options.n });
     const page = await productPage({
       service: options.service,
       env: options.env,
-      notice: options.notice,
-      ...(options.transientNotice ? { transientNotice: true } : {}),
+      ...(notice ? { notice } : {}),
       published: options.published ?? [],
       fragment: true,
     });
@@ -452,9 +459,9 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         Params: { service: string };
         Querystring: {
           env?: string;
-          notice?: string;
           published?: string;
           done?: string;
+          n?: string;
           create?: string;
           q?: string;
           hl?: string;
@@ -465,8 +472,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       const page = await productPage({
         service: request.params.service,
         env: request.query?.env,
-        notice: request.query?.notice,
-        ...(request.query?.done ? { transientNotice: true } : {}),
+        ...noticeQuery(request.query),
         ...(request.query?.create === 'no' ? { offerDeclined: true } : {}),
         query: request.query?.q,
         highlight: request.query?.hl,
@@ -567,7 +573,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           return respond(reply, request, {
             service,
             env: environment,
-            notice: published.error.detail,
+            done: published.error.code === 'conflict' ? 'publish-stale' : 'publish-failed',
           });
         }
 
@@ -577,14 +583,15 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         // A publish that did not reach the remote is NOT a transient confirmation: the commit is
         // durable and being served, but it is backed up nowhere, and a page that erases the only
         // report of that after five seconds is worse than one that never said it.
+        // A publish that did not reach the remote is not a confirmation: the commit is durable
+        // and being served, but it is backed up nowhere, and the notice's own tone keeps it on
+        // the page instead of erasing the only report of it after five seconds.
         return respond(reply, request, {
           service,
           env: environment,
           published: keys,
-          notice: published.value.published
-            ? 'Done publishing.'
-            : 'Done publishing — not yet pushed to GitHub.',
-          ...(published.value.published ? { transientNotice: true } : {}),
+          done: published.value.published ? 'published' : 'published-unpushed',
+          n: keys.length,
         });
       }
 
@@ -592,11 +599,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       // thing to do and simply has nothing to write down. It is not a validation failure: the
       // 422 branch below renders a per-key error page, which here had no per-key errors on it.
       if (result.error.code === 'nothing_staged') {
-        return respond(reply, request, {
-          service,
-          env: environment,
-          notice: 'Nothing to save — no value was edited and nothing was ticked.',
-        });
+        return respond(reply, request, { service, env: environment, done: 'nothing-staged' });
       }
 
       const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
@@ -668,13 +671,16 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       // What actually landed, not what was asked for: a key whose value the target already
       // holds stages nothing, and claiming otherwise sends the operator looking for a change
       // that is not there.
-      const notice = result.ok
-        ? `Staged ${result.value.changes.length} change(s) in ${to}. Nothing is published there yet.`
-        : `Nothing to promote: ${result.error.detail}`;
+      const done = result.ok ? 'promoted' : 'promote-failed';
 
       // Lands on the target environment: the change is there to review, and that is where the
       // next decision is made.
-      return respond(reply, request, { service, env: result.ok ? to : from, notice });
+      return respond(reply, request, {
+        service,
+        env: result.ok ? to : from,
+        done,
+        ...(result.ok ? { n: result.value.changes.length } : {}),
+      });
     },
   );
 
@@ -698,10 +704,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       );
 
       if (namespaces.length === 0) {
-        return reply
-          .code(303)
-          .header('location', '/?notice=Nothing%20selected%20had%20unpublished%20changes.')
-          .send();
+        return reply.code(303).header('location', '/?done=nothing-selected').send();
       }
 
       const result = await writeService.publish(
@@ -714,16 +717,32 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         { id: request.id, sourceIp: request.ip },
       );
 
-      const notice = result.ok
-        ? `Published ${result.value.changedKeys.length} change(s)${result.value.published ? '' : ' — not yet pushed to GitHub'}.`
-        : result.error.detail;
+      // A code and a count. The wording is the console's, so a link cannot speak in its voice,
+      // and a reload of the address this leaves behind cannot replay a stale confirmation as
+      // though it had just happened.
+      const done = result.ok
+        ? result.value.published
+          ? 'published'
+          : 'published-unpushed'
+        : result.error.code === 'conflict'
+          ? 'publish-stale'
+          : 'publish-failed';
+      const count = result.ok ? `&n=${result.value.changedKeys.length}` : '';
 
-      return reply
-        .code(303)
-        .header('location', `/?notice=${encodeURIComponent(notice)}`)
-        .send();
+      return reply.code(303).header('location', `/?done=${done}${count}`).send();
     },
   );
+}
+
+/**
+ * The notice a request's query asks for, if the console knows how to say it.
+ *
+ * `done` names an outcome and `n` counts it; both come off the URL, so both are whatever someone
+ * typed. An unrecognised code and a nonsense count each render nothing rather than something.
+ */
+function noticeQuery(query: { done?: string; n?: string } | undefined): { notice?: PageNotice } {
+  const notice = noticeFor(query?.done, query?.n === undefined ? {} : { n: Number(query.n) });
+  return notice ? { notice } : {};
 }
 
 /** One form field that may arrive once, many times, or not at all. */

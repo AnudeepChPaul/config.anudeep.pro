@@ -180,6 +180,16 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
      exactly what put Search and Clear on two baselines. */
   .linkbtn.no { color: var(--danger); }
   .linkbtn.no:hover:not(:disabled) { color: var(--ink); }
+  /* Typed by colour, because "Published 3 changes" and "Publishing failed" are not the same
+     kind of news and were rendered identically. Sits below the header and above the content:
+     first thing under the title, in the reading path, never overlapping what it describes. */
+  .notice { display: flex; align-items: center; gap: 10px; margin: 0 0 12px;
+            padding: 8px 12px; border: 1px solid var(--line); border-left-width: 3px;
+            border-radius: var(--radius); background: var(--surface);
+            font-size: var(--type-sm); min-height: var(--control-h); box-sizing: border-box; }
+  .notice.done { border-left-color: var(--accent); }
+  .notice.problem { border-left-color: var(--danger); background: var(--danger-fill); }
+  .notice [data-dismiss] { margin-left: auto; }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
      .selection, for instance — beats it and leaves a hidden element on screen. Everything the
@@ -722,6 +732,35 @@ function writeAction(options: {
 }
 
 /**
+ * One notice, in one place, on every page.
+ *
+ * It used to be a plain card in the body of whichever page produced it: the same weight whether
+ * it reported a publish or a failure, nothing to close it, and a confirmation that stayed until
+ * the next navigation while an error could be swept away by the same timer as a success.
+ *
+ * A confirmation is transient — `data-transient` is what the script removes after five seconds —
+ * and a problem is not, because an error nobody read is an error nobody handled. Both can be
+ * dismissed, and the dismiss is a link back to the same page without the outcome code, so it
+ * works with no script at all; htmx upgrades it to a swap.
+ */
+export interface PageNotice {
+  readonly tone: 'done' | 'problem';
+  readonly text: string;
+}
+
+function noticeBanner(notice: PageNotice | undefined, dismissTo: string): SafeHtml {
+  if (!notice) return html``;
+  const done = notice.tone === 'done';
+  return html`<div class="notice ${done ? 'done' : 'problem'}" data-notice ${
+    done ? raw('data-transient') : html``
+  }>
+    <span>${notice.text}</span>
+    <a class="linkbtn no" data-dismiss href="${dismissTo}" hx-get="${dismissTo}" hx-target="#page"
+       hx-swap="innerHTML" hx-push-url="true">Dismiss</a>
+  </div>`;
+}
+
+/**
  * The page header, identical on every page that has one.
  *
  * Each page used to grow its own — an h1 in a flex row here, a breadcrumb and a separate facts
@@ -808,7 +847,7 @@ export interface DraftListEntry {
  */
 export function renderDrafts(options: {
   drafts: readonly DraftListEntry[];
-  notice?: string;
+  notice?: PageNotice;
   fragment?: boolean;
 }): SafeHtml {
   const rows = options.drafts.map(
@@ -850,7 +889,7 @@ export function renderDrafts(options: {
           options.drafts.length === 1 ? '' : 's'
         } with unpublished work`,
       })}
-      ${options.notice ? html`<div class="card" data-transient>${options.notice}</div>` : html``}
+      ${noticeBanner(options.notice, '/drafts')}
       ${
         options.drafts.length === 0
           ? html`<div class="card">Nothing is drafted anywhere. Every environment is published.</div>`
@@ -870,7 +909,7 @@ export function renderProducts(options: {
   query?: string;
   /** How many presses of Save are waiting across every product, for the link to the draft list. */
   draftCount?: number;
-  notice?: string;
+  notice?: PageNotice;
   error?: string;
   /** True when htmx asked: the body alone, to be swapped into the page. */
   fragment?: boolean;
@@ -958,6 +997,7 @@ export function renderProducts(options: {
               })
             : html``,
       })}
+      ${noticeBanner(options.notice, options.query ? `/?q=${encodeURIComponent(options.query)}` : '/')}
       ${
         options.query && options.products.length === 0
           ? html`<div class="card">No key matches “${options.query}”.</div>`
@@ -965,7 +1005,7 @@ export function renderProducts(options: {
       }
       <form id="publish-products" method="post" action="/publish" hx-post="/publish"
             hx-target="#page" hx-swap="innerHTML">
-        ${options.notice ? html`<div class="card">${options.notice}</div>` : html``}
+
         ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
         ${unpushedBanner(options.unpushed ?? [])}
         <div class="rows">${rows}</div>
@@ -1012,7 +1052,7 @@ export function renderProduct(options: {
   /** The audit trail's most recent entry for this namespace. */
   lastChange?: { subject: string; author: string; at: string } | null;
   message?: string;
-  notice?: string;
+  notice?: PageNotice;
   error?: string;
   offer?: PromoteOffer;
   fragment?: boolean;
@@ -1103,12 +1143,13 @@ export function renderProduct(options: {
       }
       ${promoteOffer(options)}
       ${
-        // Marked transient only when it is a confirmation. A notice reporting something still to
-        // act on — a failed write, a commit that never reached the remote — must not be erased
-        // on a timer: the page would quietly delete the only report of it.
-        options.notice
-          ? html`<div class="card" ${options.transientNotice ? raw('data-transient') : html``}>${options.notice}</div>`
-          : html``
+        // Transient or not is the notice's own tone now: a confirmation clears itself, a
+        // problem — a failed write, a commit that never reached the remote — stays, because the
+        // page would otherwise quietly delete the only report of it.
+        noticeBanner(
+          options.notice,
+          `/p/${options.service}?env=${encodeURIComponent(options.active)}`,
+        )
       }
       ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
 

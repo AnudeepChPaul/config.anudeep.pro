@@ -310,7 +310,10 @@ withSops('the CRUD UI', () => {
       const response = await post('/publish', { namespace: 'iam/prod', message: 'go' });
 
       expect(response.statusCode).toBe(303);
-      expect(decodeURIComponent(String(response.headers.location))).toMatch(/changed since/i);
+      // The location names the outcome; views/notices.ts owns the sentence. The stale case
+      // keeps its own code, because "the repository moved" needs a different response from the
+      // operator than "publishing failed".
+      expect(String(response.headers.location)).toContain('done=publish-stale');
     });
 
     it('publishes nothing when the selection has no pending changes', async () => {
@@ -318,7 +321,7 @@ withSops('the CRUD UI', () => {
 
       const response = await post('/publish', { namespace: 'iam', message: 'go' });
 
-      expect(decodeURIComponent(String(response.headers.location))).toMatch(/nothing selected/i);
+      expect(String(response.headers.location)).toContain('done=nothing-selected');
     });
 
     it('leaves a stored secret alone when its field is submitted blank', async () => {
@@ -683,7 +686,9 @@ describe('publishing ticked keys and promoting them', () => {
         ['key', 'SESSION_TTL'],
       ]);
 
-      expect(decodeURIComponent(String(response.headers.location))).toContain('Staged 1 change');
+      // The count travels as a number and the wording is the console's; one key moved, not two.
+      expect(String(response.headers.location)).toContain('done=promoted');
+      expect(String(response.headers.location)).toContain('n=1');
     });
 
     it('offers nothing to promote from the last environment', async () => {
@@ -1172,7 +1177,7 @@ describe('the tick and button behaviour the page depends on', () => {
         },
       });
 
-      expect(done.body).toContain('Done publishing.');
+      expect(done.body).toContain('Published');
       // Rendered by the server, so it appears with the swap and appears without JavaScript too.
       // Only its removal is script-driven, which is the half that is safe to lose.
       expect(done.body).toMatch(/data-transient/);
@@ -1203,10 +1208,10 @@ describe('the tick and button behaviour the page depends on', () => {
 
       // This repository has no remote at all, so the push cannot have happened.
       expect(done.body).toMatch(/not yet pushed/);
-      const notice = done.body.match(
-        /<div class="card"[^>]*>[\s\S]*?not yet pushed[\s\S]*?<\/div>/,
-      );
+      const notice = done.body.match(/<div class="notice[^>]*>/);
+      expect(notice?.[0], 'the banner is rendered').toBeTruthy();
       expect(notice?.[0]).not.toContain('data-transient');
+      expect(notice?.[0]).toContain('problem');
     });
 
     it('clears a transient notice after five seconds, and only a transient one', async () => {
@@ -1279,7 +1284,8 @@ describe('the tick and button behaviour the page depends on', () => {
       ]);
 
       expect(plain.statusCode).toBe(303);
-      expect(plain.headers.location).toMatch(/notice=/);
+      // The redirect names the outcome rather than carrying a sentence a link could forge.
+      expect(plain.headers.location).toMatch(/done=nothing-staged/);
     });
 
     it('offers to create a declared environment that has no file yet', async () => {
