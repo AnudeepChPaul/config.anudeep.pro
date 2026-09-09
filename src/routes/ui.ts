@@ -563,11 +563,16 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         // The union across environments, not the first one's. Taking the first showed dev's keys
         // as if they were the product's, which is wrong whenever the environments differ — and
         // they usually do, since that is what having environments is for.
+        // What the FILE holds, minus what the file holds about itself. `version` is the document's
+        // revision counter and `sops` its encryption envelope: neither is a key anybody sets, and
+        // listing them made every product read as though it had a variable called version.
         const keys = [
           ...new Set(
             environments.flatMap((env) => Object.keys(tree.namespaces.get(env.namespace) ?? {})),
           ),
-        ].sort();
+        ]
+          .filter((key) => !isMetadataKey(key))
+          .sort();
         const matched = query
           ? [...schemas().definitionsFor(service.name).keys()]
               .filter((key) => key.toLowerCase().includes(query))

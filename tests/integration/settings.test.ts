@@ -517,6 +517,23 @@ withSops('adding a product', () => {
     await app.close();
   });
 
+  // `version` is the document's revision counter, not a key anybody sets. It reached the list
+  // because the summary was built from what the FILE holds, and the file holds it beside the
+  // values — so every product read as though it had a variable called version.
+  it("does not list version among a product's keys", async () => {
+    // A published file carries its revision counter beside the values, which is what the
+    // fixture has to have for this to mean anything.
+    await repo.commit({ 'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nversion: 2\n' });
+    const { app, headers } = await build({});
+
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+    const row = page.body.slice(page.body.indexOf('iam ('), page.body.indexOf('iam (') + 500);
+
+    expect(row).toMatch(/MFA_ENFORCEMENT/);
+    expect(row).not.toMatch(/\bversion\b/);
+    await app.close();
+  });
+
   it('keeps a retiring product in the product list', async () => {
     const { app, headers } = await build({ retiring: ['iam'] });
 
