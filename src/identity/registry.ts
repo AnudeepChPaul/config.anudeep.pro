@@ -19,14 +19,37 @@ const ServiceSchema = z.object({
     .min(1, 'service must grant at least one namespace'),
 });
 
-const FileSchema = z.object({ services: z.array(ServiceSchema).min(1) });
+/**
+ * The shape of the file itself.
+ *
+ * `version` is optional and means 1 when absent, so the files already in a registry keep working
+ * while they are migrated. It exists so this shape can change later without a reader guessing:
+ * meeting an unknown version here means misreading a GRANT TABLE, which is the one file where
+ * reading it wrongly hands a service someone else's secrets.
+ */
+const KNOWN_VERSIONS = [1] as const;
+
+const FileSchema = z.object({
+  version: z
+    .number()
+    .int()
+    .refine((value) => (KNOWN_VERSIONS as readonly number[]).includes(value), {
+      message: `version must be one of ${KNOWN_VERSIONS.join(', ')}`,
+    })
+    .optional(),
+  services: z.array(ServiceSchema).min(1),
+});
 
 export class ServiceRegistryError extends Error {}
 
 export class ServiceRegistry {
   private readonly byUid: ReadonlyMap<number, ServiceIdentity>;
 
-  private constructor(services: readonly ServiceIdentity[]) {
+  private constructor(
+    services: readonly ServiceIdentity[],
+    /** What shape this file declares. Absent in the file means 1. */
+    readonly version: number = 1,
+  ) {
     const byUid = new Map<number, ServiceIdentity>();
     for (const service of services) {
       const clash = byUid.get(service.uid);
@@ -56,6 +79,7 @@ export class ServiceRegistry {
       parsed.data.services.map((s) =>
         Object.freeze({ ...s, namespaces: Object.freeze(s.namespaces) }),
       ),
+      parsed.data.version ?? 1,
     );
   }
 

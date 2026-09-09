@@ -49,18 +49,37 @@ export class SchemaError extends Error {}
 
 const fail = (key: string, message: string): ValidationError => ({ key, message });
 
+/**
+ * The file shapes this reader understands.
+ *
+ * Absent means 1, so the schemas already in a registry keep working while they are migrated.
+ * A version nobody here knows is refused rather than read as best it can be: a schema decides
+ * what a value is allowed to be, and misreading one lets a wrong value through at the moment
+ * somebody is fixing an outage with it.
+ */
+const KNOWN_VERSIONS: readonly number[] = [1];
+
 export class SchemaSet {
   private constructor(
     private readonly services: ReadonlyMap<string, ReadonlyMap<string, KeyDefinition>>,
+    /** What shape each file declared. Absent in the file means 1. */
+    private readonly versions: ReadonlyMap<string, number> = new Map(),
   ) {}
+
+  /** The shape `schema/<service>.yaml` declares, or 1 where it does not say. */
+  versionOf(service: string): number {
+    return this.versions.get(service) ?? 1;
+  }
 
   /** `{ iam: <contents of schema/iam.yaml>, ... }`. Throws on a schema that could never be met. */
   static fromFiles(files: Record<string, string>): SchemaSet {
     const services = new Map<string, ReadonlyMap<string, KeyDefinition>>();
+    const versions = new Map<string, number>();
     for (const [service, source] of Object.entries(files)) {
       services.set(service, parseSchema(service, source));
+      versions.set(service, parseSchemaVersion(service, source));
     }
-    return new SchemaSet(services);
+    return new SchemaSet(services, versions);
   }
 
   /**
@@ -196,6 +215,27 @@ function checkValue(
         ? null
         : fail(key, `'${key}' must be a list of strings`);
   }
+}
+
+/**
+ * The declared shape of `schema/<service>.yaml`.
+ *
+ * Read separately from the keys, and refused when unknown: a reader that carries on with a shape
+ * it does not understand is a reader that silently validates against the wrong rules.
+ */
+function parseSchemaVersion(service: string, source: string): number {
+  const parsed = parseYaml(source) as { version?: unknown } | null;
+  const declared = parsed?.version;
+  if (declared === undefined) return 1;
+  if (typeof declared !== 'number' || !Number.isInteger(declared)) {
+    throw new SchemaError(`schema/${service}.yaml declares a version that is not a whole number`);
+  }
+  if (!KNOWN_VERSIONS.includes(declared)) {
+    throw new SchemaError(
+      `schema/${service}.yaml declares version ${declared}; this service knows ${KNOWN_VERSIONS.join(', ')}`,
+    );
+  }
+  return declared;
 }
 
 function parseSchema(service: string, source: string): ReadonlyMap<string, KeyDefinition> {

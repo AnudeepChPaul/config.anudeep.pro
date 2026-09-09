@@ -232,7 +232,7 @@ const layout = (
   .settings-unset { font-size: var(--type-xs); color: var(--muted); }
   /* The inset the .card used to supply. Dropping the card removed the duplicated border and
      took the padding with it, leaving every row flush against the edge. */
-  .settings-row { padding: 7px 16px; line-height: 2.5rem }
+  .settings-row { padding: 7px 16px; }
   .settings-row + .settings-row { border-top: 1px solid var(--hair); }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
@@ -309,7 +309,7 @@ const layout = (
 
   /* ---------------------------------------------------------------- key rows */
   .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: .25rem; }
-  .keyrow { display: flex; align-items: flex-start; gap: 14px; min-height: var(--control-h); }
+  .keyrow { display: flex; align-items: center; gap: 14px; min-height: var(--control-h); }
   .keypick { width: 16px; flex-shrink: 0; padding-top: 9px; }
   .keypick input, .pick { width: 16px; height: 16px; accent-color: var(--ink); cursor: pointer;
                           margin: 0; }
@@ -366,16 +366,14 @@ const layout = (
 <!-- What is running, and the way to see how it is configured. Centred and quiet: not part of
      the working surface, and read once — during an incident, to answer "is this the build I
      think it is?" -->
-${
-  build || settingsLink
-    ? html`<footer class="pagefoot">${build ? html`<span class="build">${build}</span>` : html``}${
-        settingsLink
-          ? html`<a href="/settings" hx-get="/settings" hx-target="#page" hx-swap="innerHTML"
+${build || settingsLink
+    ? html`<footer class="pagefoot">${build ? html`<span class="build">${build}</span>` : html``}${settingsLink
+        ? html`<a href="/settings" hx-get="/settings" hx-target="#page" hx-swap="innerHTML"
               hx-push-url="true">Settings</a>`
-          : html``
+        : html``
       }</footer>`
     : html``
-}
+  }
 <!-- Served from this origin, never a CDN: an editor that cannot render because someone
      else's network is down is exactly backwards for a tool reached during an incident. -->
 <script src="/assets/htmx.js" defer></script>
@@ -429,15 +427,14 @@ function renderField(row: KeyRow, highlight?: string): SafeHtml {
   const header = html`<div class="keyline">
     <label for="${name}" style="margin: 0;">${peek(row)}</label>
     <span class="hint">${hint}</span>
-    ${
-      row.pending
-        ? html`<span class="wasnow">
+    ${row.pending
+      ? html`<span class="wasnow">
             <span class="dot"></span>
             <span class="was">${format(row.publishedValue)}</span>
             <span class="arrow">→</span>
             <span>${format(row.value)}</span>
           </span>`
-        : html``
+      : html``
     }
   </div>`;
 
@@ -552,10 +549,9 @@ function peek(row: KeyRow): SafeHtml {
       other,
     ) => html`<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-size:.8125rem;margin-bottom:3px;">
       <span class="envname">${other.environment}</span>
-      ${
-        other.pending
-          ? html`<span class="was">${format(other.published)}</span><span class="arrow">→</span>`
-          : html``
+      ${other.pending
+        ? html`<span class="was">${format(other.published)}</span><span class="arrow">→</span>`
+        : html``
       }
       <span style="color:#5b6070;">${format(other.value)}</span>
     </div>`,
@@ -602,11 +598,10 @@ export function renderLogin(options: {
   const primary = options.iamReachable
     ? html`<div class="card">
         <p class="sub" style="margin: 0 0 1rem;">Sign in with iam to continue.</p>
-        ${
-          options.iamConfigured === false
-            ? html`<span class="hint">iam sign-in is not configured on this instance.</span>`
-            : html`<a href="${options.iamLoginUrl}">Sign in with iam</a>`
-        }
+        ${options.iamConfigured === false
+        ? html`<span class="hint">iam sign-in is not configured on this instance.</span>`
+        : html`<a href="${options.iamLoginUrl}">Sign in with iam</a>`
+      }
       </div>`
     : html`<div class="card">
         <p class="sub" style="margin: 0;">iam is unreachable, so break-glass sign-in is available.</p>
@@ -778,8 +773,7 @@ function writeAction(options: {
   // keyboard submit and a no-JS browser must still work. htmx handles the click on a button that
   // carries hx-post and the form's submit never fires, so a click makes exactly one request.
   const request = options.post
-    ? html`hx-post="${options.post}" hx-target="#page" hx-swap="innerHTML" hx-include="${
-        options.include ?? 'closest form'
+    ? html`hx-post="${options.post}" hx-target="#page" hx-swap="innerHTML" hx-include="${options.include ?? 'closest form'
       }"${options.vals ? raw(` hx-vals='${options.vals}'`) : html``}`
     : html``;
   return html`<button type="submit" class="${options.className ?? 'linkbtn'}" ${request} ${options.attributes ?? html``}>
@@ -808,9 +802,8 @@ export interface PageNotice {
 function noticeLine(notice: PageNotice | undefined, dismissTo: string): SafeHtml {
   if (!notice) return html``;
   const done = notice.tone === 'done';
-  return html`<span class="notice ${done ? 'done' : 'problem'}" data-notice ${
-    done ? raw('data-transient') : html``
-  }><span class="notice-text">${notice.text}</span><a class="linkbtn no" data-dismiss
+  return html`<span class="notice ${done ? 'done' : 'problem'}" data-notice ${done ? raw('data-transient') : html``
+    }><span class="notice-text">${notice.text}</span><a class="linkbtn no" data-dismiss
       href="${dismissTo}" hx-get="${dismissTo}" hx-target="#page" hx-swap="innerHTML"
       hx-push-url="true">Dismiss</a></span>`;
 }
@@ -876,13 +869,13 @@ function searchBox(options: { action: string; query: string; placeholder: string
            aria-label="${options.placeholder}">
     ${writeAction({ resting: html`Search`, running: 'Searching…' })}
     ${
-      // The same treatment as Search beside it. It was a hint — a size smaller, muted, not
-      // underlined — so two controls on one row sat on different baselines and read as
-      // misaligned. They are both actions, so they look like actions.
-      options.query
-        ? html`<a class="linkbtn no" href="${options.action}" hx-get="${options.action}"
+    // The same treatment as Search beside it. It was a hint — a size smaller, muted, not
+    // underlined — so two controls on one row sat on different baselines and read as
+    // misaligned. They are both actions, so they look like actions.
+    options.query
+      ? html`<a class="linkbtn no" href="${options.action}" hx-get="${options.action}"
               hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Clear</a>`
-        : html``
+      : html``
     }
   </form>`;
 }
@@ -929,9 +922,9 @@ export function renderSettings(options: {
 
   const body = html`
       ${pageHeader({
-        title: trail('Settings'),
-        facts: html`${set} of ${settingsRows(options.env).length} variables set`,
-      })}
+    title: trail('Settings'),
+    facts: html`${set} of ${settingsRows(options.env).length} variables set`,
+  })}
       <div class="rows">${rows}</div>
     `;
 
@@ -965,7 +958,7 @@ export function renderDrafts(options: {
            hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Open the environment</a>
       </div>
       ${entry.saves.map(
-        (save, index) => html`<div class="keyrow" style="align-items:center;gap:10px;">
+      (save, index) => html`<div class="keyrow" style="align-items:center;gap:10px;">
           <span class="hint" style="width:2.5rem;">#${index + 1}</span>
           <span style="flex-grow:1;">${save.keys.join(', ')}</span>
           <span class="hint">${ago(save.at)} · ${save.actor}</span>
@@ -975,31 +968,29 @@ export function renderDrafts(options: {
             <input type="hidden" name="namespace" value="${entry.namespace}">
             <input type="hidden" name="index" value="${index}">
             ${writeAction({
-              className: 'linkbtn no',
-              post: '/drafts/drop',
-              resting: html`Drop`,
-              running: 'Dropping…',
-            })}
+        className: 'linkbtn no',
+        post: '/drafts/drop',
+        resting: html`Drop`,
+        running: 'Dropping…',
+      })}
           </form>
         </div>`,
-      )}
+    )}
     </div>`,
   );
 
   const body = html`
       ${pageHeader({
-        ...(options.notice ? { notice: options.notice } : {}),
-        dismissTo: '/drafts',
-        title: trail('Unpublished drafts'),
-        facts: html`${options.drafts.length} namespace${
-          options.drafts.length === 1 ? '' : 's'
-        } with unpublished work`,
-      })}
-      ${
-        options.drafts.length === 0
-          ? html`<div class="card">Nothing is drafted anywhere. Every environment is published.</div>`
-          : html`<div class="rows">${rows}</div>`
-      }
+    ...(options.notice ? { notice: options.notice } : {}),
+    dismissTo: '/drafts',
+    title: trail('Unpublished drafts'),
+    facts: html`${options.drafts.length} namespace${options.drafts.length === 1 ? '' : 's'
+      } with unpublished work`,
+  })}
+      ${options.drafts.length === 0
+      ? html`<div class="card">Nothing is drafted anywhere. Every environment is published.</div>`
+      : html`<div class="rows">${rows}</div>`
+    }
     `;
 
   return options.fragment
@@ -1043,30 +1034,28 @@ export function renderProducts(options: {
       <input type="checkbox" name="namespace" value="${product.service}" class="pick">
       <div style="display:flex;flex-direction:column;gap:4px;flex-grow:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:10px;">
-          ${
-            product.schemaMissing
-              ? html`<span class="pname">${product.name}</span>
+          ${product.schemaMissing
+        ? html`<span class="pname">${product.name}</span>
                   <span class="chip wait" title="schema/${product.service}.yaml is absent"
                     >schema is missing</span>`
-              : html`<a href="/p/${product.service}" hx-get="/p/${product.service}" hx-target="#page"
+        : html`<a href="/p/${product.service}" hx-get="/p/${product.service}" hx-target="#page"
                   hx-swap="innerHTML" hx-push-url="true"
                   class="pname">${product.name}</a>`
-          }
+      }
           ${pending.length > 0 ? pendingDetail('Waiting to publish', pending) : html``}
         </div>
-        <div class="hint">${
-          product.matched && product.matched.length > 0
-            ? html`${product.matched.map((key) => {
-                // The first environment this service declares — which is where the page lands
-                // anyway. `dev` was hard-coded here from before tabs came from environments.yaml,
-                // so the link named an environment a service need not have.
-                const landing = product.environments[0]?.name ?? '';
-                return html`<a href="/p/${product.service}?env=${landing}&hl=${key}"
+        <div class="hint">${product.matched && product.matched.length > 0
+        ? html`${product.matched.map((key) => {
+          // The first environment this service declares — which is where the page lands
+          // anyway. `dev` was hard-coded here from before tabs came from environments.yaml,
+          // so the link named an environment a service need not have.
+          const landing = product.environments[0]?.name ?? '';
+          return html`<a href="/p/${product.service}?env=${landing}&hl=${key}"
                     hx-get="/p/${product.service}?env=${landing}&hl=${key}" hx-target="#page"
                     hx-swap="innerHTML" hx-push-url="true">${key}</a> `;
-              })}`
-            : html`${product.keys}`
-        }</div>
+        })}`
+        : html`${product.keys}`
+      }</div>
         <div style="display:flex;gap:6px;margin-top:2px;">${chips}</div>
       </div>
     </div>`;
@@ -1078,43 +1067,39 @@ export function renderProducts(options: {
            form and a Search click came to publish. The header's publish action reaches its form
            by id instead, which needs no script. -->
       ${pageHeader({
-        ...(options.notice ? { notice: options.notice } : {}),
-        dismissTo: options.query ? `/?q=${encodeURIComponent(options.query)}` : '/',
-        title: html`Products`,
-        search: searchBox({
-          action: '/',
-          query: options.query ?? '',
-          placeholder: 'Find a variable',
-        }),
-        facts: html`${
-          (options.draftCount ?? 0) > 0
-            ? html`<a href="/drafts" hx-get="/drafts" hx-target="#page" hx-swap="innerHTML"
-                  hx-push-url="true">${options.draftCount} unpublished draft${
-                    options.draftCount === 1 ? '' : 's'
-                  }</a> · `
-            : html``
-        }Serving <code>${options.commit.slice(0, 8)}</code>${
-          totalDrafts > 0
-            ? html` · ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'} to publish`
-            : html` · nothing unpublished`
-        }`,
-        actions:
-          totalDrafts > 0
-            ? writeAction({
-                className: 'linkbtn go',
-                attributes: html`form="publish-products"`,
-                post: '/publish',
-                include: '#publish-products',
-                resting: html`Publish selected drafts?`,
-                running: 'Publishing…',
-              })
-            : html``,
-      })}
-      ${
-        options.query && options.products.length === 0
-          ? html`<div class="card">No key matches “${options.query}”.</div>`
-          : html``
-      }
+    ...(options.notice ? { notice: options.notice } : {}),
+    dismissTo: options.query ? `/?q=${encodeURIComponent(options.query)}` : '/',
+    title: html`Products`,
+    search: searchBox({
+      action: '/',
+      query: options.query ?? '',
+      placeholder: 'Find a variable',
+    }),
+    facts: html`${(options.draftCount ?? 0) > 0
+        ? html`<a href="/drafts" hx-get="/drafts" hx-target="#page" hx-swap="innerHTML"
+                  hx-push-url="true">${options.draftCount} unpublished draft${options.draftCount === 1 ? '' : 's'
+          }</a> · `
+        : html``
+      }Serving <code>${options.commit.slice(0, 8)}</code>${totalDrafts > 0
+        ? html` · ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'} to publish`
+        : html` · nothing unpublished`
+      }`,
+    actions:
+      totalDrafts > 0
+        ? writeAction({
+          className: 'linkbtn go',
+          attributes: html`form="publish-products"`,
+          post: '/publish',
+          include: '#publish-products',
+          resting: html`Publish selected drafts?`,
+          running: 'Publishing…',
+        })
+        : html``,
+  })}
+      ${options.query && options.products.length === 0
+      ? html`<div class="card">No key matches “${options.query}”.</div>`
+      : html``
+    }
       <form id="publish-products" method="post" action="/publish" hx-post="/publish"
             hx-target="#page" hx-swap="innerHTML">
 
@@ -1180,11 +1165,10 @@ export function renderProduct(options: {
     (env) => html`<a class="tab ${env.name === options.active ? 'on' : ''}"
                      href="/p/${options.service}?env=${env.name}"
                      hx-get="/p/${options.service}?env=${env.name}" hx-target="#page"
-                     hx-swap="innerHTML" hx-push-url="true">${env.name}${
-                       env.pending.length > 0
-                         ? html` <span class="dot" title="unpublished changes"></span>`
-                         : html``
-}</a>`,
+                     hx-swap="innerHTML" hx-push-url="true">${env.name}${env.pending.length > 0
+        ? html` <span class="dot" title="unpublished changes"></span>`
+        : html``
+      }</a>`,
   );
 
   const query = (options.query ?? '').trim().toLowerCase();
@@ -1217,63 +1201,58 @@ export function renderProduct(options: {
 
 
       ${pageHeader({
-        ...(options.notice ? { notice: options.notice } : {}),
-        dismissTo: `/p/${options.service}?env=${encodeURIComponent(options.active)}`,
-        title: trail(options.service),
-        search: searchBox({
-          action: `/p/${options.service}`,
-          query: options.query ?? '',
-          placeholder: `Find a variable in ${options.service}`,
-        }),
-        facts: html`${options.environments.length} environment${
-          options.environments.length === 1 ? '' : 's'
-        } · serving ${
-          options.repoWebUrl
-            ? html`<a href="${options.repoWebUrl}/commit/${options.commit}" target="_blank"
+    ...(options.notice ? { notice: options.notice } : {}),
+    dismissTo: `/p/${options.service}?env=${encodeURIComponent(options.active)}`,
+    title: trail(options.service),
+    search: searchBox({
+      action: `/p/${options.service}`,
+      query: options.query ?? '',
+      placeholder: `Find a variable in ${options.service}`,
+    }),
+    facts: html`${options.environments.length} environment${options.environments.length === 1 ? '' : 's'
+      } · serving ${options.repoWebUrl
+        ? html`<a href="${options.repoWebUrl}/commit/${options.commit}" target="_blank"
                 rel="noreferrer"><code>${options.commit.slice(0, 8)}</code></a>`
-            : html`<code>${options.commit.slice(0, 8)}</code>`
-        }`,
-        actions:
-          productDrafts === 0
-            ? html``
-            : html`<form method="post" action="/publish" style="display:flex;">
+        : html`<code>${options.commit.slice(0, 8)}</code>`
+      }`,
+    actions:
+      productDrafts === 0
+        ? html``
+        : html`<form method="post" action="/publish" style="display:flex;">
                 <!-- The service, not its environments. Posting every declared environment made
                      publish() abort on the first one with nothing staged, which is the ordinary
                      case; the route resolves a bare service to the environments that actually
                      hold drafts, at request time, so the scope cannot be stale. -->
                 <input type="hidden" name="namespace" value="${options.service}">
                 ${writeAction({
-                  className: 'linkbtn go',
-                  post: '/publish',
-                  resting: html`Publish all ${productDrafts} draft${
-                    productDrafts === 1 ? '' : 's'
-                  } in ${options.service}?`,
-                  running: 'Publishing…',
-                })}
+          className: 'linkbtn go',
+          post: '/publish',
+          resting: html`Publish all ${productDrafts} draft${productDrafts === 1 ? '' : 's'
+            } in ${options.service}?`,
+          running: 'Publishing…',
+        })}
               </form>`,
-      })}
+  })}
 
       <div class="tabs">${tabs}</div>
-      ${
-        query && shownRows.length === 0
-          ? html`<div class="card">No key in ${options.service} matches “${options.query}”.</div>`
-          : html``
-      }
+      ${query && shownRows.length === 0
+      ? html`<div class="card">No key in ${options.service} matches “${options.query}”.</div>`
+      : html``
+    }
       ${promoteOffer(options)}
       ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
 
       ${
-        // Declared but not yet written. Nothing is editable until the file exists, so the page
-        // shows what it WOULD contain and offers to create it — as a draft, like every other
-        // write, rather than committing something nobody reviewed.
-        options.missingFile
-          ? html`<form method="post" action="/p/${options.service}/${options.active}"
+    // Declared but not yet written. Nothing is editable until the file exists, so the page
+    // shows what it WOULD contain and offers to create it — as a draft, like every other
+    // write, rather than committing something nobody reviewed.
+    options.missingFile
+      ? html`<form method="post" action="/p/${options.service}/${options.active}"
                   hx-post="/p/${options.service}/${options.active}" hx-target="#page"
                   hx-swap="innerHTML">
-              ${
-                options.offerDeclined
-                  ? html``
-                  : html`<div class="card banner">
+              ${options.offerDeclined
+          ? html``
+          : html`<div class="card banner">
                       <div style="font-weight:600;">
                         ${options.service}/${options.active} has no file yet.
                       </div>
@@ -1284,55 +1263,52 @@ export function renderProduct(options: {
                       </p>
                       <div class="actionline">
                         ${writeAction({
-                          className: 'linkbtn go',
-                          attributes: html`name="intent" value="create"`,
-                          resting: html`Create ${options.service}/${options.active}.yaml?`,
-                          running: 'Creating the draft…',
-                        })}
+            className: 'linkbtn go',
+            attributes: html`name="intent" value="create"`,
+            resting: html`Create ${options.service}/${options.active}.yaml?`,
+            running: 'Creating the draft…',
+          })}
                         <a class="linkbtn no"
                            href="/p/${options.service}?env=${options.active}&create=no"
                            hx-get="/p/${options.service}?env=${options.active}&create=no"
                            hx-target="#page" hx-swap="innerHTML">Not now</a>
                       </div>
                     </div>`
-              }
-              ${
-                options.offerDeclined
-                  ? html`<div class="card actions" style="padding:.7rem 1.25rem;">
+        }
+              ${options.offerDeclined
+          ? html`<div class="card actions" style="padding:.7rem 1.25rem;">
                       <div class="actionline">
                         <span class="idle">No file yet · every key below is the schema's default</span>
                         <span class="sep">·</span>
                         ${writeAction({
-                          className: 'linkbtn go',
-                          attributes: html`name="intent" value="create"`,
-                          resting: html`Create ${options.service}/${options.active}.yaml?`,
-                          running: 'Creating the draft…',
-                        })}
+            className: 'linkbtn go',
+            attributes: html`name="intent" value="create"`,
+            resting: html`Create ${options.service}/${options.active}.yaml?`,
+            running: 'Creating the draft…',
+          })}
                       </div>
                     </div>`
-                  : html``
-              }
+          : html``
+        }
             </form>
             <div class="card" style="padding:.5rem 1.25rem 1rem;">${options.rows.map(
-              (row) =>
-                html`<div class="keyrow" style="padding:10px 0;">
+          (row) =>
+            html`<div class="keyrow" style="padding:10px 0;">
                 <div style="flex-grow:1;">
                   <div class="keyline"><strong>${row.key}</strong>
                     <span class="hint">${typeHint(row.definition)}</span></div>
-                  <div class="hint">${
-                    row.definition?.secret
-                      ? 'secret — set it once the file exists'
-                      : format(row.value)
-                  }</div>
+                  <div class="hint">${row.definition?.secret
+                ? 'secret — set it once the file exists'
+                : format(row.value)
+              }</div>
                 </div>
               </div>`,
-            )}</div>`
-          : html``
-      }
-      ${
-        options.missingFile
-          ? html``
-          : html`
+        )}</div>`
+      : html``
+    }
+      ${options.missingFile
+      ? html``
+      : html`
       <!-- One form, opened here so the actions can sit under the tabs while the ticks and
            fields below them are still what a submit carries. A button outside the form would
            send neither. -->
@@ -1343,18 +1319,17 @@ export function renderProduct(options: {
              it on the first tick would otherwise push every field down the page, under a
              cursor that is aimed at one of them. -->
         <div class="actionslot">
-        <div class="card actions" style="padding:.7rem 1.25rem;" data-actions${
-          hasDraft ? html` data-has-draft` : html``
+        <div class="card actions" style="padding:.7rem 1.25rem;" data-actions${hasDraft ? html` data-has-draft` : html``
         }>
           <div class="actionline">
             ${
-              // The slot's height is reserved either way, so an idle toolbar is space already
-              // paid for. It says where you are: what this environment holds, how far it has
-              // drifted from the one it promotes into, what is being served, and the audit
-              // entry immediately above the one you are about to write. The script swaps it for
-              // the selection the moment there is one.
-              idle ? idleLine(options) : html``
-            }
+        // The slot's height is reserved either way, so an idle toolbar is space already
+        // paid for. It says where you are: what this environment holds, how far it has
+        // drifted from the one it promotes into, what is being served, and the audit
+        // entry immediately above the one you are about to write. The script swaps it for
+        // the selection the moment there is one.
+        idle ? idleLine(options) : html``
+        }
             <span class="selection" data-selection ${idle ? 'hidden' : ''}
                   data-drafted="${drafted.join(',')}">
               <!-- The count says how many; hovering it says which. The script rebuilds the panel
@@ -1370,53 +1345,50 @@ export function renderProduct(options: {
                      counted from the draft, by the server, because that is where it lives —
                      ticks have nothing to do with it now that a draft publishes whole. -->
                 <span class="count" data-label="{n} unsaved change{s}."
-                      data-drafted-label="${drafted.length} unpublished change${
-                        drafted.length === 1 ? '' : 's'
-                      }."
-                  >${
-                    nothingToDraft && hasDraft
-                      ? html`${drafted.length} unpublished change${drafted.length === 1 ? '' : 's'}.`
-                      : html`${ticked} unsaved change${ticked === 1 ? '' : 's'}.`
-                  }</span>
+                      data-drafted-label="${drafted.length} unpublished change${drafted.length === 1 ? '' : 's'
+        }."
+                  >${nothingToDraft && hasDraft
+          ? html`${drafted.length} unpublished change${drafted.length === 1 ? '' : 's'}.`
+          : html`${ticked} unsaved change${ticked === 1 ? '' : 's'}.`
+        }</span>
                 ${detailPanel(hasDraft ? 'Unpublished changes' : 'Unsaved changes', activeEnv?.pending ?? [])}
               </span>
               <!-- Hidden rather than absent: the script shows it again the moment something on
                    the page is not in the draft, without a round trip to find that out. -->
               <span data-draft-action ${nothingToDraft ? 'hidden' : ''}>
                 ${writeAction({
-                  post: `/p/${options.service}/${options.active}`,
-                  vals: '{"intent":"save"}',
-                  attributes: html`name="intent" value="save" data-needs-ticks ${
-                    ticked === 0 ? raw('disabled') : html``
-                  }`,
-                  resting: html`<span data-label="Save {n} change{s} as draft?"
+          post: `/p/${options.service}/${options.active}`,
+          vals: '{"intent":"save"}',
+          attributes: html`name="intent" value="save" data-needs-ticks ${ticked === 0 ? raw('disabled') : html``
+            }`,
+          resting: html`<span data-label="Save {n} change{s} as draft?"
                     >Save ${ticked} change${ticked === 1 ? '' : 's'} as draft?</span>`,
-                  running: 'Saving the draft…',
-                })}
+          running: 'Saving the draft…',
+        })}
               </span>
               ${
-                // Publishing appears only once something is actually saved, and withdraws again
-                // the moment the page holds something the draft does not: two states competing
-                // for one toolbar, where offering a publish beside unsaved edits invites
-                // publishing a draft that leaves out what is on the screen.
-                //
-                // Hidden rather than absent, so the script can bring it back without a round
-                // trip. The draft count is the SERVER's — publishing ships whole drafts, so it
-                // has nothing to do with what is ticked.
-                hasDraft
-                  ? html`<span class="sep" data-publish-action ${nothingToDraft ? '' : 'hidden'}>·</span>
+        // Publishing appears only once something is actually saved, and withdraws again
+        // the moment the page holds something the draft does not: two states competing
+        // for one toolbar, where offering a publish beside unsaved edits invites
+        // publishing a draft that leaves out what is on the screen.
+        //
+        // Hidden rather than absent, so the script can bring it back without a round
+        // trip. The draft count is the SERVER's — publishing ships whole drafts, so it
+        // has nothing to do with what is ticked.
+        hasDraft
+          ? html`<span class="sep" data-publish-action ${nothingToDraft ? '' : 'hidden'}>·</span>
                       <span data-publish-action ${nothingToDraft ? '' : 'hidden'}>
                         ${writeAction({
-                          className: 'linkbtn go',
-                          post: `/p/${options.service}/${options.active}`,
-                          vals: '{"intent":"publish"}',
-                          attributes: html`name="intent" value="publish"`,
-                          resting: html`Publish ${drafts} draft${drafts === 1 ? '' : 's'} in ${options.active}?`,
-                          running: 'Publishing…',
-                        })}
+            className: 'linkbtn go',
+            post: `/p/${options.service}/${options.active}`,
+            vals: '{"intent":"publish"}',
+            attributes: html`name="intent" value="publish"`,
+            resting: html`Publish ${drafts} draft${drafts === 1 ? '' : 's'} in ${options.active}?`,
+            running: 'Publishing…',
+          })}
                       </span>`
-                  : html``
-              }
+          : html``
+        }
             </span>
           </div>
         </div>
@@ -1424,7 +1396,7 @@ export function renderProduct(options: {
 
         <div class="card" style="padding:.5rem 1.25rem 1rem;">${fields}</div>
       </form>`
-      }
+    }
     `;
   return options.fragment
     ? body
@@ -1478,15 +1450,14 @@ function promoteOffer(options: {
       <input type="hidden" name="from" value="${options.active}">
       <input type="hidden" name="to" value="${offer.nextEnvironment}">
       ${hidden}
-      ${
-        offer.movable.length === 0
-          ? html``
-          : writeAction({
-              className: 'linkbtn go',
-              resting: html`Save ${offer.movable.length} as a draft in ${offer.nextEnvironment}?`,
-              running: 'Saving the draft…',
-            })
-      }
+      ${offer.movable.length === 0
+      ? html``
+      : writeAction({
+        className: 'linkbtn go',
+        resting: html`Save ${offer.movable.length} as a draft in ${offer.nextEnvironment}?`,
+        running: 'Saving the draft…',
+      })
+    }
       <a class="linkbtn no" href="/p/${options.service}?env=${options.active}">Not now</a>
     </form>
   </div>`;
