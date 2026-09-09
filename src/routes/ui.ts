@@ -9,7 +9,7 @@ import type { DraftStore } from '../store/draft-store.js';
 import { EnvironmentOrder } from '../store/environment-order.js';
 import type { ConfigLoader } from '../store/loader.js';
 import { isMetadataKey, versionOf } from '../store/metadata.js';
-import type { ConfigWriteService } from '../store/write-service.js';
+import { type ConfigWriteService, RETIRING_ENVIRONMENT } from '../store/write-service.js';
 import { noticeFor } from '../views/notices.js';
 import {
   type EnvironmentSummary,
@@ -642,7 +642,12 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
               : products,
             ...(request.query?.q ? { query: request.query.q } : {}),
             commit: sources.commit,
-            draftCount: [...draftsByNamespace.values()].reduce((total, n) => total + n, 0),
+            // Environment work waiting, and only that. A retirement is unpublished too, but it
+            // is not an environment update: counting it here is the same mistake as offering to
+            // publish it from this screen. It is reported separately, below.
+            draftCount: [...draftsByNamespace.entries()]
+              .filter(([namespace]) => !namespace.endsWith(`/${RETIRING_ENVIRONMENT}`))
+              .reduce((total, [, saves]) => total + saves, 0),
             ...noticeQuery(request.query),
             settingsLink: maySeeSettings(request),
             build,
@@ -656,6 +661,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
                 .map((service) => service.name)
                 .filter((name) => schemaSet.isRetiring(name) || retiringDrafted.has(name)),
             ).size,
+            retiringStaged: retiringDrafted.size,
           }),
         ),
       );

@@ -264,3 +264,74 @@ describe('the saves inside a draft', () => {
     ).rejects.toThrow();
   });
 });
+
+/**
+ * A retirement staged before retirements had their own draft.
+ *
+ * Retiring a product used to attach the flag to the namespace's draft, under a declared
+ * environment. Everything that counts drafts counts per declared environment, so such a draft
+ * reads as an environment update: it is counted as work waiting to publish, it marks the
+ * environment as pending, and the products screen offers to publish it — which would fail, since
+ * the change it carries names no key any schema declares.
+ *
+ * Migrated on read, the way a draft written before saves existed is. Leaving it to be fixed by
+ * hand means the console keeps mis-describing a draft somebody already made.
+ */
+describe('a retirement staged under an environment', () => {
+  /** Writes drafts straight to disk, the way an older build left them. */
+  const storeWith = async (drafts: unknown[]) => {
+    await writeFile(path, JSON.stringify({ drafts }), 'utf8');
+    return new DraftStore(path);
+  };
+
+  const legacy = {
+    namespace: 'test/dev',
+    document: 'SESSION_TTL: 60\n',
+    changes: [{ key: 'retiring', from: undefined, to: undefined, secret: false }],
+    saves: [{ keys: ['retiring'], actor: 'me@anudeep.pro', at: 1, document: 'SESSION_TTL: 60\n' }],
+    actor: 'me@anudeep.pro',
+    updatedAt: 1,
+    files: { 'schema/test.yaml': 'version: 1\nretiring: true\nkeys: {}\n' },
+  };
+
+  it('is moved to the namespace retirements live under', async () => {
+    const store = await storeWith([legacy]);
+
+    expect((await store.all()).map((draft) => draft.namespace)).toEqual(['test/retiring']);
+  });
+
+  it('drops the change that named no key, so it can be published at all', async () => {
+    const store = await storeWith([legacy]);
+
+    expect((await store.all())[0]?.changes).toEqual([]);
+  });
+
+  it('keeps the schema it carries, which is the whole draft', async () => {
+    const store = await storeWith([legacy]);
+
+    expect((await store.all())[0]?.files?.['schema/test.yaml']).toMatch(/retiring: true/);
+  });
+
+  it('leaves an ordinary draft alone', async () => {
+    const ordinary = {
+      ...legacy,
+      changes: [{ key: 'SESSION_TTL', from: 60, to: 90, secret: false }],
+      files: {},
+    };
+    const store = await storeWith([ordinary]);
+
+    expect((await store.all())[0]?.namespace).toBe('test/dev');
+  });
+
+  // A draft holding both is not a retirement to be moved: moving it would take the value change
+  // with it, out of the environment it belongs to.
+  it('leaves a draft that also changes values where it is', async () => {
+    const mixed = {
+      ...legacy,
+      changes: [{ key: 'SESSION_TTL', from: 60, to: 90, secret: false }],
+    };
+    const store = await storeWith([mixed]);
+
+    expect((await store.all())[0]?.namespace).toBe('test/dev');
+  });
+});

@@ -428,6 +428,60 @@ withSops('adding a product', () => {
     await app.close();
   });
 
+  // "3 unpublished drafts ... nothing unpublished" is two numbers for the same thing
+  // disagreeing in public — the retirement is unpublished, it is simply not an environment
+  // update. The line has to say which it is rather than deny it exists.
+  // The count beside Products is environment work waiting. A retirement is unpublished, but it
+  // is not that, and counting it there is the same mistake as offering to publish it.
+  it('does not count a retirement among the unpublished drafts', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).not.toMatch(/unpublished draft/);
+    await app.close();
+  });
+
+  it('still counts a real environment draft there', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/dev',
+      payload: new URLSearchParams([
+        ['key.MFA_ENFORCEMENT', 'all'],
+        ['intent', 'save'],
+      ]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).toMatch(/1 unpublished draft/);
+    await app.close();
+  });
+
+  it('does not say nothing is unpublished while a retirement is staged', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).not.toMatch(/nothing unpublished/);
+    expect(page.body).toMatch(/retirement to publish/);
+    await app.close();
+  });
+
   it('shows a staged retirement on the list, before it is published', async () => {
     const { app, headers } = await build({});
 

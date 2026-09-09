@@ -91,6 +91,38 @@ const isDraft = (value: unknown): value is Draft => {
 };
 
 /**
+ * A retirement staged before retirements had a draft of their own.
+ *
+ * Retiring a product used to attach the flag to the namespace's draft, under a declared
+ * environment — and everything that counts drafts counts per declared environment. So such a
+ * draft reads as an environment update: counted as work waiting to publish, marking the
+ * environment pending, and offered to the publish action, which would then fail, because the
+ * change it carries names no key any schema declares.
+ *
+ * Recognised by shape rather than by a flag: it carries a schema file with the retirement in it,
+ * and it changes no real value. A draft that also changes a value is left exactly where it is —
+ * moving it would drag that value change out of the environment it belongs to.
+ */
+const RETIREMENT_ONLY = /^retiring$/;
+
+const asRetirement = (draft: Draft): Draft => {
+  const [service, environment] = draft.namespace.split('/');
+  if (!service || environment === 'retiring') return draft;
+
+  const schema = draft.files?.[`schema/${service}.yaml`];
+  if (!schema || !/^retiring:\s*true\s*$/m.test(schema)) return draft;
+  if (draft.changes.some((change) => !RETIREMENT_ONLY.test(change.key))) return draft;
+
+  return {
+    ...draft,
+    namespace: `${service}/retiring` as Draft['namespace'],
+    // `retiring` was never a key: it is a property of the schema, and a change naming it would
+    // be validated against a schema that has no such key and refused.
+    changes: [],
+  };
+};
+
+/**
  * A draft written before saves existed is one save.
  *
  * Reading it as none would put "Publish 0 drafts" over a draft that plainly holds changes, and
@@ -132,7 +164,7 @@ export class DraftStore {
 
     // One malformed entry discards itself, not the rest: losing every pending change because
     // one is unreadable would be a worse outcome than losing the one.
-    return drafts.filter(isDraft).map(withSaves);
+    return drafts.filter(isDraft).map(withSaves).map(asRetirement);
   }
 
   async get(namespace: Namespace): Promise<Draft | null> {

@@ -1058,6 +1058,8 @@ export function renderProducts(options: {
   draftCount?: number;
   /** How many products are marked retiring, for the link to that list. Zero renders nothing. */
   retiring?: number;
+  /** How many retirements are staged and not published: unpublished, but not environment work. */
+  retiringStaged?: number;
   notice?: PageNotice;
   error?: string;
   /** True when this viewer may open the settings page. Absent renders no link to it. */
@@ -1154,9 +1156,16 @@ export function renderProducts(options: {
                   }</a> · `
             : html``
         }Serving <code>${options.commit.slice(0, 8)}</code>${
+          // A retirement is unpublished but is not an environment update, so it is counted
+          // separately and never described as nothing. Saying "nothing unpublished" beside a
+          // count of unpublished drafts is two numbers for one thing, disagreeing in public.
           totalDrafts > 0
             ? html` · ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'} to publish`
-            : html` · nothing unpublished`
+            : (options.retiringStaged ?? 0) > 0
+              ? html` · ${options.retiringStaged} retirement${
+                  options.retiringStaged === 1 ? '' : 's'
+                } to publish`
+              : html` · nothing unpublished`
         }`,
         actions: html`${
           totalDrafts > 0
