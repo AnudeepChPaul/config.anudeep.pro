@@ -159,6 +159,33 @@ const everyState = (): Array<[string, string]> => [
       }),
     ),
   ],
+  // A page reporting an outcome is a state like any other, and it was missing here: the rule
+  // that every negative action is danger-coloured could not see Dismiss, because nothing in
+  // this list rendered one.
+  [
+    'products, reporting a success',
+    String(
+      renderProducts({
+        products: [],
+        commit,
+        notice: { tone: 'done', text: 'Published 3 changes.' },
+      }),
+    ),
+  ],
+  [
+    'product, reporting a failure',
+    String(
+      renderProduct({
+        service: 'iam',
+        environments: [env('dev', 0), env('prod', 0)],
+        active: 'dev',
+        rows,
+        commit,
+        revision: 3,
+        notice: { tone: 'problem', text: 'Publishing failed. Nothing was published.' },
+      }),
+    ),
+  ],
   ['drafts, empty', String(renderDrafts({ drafts: [] }))],
   [
     'drafts, some',
@@ -214,7 +241,8 @@ describe('the rules hold in every state, not just the ones anyone looked at', ()
   it('marks every negative action as negative', () => {
     for (const [name, html] of everyState()) {
       const negatives =
-        bodyOf(html).match(/<(?:a|button)[^>]*>[\s\S]{0,120}?(?:Not now|Clear|Drop)\b/g) ?? [];
+        bodyOf(html).match(/<(?:a|button)[^>]*>[\s\S]{0,120}?(?:Not now|Clear|Drop|Dismiss)\b/g) ??
+        [];
       for (const control of negatives) {
         expect(control, `${name}: ${control}`).toMatch(/class="linkbtn no"/);
       }

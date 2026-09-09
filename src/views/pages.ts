@@ -192,8 +192,11 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
             font-weight: 500; text-decoration: underline; text-underline-offset: 3px; }
   .notice.done { color: var(--accent); }
   .notice.problem { color: var(--danger); }
-  .notice-dismiss { color: inherit; font-weight: 400; text-decoration: underline;
-                    text-underline-offset: 3px; }
+  /* Dismissing is a negative action, so it is --danger like Drop, Not now and Clear -- the
+     operator's rule, and the one place it was not being applied: inheriting the line's colour
+     painted it as an ordinary action whenever the news was good. .linkbtn carries the colour
+     and the underline; only the weight is local, so the message stays the heavier of the two. */
+  .notice .linkbtn.no { font-weight: 400; }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
      .selection, for instance — beats it and leaves a hidden element on screen. Everything the
@@ -757,7 +760,7 @@ function noticeLine(notice: PageNotice | undefined, dismissTo: string): SafeHtml
   const done = notice.tone === 'done';
   return html`<span class="notice ${done ? 'done' : 'problem'}" data-notice ${
     done ? raw('data-transient') : html``
-  }><span class="notice-text">${notice.text}</span><a class="notice-dismiss" data-dismiss
+  }><span class="notice-text">${notice.text}</span><a class="linkbtn no" data-dismiss
       href="${dismissTo}" hx-get="${dismissTo}" hx-target="#page" hx-swap="innerHTML"
       hx-push-url="true">Dismiss</a></span>`;
 }

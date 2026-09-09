@@ -557,6 +557,14 @@ describe('the notice line', () => {
     expect(rule('.notice.problem')).toMatch(/color:\s*var\(--danger\)/);
   });
 
+  // The rule is the operator's: a negative or dismissive action is --danger, wherever it is.
+  // Dismiss inherited the line's colour, so on a confirmation it was painted as an ordinary
+  // action in --accent -- the one place the rule was not being applied.
+  it('paints its dismiss as the negative action it is', () => {
+    expect(rule('.notice .linkbtn.no')).toMatch(/var\(--danger\)|font-weight/);
+    expect(rule('.notice-dismiss')).not.toMatch(/color:\s*inherit/);
+  });
+
   it('is not a banner: no border, no fill', () => {
     expect(rule('.notice')).not.toMatch(/border:|background:/);
   });
