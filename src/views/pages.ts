@@ -159,7 +159,8 @@ const layout = (
   .field { margin-bottom: 1rem; }
   /* The add-product form: fields side by side where they belong together, and each key in its
      own card so a schema of several keys reads as a list rather than one long column. */
-  .fieldrow { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+  .fieldrow { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 1rem; }
+  .fieldrow:last-child { margin-bottom: 0; }
   .fieldrow .field { flex: 1 1 12rem; margin-bottom: .75rem; }
   .fieldrow .field.wide { flex-basis: 100%; }
   .fieldlabel { display: block; font-size: var(--type-sm); font-weight: 500; margin-bottom: 4px; }
@@ -392,6 +393,7 @@ ${
      else's network is down is exactly backwards for a tool reached during an incident. -->
 <script src="/assets/htmx.js" defer></script>
 <script src="/assets/ticks.js" defer></script>
+<script src="/assets/keys.js" defer></script>
 </body>
 </html>`;
 
@@ -1176,7 +1178,7 @@ export function renderNewProduct(options: {
 
   const keyRows = rows.map((row, index) => {
     const name = row.name ?? '';
-    return html`<div class="card keydraft">
+    return html`<div class="card keydraft" data-key-row>
       <div class="fieldrow">
         <label class="field">
           <span class="fieldlabel">Key</span>
@@ -1185,34 +1187,38 @@ export function renderNewProduct(options: {
         </label>
         <label class="field">
           <span class="fieldlabel">Type</span>
-          <select name="key.${index}.type">
+          <select name="key.${index}.type" data-key-type>
             ${['string', 'int', 'bool', 'url', 'string[]'].map(
               (type) =>
                 html`<option value="${type}" ${row.type === type ? raw('selected') : html``}>${type}</option>`,
             )}
           </select>
         </label>
-        <label class="field checkfield">
-          <input type="checkbox" name="key.${index}.secret" value="1" ${
+        <!-- Only a string can be secret: the file records a string marked secret, so there is
+             no such thing as a secret int. -->
+        <label class="field checkfield" data-when="string">
+          <input type="checkbox" name="key.${index}.secret" value="1" data-key-secret ${
             row.secret ? raw('checked') : html``
           }>
           <span class="fieldlabel">Secret</span>
         </label>
       </div>
       <div class="fieldrow">
-        <label class="field">
+        <label class="field" data-when="string" data-not-secret>
           <span class="fieldlabel">Values <span class="hint">comma separated</span></span>
           <input type="text" name="key.${index}.values" value="${row.values ?? ''}" placeholder="optional, all">
         </label>
-        <label class="field">
+        <label class="field" data-when="int">
           <span class="fieldlabel">Min</span>
           <input type="text" name="key.${index}.min" value="${row.min ?? ''}" inputmode="numeric">
         </label>
-        <label class="field">
+        <label class="field" data-when="int">
           <span class="fieldlabel">Max</span>
           <input type="text" name="key.${index}.max" value="${row.max ?? ''}" inputmode="numeric">
         </label>
-        <label class="field">
+        <!-- Every type but a secret has a default, and it defaults to nothing: blank means the
+             key is declared without a value. -->
+        <label class="field" data-when="string int bool url string[]" data-not-secret>
           <span class="fieldlabel">Default <span class="hint">blank means none</span></span>
           <input type="text" name="key.${index}.default" value="${row.default ?? ''}">
         </label>
