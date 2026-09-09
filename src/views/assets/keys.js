@@ -59,6 +59,79 @@
     if (row) apply(row);
   });
 
+  /**
+   * Leaving the form.
+   *
+   * The question is asked in the action line rather than through hx-confirm. The browser's own
+   * dialog is modal, styled by the browser and not by this console, and blocks every event until
+   * it is answered -- so a question about the page arrives from somewhere that looks nothing
+   * like it.
+   *
+   * Asked only when there is something to lose. A form nobody has typed into has nothing to
+   * confirm, and asking anyway teaches the operator to dismiss the question without reading it.
+   *
+   * With no script the link is an ordinary link and simply leaves. A form that could not be left
+   * without JavaScript would be worse than one that leaves without asking.
+   */
+  const touched = (form) => {
+    for (const input of form.querySelectorAll('input, select, textarea')) {
+      if (input.type === 'checkbox') continue;
+      if (input.name === 'environment') continue;
+      // A select always has a value; only a CHANGED one counts as something typed.
+      if (input.tagName === 'SELECT') {
+        if (input.selectedIndex > 0) return true;
+        continue;
+      }
+      if ((input.value || '').trim().length > 0) return true;
+    }
+    return false;
+  };
+
+  /**
+   * CAPTURE, not bubble.
+   *
+   * htmx binds its own listener to the element carrying hx-get, and an element's listener runs
+   * before a document-level one in the bubble phase -- so stopping propagation there is already
+   * too late and the page swaps out from under the question. Capture runs first, everywhere.
+   *
+   * Verified in a browser rather than in jsdom, which has no htmx to be beaten to the event:
+   * removing this flag passes every test here and navigates away in Chrome.
+   */
+  document.addEventListener(
+    'click',
+    (event) => {
+      const target = event.target;
+      if (!target || !target.closest) return;
+      const leaving = target.closest('[data-discard]');
+      if (!leaving) return;
+      const form = document.querySelector('#new-product');
+      if (!form || !touched(form)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      const line = leaving.closest('.actionline');
+      const ask = line && line.querySelector('[data-discard-confirm]');
+      if (ask) ask.hidden = false;
+      leaving.hidden = true;
+    },
+    true,
+  );
+
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!target || !target.closest) return;
+
+    const keep = target.closest('[data-keep]');
+    if (keep) {
+      const line = keep.closest('.actionline');
+      const ask = line && line.querySelector('[data-discard-confirm]');
+      const discard = line && line.querySelector('[data-discard]');
+      if (ask) ask.hidden = true;
+      if (discard) discard.hidden = false;
+      return;
+    }
+  });
+
   applyAll();
   document.addEventListener('htmx:afterSwap', applyAll);
 })();

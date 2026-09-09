@@ -198,3 +198,82 @@ describe('every other type', () => {
     expect(secretBox().checked).toBe(false);
   });
 });
+
+/**
+ * Leaving the form.
+ *
+ * Discard used to raise the browser's own confirm dialog through hx-confirm. That dialog is
+ * modal, styled by the browser rather than by this console, and it blocks every event until it
+ * is answered — so the answer to "did you mean it?" arrives from somewhere that looks nothing
+ * like the page asking. The question is asked in the action line instead, where it was raised.
+ *
+ * With no script the Discard link is an ordinary link and simply leaves: the confirmation is an
+ * enhancement, and a form that could not be left without JavaScript would be worse than one that
+ * leaves without asking.
+ */
+describe('discarding the form', () => {
+  const actions = () => document.querySelector('.actionline') as HTMLElement;
+  const discard = () => actions().querySelector('[data-discard]') as HTMLAnchorElement;
+  const confirmRow = () => actions().querySelector('[data-discard-confirm]') as HTMLElement;
+  const keepEditing = () => actions().querySelector('[data-keep]') as HTMLElement;
+  const draftButton = () => actions().querySelector('button') as HTMLButtonElement;
+
+  const typeSomething = () => {
+    const name = document.querySelector('[name="name"]') as HTMLInputElement;
+    name.value = 'billing';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+
+  it('raises no browser dialog, which is what hx-confirm did', () => {
+    expect(discard().getAttribute('hx-confirm')).toBeNull();
+  });
+
+  it('asks in the action line once something has been typed', () => {
+    typeSomething();
+    discard().click();
+
+    expect(confirmRow().hidden).toBe(false);
+    expect(confirmRow().textContent).toMatch(/unsaved changes/i);
+  });
+
+  it('keeps the form when the question is answered no', () => {
+    typeSomething();
+    discard().click();
+    keepEditing().click();
+
+    expect(confirmRow().hidden).toBe(true);
+    expect(document.querySelector('#new-product')).toBeTruthy();
+  });
+
+  // Draft stays reachable throughout: the operator asked for that explicitly, and a form that
+  // hides the way to KEEP the work while asking about losing it is asking a leading question.
+  it('leaves the draft action in place while it asks', () => {
+    typeSomething();
+    discard().click();
+
+    expect(draftButton().hidden).toBe(false);
+  });
+
+  it('does not ask when nothing has been typed', () => {
+    discard().click();
+
+    expect(confirmRow().hidden).toBe(true);
+  });
+});
+
+describe('the action line', () => {
+  it('sits above the fields, not below them', () => {
+    const form = document.querySelector('#new-product') as HTMLElement;
+    const rows = [...form.children];
+    const line = form.querySelector('.actionline') as HTMLElement;
+    const firstCard = form.querySelector('.card') as HTMLElement;
+
+    expect(rows.indexOf(line)).toBeLessThan(rows.indexOf(firstCard));
+  });
+});
+
+describe('the secret checkbox', () => {
+  it('says what ticking it means', () => {
+    expect(secretBox().closest('label')?.textContent).toMatch(/treated as secret/i);
+  });
+});

@@ -185,7 +185,12 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
    * The form is rendered from the declared environments, and every field it collects is checked
    * again when it comes back: the inputs are a convenience, the POST body is user input.
    */
-  app.get('/products/new', async (request: FastifyRequest, reply) =>
+  // `/p/new`, beside `/p/iam` and `/p/audit`: adding a product is where products are.
+  //
+  // Fastify matches a static segment before a parameter, so this wins over `/p/:service` and a
+  // product could never be reached at this address — which is why 'new' is a reserved name and
+  // the form refuses it below.
+  app.get('/p/new', async (request: FastifyRequest, reply) =>
     reply.type('text/html; charset=utf-8').send(
       String(
         renderNewProduct({
@@ -199,7 +204,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
   );
 
   app.post(
-    '/products',
+    '/p/new',
     async (request: FastifyRequest<{ Body: Record<string, string | string[]> }>, reply) => {
       const body = request.body ?? {};
       const name = String(body.name ?? '').trim();
@@ -213,6 +218,12 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           key: '',
           message: `'${name}' is not a valid product name: lower case, letters, digits and hyphens`,
         });
+      }
+      // The form lives at /p/new, and Fastify matches a static segment before a parameter, so a
+      // product called 'new' would have a page nothing could ever reach. Refused here rather
+      // than discovered by whoever first tries to open it.
+      if (name === 'new') {
+        problems.push({ key: '', message: "'new' is reserved: it is the address of this form" });
       }
       // Not Number(): an empty string is 0, and 0 is a real uid — root's.
       if (!/^\d+$/.test(uid)) {

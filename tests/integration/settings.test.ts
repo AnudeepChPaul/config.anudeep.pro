@@ -248,7 +248,7 @@ withSops('adding a product', () => {
     const { app, drafts, headers } = await build();
     const response = await app.inject({
       method: 'POST',
-      url: '/products',
+      url: '/p/new',
       payload: new URLSearchParams(fields).toString(),
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
     });
@@ -276,9 +276,19 @@ withSops('adding a product', () => {
     return [...fields.filter(([field]) => !overridden.has(field)), ...over];
   };
 
+  // A static segment beats a parameter in Fastify, so /p/new is the form and never a product.
+  // A product called 'new' would therefore have a page nothing could reach.
+  it("refuses a product called 'new', whose page could never be opened", async () => {
+    const { response, staged } = await post(audit([['name', 'new']]));
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toMatch(/reserved/);
+    expect(staged.length).toBe(0);
+  });
+
   it('offers the form, listing the declared environments', async () => {
     const { app, headers } = await build();
-    const page = await app.inject({ method: 'GET', url: '/products/new', headers });
+    const page = await app.inject({ method: 'GET', url: '/p/new', headers });
 
     expect(page.statusCode).toBe(200);
     expect(page.body).toContain('value="dev"');

@@ -163,12 +163,15 @@ const layout = (
   .fieldrow:last-child { margin-bottom: 0; }
   .fieldrow .field { flex: 1 1 12rem; margin-bottom: 0; }
   .fieldrow .field.wide { flex-basis: 100%; }
-  .fieldlabel { display: block; font-size: var(--type-sm); font-weight: 500; margin-bottom: 4px; }
+  .fieldlabel { display: block; font-size: var(--type-sm); font-weight: 500; margin-bottom: 0; }
   .fieldlabel .hint { font-weight: 400; }
   .checkfield { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
   .checkfield input { width: 16px; height: 16px; accent-color: var(--ink); }
   .checkfield .fieldlabel { margin: 0; }
   .keydraft { margin-bottom: 12px; }
+  .actionline { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .discard-ask { display: inline-flex; align-items: center; gap: 10px;
+                 font-size: var(--type-sm); color: var(--danger); }
   input[type=text], input[type=password], input[type=number], input[type=search], select, textarea {
     width: 100%; height: var(--control-h); padding: 0 .6rem; border: 1px solid var(--field-line);
     border-radius: var(--radius); font: inherit; font-size: var(--type-base);
@@ -1124,7 +1127,7 @@ export function renderProducts(options: {
               })
             : html``
         }${totalDrafts > 0 ? html`<span class="sep">·</span>` : html``}<a class="linkbtn"
-            href="/products/new" hx-get="/products/new" hx-target="#page" hx-swap="innerHTML"
+            href="/p/new" hx-get="/p/new" hx-target="#page" hx-swap="innerHTML"
             hx-push-url="true">Add a product</a>`,
       })}
       ${
@@ -1206,7 +1209,7 @@ export function renderNewProduct(options: {
           <input type="checkbox" name="key.${index}.secret" value="1" data-key-secret ${
             row.secret ? raw('checked') : html``
           }>
-          <span class="fieldlabel">Secret</span>
+          <span class="fieldlabel">This will be treated as secret</span>
         </label>
       </div>
       <div class="fieldrow">
@@ -1258,8 +1261,34 @@ export function renderNewProduct(options: {
         facts: html`An identity, a schema, and the environments it lives in`,
       })}
       ${about('').map((problem) => html`<div class="card error">${problem.message}</div>`)}
-      <form method="post" action="/products" hx-post="/products" hx-target="#page"
+      <form method="post" action="/p/new" hx-post="/p/new" hx-target="#page"
             hx-swap="innerHTML" id="new-product">
+        <!-- Above the fields: the two things you can do with this form are worth seeing before
+             filling it in, and after a refusal they are where the eye already is. -->
+        <div class="actionline">
+          ${writeAction({
+            className: 'linkbtn go',
+            post: '/p/new',
+            include: '#new-product',
+            resting: html`Save as a draft`,
+            running: 'Saving the draft…',
+          })}
+          <span class="sep">·</span>
+          <!-- A plain link, so the form can be left with no script at all. The confirmation is
+               asked HERE rather than through hx-confirm: the browser's own dialog is modal,
+               styled by the browser rather than by this console, and blocks every event until
+               it is answered — so the question arrives from somewhere that looks nothing like
+               the page that raised it. -->
+          <a class="linkbtn no" data-discard href="/" hx-get="/" hx-target="#page"
+             hx-swap="innerHTML" hx-push-url="true">Discard</a>
+          <span class="discard-ask" data-discard-confirm hidden>
+            <span>You have unsaved changes. You still want to Discard?</span>
+            <a class="linkbtn no" href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML"
+               hx-push-url="true">Yes, discard</a>
+            <span class="sep">·</span>
+            <button type="button" class="linkbtn" data-keep>Keep editing</button>
+          </span>
+        </div>
         <div class="card">
           <div class="fieldrow">
             <label class="field">
@@ -1287,21 +1316,6 @@ export function renderNewProduct(options: {
           </div>
         </div>
         ${keyRows}
-        <div class="actionline">
-          ${writeAction({
-            className: 'linkbtn go',
-            post: '/products',
-            include: '#new-product',
-            resting: html`Save as a draft`,
-            running: 'Saving the draft…',
-          })}
-          <span class="sep">·</span>
-          <!-- Confirmed, because the form holds a whole schema and leaving is the one action here
-               that cannot be undone by pressing something else. -->
-          <a class="linkbtn no" href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML"
-             hx-push-url="true"
-             hx-confirm="You have unsaved changes. You still want to Discard?">Discard</a>
-        </div>
       </form>
     `;
 
