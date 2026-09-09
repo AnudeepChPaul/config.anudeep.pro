@@ -208,6 +208,33 @@ keys:
     });
   });
 
+  /**
+   * A product whose keys declare no defaults.
+   *
+   * Its draft moves no key, because there is no value to move — and "moves no key" was the rule
+   * publish used to decide a draft was about files rather than values. So the first
+   * environment's file, which is the draft's own document, was never written: the product
+   * arrived declared, schema and all, with one environment missing.
+   */
+  it('creates every environment file even when nothing has a default', async () => {
+    const staged = await service.stageProduct(
+      {
+        service: 'audit',
+        uid: 1004,
+        environments: ['dev', 'prod'],
+        schema: 'version: 1\nkeys:\n  TOKEN:\n    type: string\n    secret: true\n',
+        defaults: {},
+      },
+      ACTOR,
+    );
+    expect(staged.ok).toBe(true);
+
+    await service.publish(['audit/dev'], ACTOR, REQUEST);
+
+    expect(await git.readFile('config/audit/dev.yaml')).toBeTruthy();
+    expect(await git.readFile('config/audit/prod.yaml')).toBeTruthy();
+  });
+
   it('stages one draft, not one per file', async () => {
     const staged = await addAudit();
 

@@ -731,10 +731,15 @@ export class ConfigWriteService {
 
         const chosen = draft.changes.map((change) => change.key);
 
-        // A draft that moved no key is not about the values: it carries files — a schema flag,
-        // a registry entry — and rewriting the namespace document would bump its revision for a
-        // change nobody made. That counter is how a consumer decides whether it is up to date.
-        if (chosen.length === 0 && draft.files && Object.keys(draft.files).length > 0) {
+        // A RETIREMENT carries files and no document worth writing: rewriting the namespace
+        // would bump its revision for a change nobody made, and that counter is how a consumer
+        // decides whether it is up to date.
+        //
+        // Recognised by which namespace it is filed under, not by having no changes. Inferring
+        // it from an empty change list caught a product whose keys declare no defaults — that
+        // draft moves no key either, and skipping its document left the product declared, schema
+        // and all, with its first environment missing.
+        if (selection.namespace.endsWith(`/${RETIRING_ENVIRONMENT}`)) {
           Object.assign(files, draft.files);
           summaryLines.push(...draft.saves.map((save) => draftLine(selection.namespace, save)));
           drafted += draft.saves.length;
