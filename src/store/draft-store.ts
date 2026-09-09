@@ -64,6 +64,16 @@ export interface Draft {
    * the difference between "the file appearing underneath me is a conflict" and "I cannot tell".
    */
   readonly basedOn?: string | null;
+  /**
+   * Other files this draft commits alongside its document, by path.
+   *
+   * A product is three kinds of file at once — an entry in services.yaml, a schema, and one
+   * environment file per environment — and they have to land together. A registry entry without
+   * its schema is a product nobody can open; a schema without its entry is a file nothing reads.
+   * Publishing them as separate drafts would leave the registry in one of those states for as
+   * long as it took to publish the second.
+   */
+  readonly files?: Readonly<Record<string, string>>;
 }
 
 export class DraftError extends Error {}

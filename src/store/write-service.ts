@@ -1,4 +1,4 @@
-import { stringify as stringifyYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import {
   type Actor,
   CommitTrailerBuilder,
@@ -8,7 +8,7 @@ import {
 import type { GitRepository } from '../git/repository.js';
 import { WriteLock } from '../git/write-lock.js';
 import { err, ok, type Result } from '../identity/types.js';
-import type { SchemaSet, ValidationError } from '../schema/validator.js';
+import { SchemaSet, type ValidationError } from '../schema/validator.js';
 import type { Draft, DraftChange, DraftStore } from './draft-store.js';
 import type { ConfigLoader } from './loader.js';
 import { bumpedVersion, VERSION_KEY, versionOf } from './metadata.js';
@@ -80,6 +80,17 @@ export interface PromoteRequest {
   readonly from: string;
   readonly to: string;
   readonly keys: readonly string[];
+}
+
+/** A product to declare: its identity, where it lives, and what its keys are. */
+export interface ProductRequest {
+  readonly service: string;
+  readonly uid: number;
+  readonly environments: readonly string[];
+  /** The schema file, already built and validated by `buildSchema`. */
+  readonly schema: string;
+  /** What each environment file starts with. Secrets are absent, never null. */
+  readonly defaults: Readonly<Record<string, unknown>>;
 }
 
 export interface StageRequest {
@@ -214,6 +225,119 @@ export class ConfigWriteService {
    * it, so an operator learns a value is wrong when they type it rather than when they try to
    * ship three environments at once.
    */
+  /**
+   * The committed grant table, or an empty one where the registry has none yet.
+   *
+   * Read here rather than taken from the caller: the uid check has to be against what is
+   * actually committed, and a form that posted its own copy of the table would be checking
+   * against whatever it was rendered with.
+   */
+  private async readRegistry(): Promise<string> {
+    try {
+      return await this.options.repository.readFile('services.yaml');
+    } catch {
+      return 'version: 1\nservices: []\n';
+    }
+  }
+
+  /**
+   * Declares a product: a registry entry, a schema, and one file per environment, in one draft.
+   *
+   * One draft rather than three, because these files are only meaningful together. A registry
+   * entry without its schema is a product the console refuses to open; a schema without its
+   * entry is a file nothing reads; an environment file without either is unreachable. Publishing
+   * them separately would leave the registry in one of those states for as long as it took
+   * somebody to publish the second one -- and drafts are dropped and published by hand.
+   *
+   * The uid check happens here, against the committed registry, and not only in the form: a
+   * duplicate uid makes ServiceRegistry throw at load, which takes the whole console down rather
+   * than failing the request that caused it.
+   */
+  async stageProduct(request: ProductRequest, actor: Actor): Promise<Result<Draft, SaveError>> {
+    const drafts = this.options.drafts;
+    if (!drafts) return err({ code: 'failed', detail: 'staging is not enabled' });
+
+    if (request.environments.length === 0) {
+      return err({
+        code: 'failed',
+        detail: 'a product must be declared in at least one environment',
+      });
+    }
+
+    return this.lock.withLock(async () => {
+      const registrySource = await this.readRegistry();
+      const registry = parseYaml(registrySource) as {
+        version?: number;
+        services?: Array<{ name: string; uid: number; namespaces: string[] }>;
+      } | null;
+      const services = registry?.services ?? [];
+
+      const claimed = services.find((entry) => entry.uid === request.uid);
+      if (claimed) {
+        return err({
+          code: 'failed',
+          detail: `uid ${request.uid} is already claimed by '${claimed.name}'`,
+        });
+      }
+      if (services.some((entry) => entry.name === request.service)) {
+        return err({ code: 'failed', detail: `'${request.service}' is already declared` });
+      }
+
+      const namespaces = request.environments.map((env) => `${request.service}/${env}`);
+      const next = {
+        version: registry?.version ?? 1,
+        services: [...services, { name: request.service, uid: request.uid, namespaces }],
+      };
+
+      // Every environment file, encrypted as it will be committed. The defaults come from the
+      // schema and hold no secret: a secret is declared and set later, on the product page.
+      const files: Record<string, string> = {
+        'services.yaml': stringifyYaml(next),
+        [`schema/${request.service}.yaml`]: request.schema,
+      };
+      const document: Record<string, unknown> = { ...request.defaults, [VERSION_KEY]: 1 };
+      for (const namespace of namespaces.slice(1)) {
+        files[`config/${namespace}.yaml`] = await this.options.encryptor.encrypt(
+          namespace,
+          stringifyYaml(sortKeys(document)),
+        );
+      }
+
+      const primary = namespaces[0] as string;
+      const draft: Draft = {
+        namespace: primary,
+        document: await this.options.encryptor.encrypt(primary, stringifyYaml(sortKeys(document))),
+        changes: Object.keys(request.defaults).map((key) => ({
+          key,
+          from: undefined,
+          to: request.defaults[key],
+          // Nothing here is secret: a secret is declared without a value and set later.
+          secret: false,
+        })),
+        saves: [
+          {
+            keys: Object.keys(request.defaults),
+            actor: actor.email,
+            at: Date.now(),
+            document: await this.options.encryptor.encrypt(
+              primary,
+              stringifyYaml(sortKeys(document)),
+            ),
+          },
+        ],
+        actor: actor.email,
+        updatedAt: Date.now(),
+        // Nothing was there before: this draft creates the namespace, and null says so rather
+        // than leaving it unknowable.
+        basedOn: null,
+        files,
+      };
+
+      await drafts.put(draft);
+      return ok(draft);
+    });
+  }
+
   async stage(request: StageRequest, actor: Actor): Promise<Result<Draft, SaveError>> {
     const drafts = this.options.drafts;
     if (!drafts) return err({ code: 'failed', detail: 'staging is not enabled' });
@@ -413,7 +537,18 @@ export class ConfigWriteService {
         // it is up to date when it is not.
         next[VERSION_KEY] = Math.max(versionOf(stagedConfig), versionOf(committed) + 1);
 
-        const validation = schemas.validate(service, next);
+        // A draft that DECLARES a service carries its schema, and the committed set cannot know
+        // about it: the schema is the thing being added. Validating against the committed set
+        // would refuse every product the console creates, on the grounds that it has no schema.
+        const carried = draft.files?.[`schema/${service}.yaml`];
+        const effective = carried
+          ? SchemaSet.fromFiles({
+              ...(await this.options.repository.readSchemas()),
+              [service]: carried,
+            })
+          : schemas;
+
+        const validation = effective.validate(service, next);
         if (!validation.ok) {
           return err({
             code: 'invalid',
@@ -435,6 +570,10 @@ export class ConfigWriteService {
         }
 
         files[`config/${selection.namespace}.yaml`] = document;
+        // Whatever else this draft declares — a registry entry, a schema, the other environment
+        // files of a product being created — lands in the same commit. Separately, the registry
+        // would spend the time between two publishes in a state it should never be in.
+        Object.assign(files, draft.files ?? {});
         // One line per draft, in the order the saves were made.
         summaryLines.push(...draft.saves.map((save) => draftLine(selection.namespace, save)));
         drafted += draft.saves.length;
