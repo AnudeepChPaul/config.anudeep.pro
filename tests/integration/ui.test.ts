@@ -1254,6 +1254,19 @@ keys:
       expect(notice?.[0]).toContain('problem');
     });
 
+    // htmx does not swap a 4xx response by default, and hx-retarget does not change that. Every
+    // validation error the server rendered was therefore discarded by the browser: saving an
+    // out-of-range value looked like pressing a button that did nothing at all.
+    it('swaps a refused save in, so its errors are on the screen', async () => {
+      const script = (
+        await app5.inject({ method: 'GET', url: '/assets/ticks.js', headers: signedIn.headers })
+      ).body;
+
+      expect(script).toContain('htmx:beforeSwap');
+      expect(script).toContain('422');
+      expect(script).toContain('shouldSwap');
+    });
+
     it('clears a transient notice after five seconds, and only a transient one', async () => {
       const script = (
         await app5.inject({ method: 'GET', url: '/assets/ticks.js', headers: signedIn.headers })
@@ -1326,6 +1339,39 @@ keys:
       expect(plain.statusCode).toBe(303);
       // The redirect names the outcome rather than carrying a sentence a link could forge.
       expect(plain.headers.location).toMatch(/done=nothing-staged/);
+    });
+
+    // The confirmation for this went missing without a single test failing: respond() stopped
+    // accepting `notice`, the branch went on passing it inside a SPREAD, and TypeScript does not
+    // excess-property-check a spread. Creating an environment reported nothing at all.
+    it('offers to add a declared environment that has no file', async () => {
+      // api/dev is declared by environments.yaml and has no file behind it.
+      const page = await app5.inject({
+        method: 'GET',
+        url: '/p/api?env=prod',
+        headers: signedIn.headers,
+      });
+
+      expect(page.body).toMatch(/Add dev/);
+    });
+
+    // Not disabled: absent. A disabled control asks the reader to work out why, and the answer
+    // -- "every environment already exists" -- is worth nothing to them.
+    it('offers nothing where every declared environment already exists', async () => {
+      const page = await app5.inject({
+        method: 'GET',
+        url: '/p/iam?env=dev',
+        headers: signedIn.headers,
+      });
+
+      expect(page.body).not.toMatch(/Add dev|Add prod/);
+    });
+
+    it('says so when it creates an environment', async () => {
+      const response = await post('/p/api/dev', [['intent', 'create']]);
+
+      expect(response.statusCode).toBe(303);
+      expect(String(response.headers.location)).toContain('done=created');
     });
 
     it('offers to create a declared environment that has no file yet', async () => {

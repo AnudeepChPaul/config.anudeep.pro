@@ -157,6 +157,17 @@ const layout = (
   label { display: block; font-weight: 600; font-size: var(--type-sm); margin-bottom: .25rem; }
   .hint { color: var(--muted); font-size: .75rem; font-weight: 400; }
   .field { margin-bottom: 1rem; }
+  /* The add-product form: fields side by side where they belong together, and each key in its
+     own card so a schema of several keys reads as a list rather than one long column. */
+  .fieldrow { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+  .fieldrow .field { flex: 1 1 12rem; margin-bottom: .75rem; }
+  .fieldrow .field.wide { flex-basis: 100%; }
+  .fieldlabel { display: block; font-size: var(--type-sm); font-weight: 500; margin-bottom: 4px; }
+  .fieldlabel .hint { font-weight: 400; }
+  .checkfield { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .checkfield input { width: 16px; height: 16px; accent-color: var(--ink); }
+  .checkfield .fieldlabel { margin: 0; }
+  .keydraft { margin-bottom: 12px; }
   input[type=text], input[type=password], input[type=number], input[type=search], select, textarea {
     width: 100%; height: var(--control-h); padding: 0 .6rem; border: 1px solid var(--field-line);
     border-radius: var(--radius); font: inherit; font-size: var(--type-base);
@@ -234,6 +245,7 @@ const layout = (
      took the padding with it, leaving every row flush against the edge. */
   .settings-row { padding: 7px 16px; }
   .settings-row + .settings-row { border-top: 1px solid var(--hair); }
+  .tabadd { display: inline-flex; align-items: center; gap: 10px; margin-left: 12px; }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
      .selection, for instance — beats it and leaves a hidden element on screen. Everything the
@@ -1098,7 +1110,7 @@ export function renderProducts(options: {
             ? html` · ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'} to publish`
             : html` · nothing unpublished`
         }`,
-        actions:
+        actions: html`${
           totalDrafts > 0
             ? writeAction({
                 className: 'linkbtn go',
@@ -1108,7 +1120,10 @@ export function renderProducts(options: {
                 resting: html`Publish selected drafts?`,
                 running: 'Publishing…',
               })
-            : html``,
+            : html``
+        }${totalDrafts > 0 ? html`<span class="sep">·</span>` : html``}<a class="linkbtn"
+            href="/products/new" hx-get="/products/new" hx-target="#page" hx-swap="innerHTML"
+            hx-push-url="true">Add a product</a>`,
       })}
       ${
         options.query && options.products.length === 0
@@ -1125,6 +1140,150 @@ export function renderProducts(options: {
     `;
 
   return options.fragment ? body : layout('Products', body, options.settingsLink, options.build);
+}
+
+/**
+ * Declaring a product.
+ *
+ * Three things at once — an identity, where it lives, and what its keys are — because the console
+ * refuses to render a product that has no schema, so a form collecting only the identity would
+ * create something it then will not open.
+ *
+ * Every field is checked again on the server. The type chosen here decides which inputs are
+ * useful, but a POST body is user input and `buildSchema` is what actually decides.
+ */
+export function renderNewProduct(options: {
+  environments: readonly string[];
+  /** What was typed, so a refused form comes back filled in rather than blank. */
+  draft?: {
+    name?: string;
+    uid?: string;
+    environments?: readonly string[];
+    keys?: ReadonlyArray<Record<string, string>>;
+  };
+  /** Problems by key name; anything about the product itself is filed under ''. */
+  problems?: ReadonlyArray<{ key: string; message: string }>;
+  settingsLink?: boolean;
+  build?: string;
+  fragment?: boolean;
+}): SafeHtml {
+  const typed = options.draft ?? {};
+  const problems = options.problems ?? [];
+  const about = (key: string) => problems.filter((problem) => problem.key === key);
+  // One blank row is always offered: a schema with no keys is allowed, but making someone press
+  // "add" before they can type anything asks a question nobody has a reason to answer.
+  const rows = typed.keys && typed.keys.length > 0 ? typed.keys : [{}];
+
+  const keyRows = rows.map((row, index) => {
+    const name = row.name ?? '';
+    return html`<div class="card keydraft">
+      <div class="fieldrow">
+        <label class="field">
+          <span class="fieldlabel">Key</span>
+          <input type="text" name="key.${index}.name" value="${name}" placeholder="SESSION_TTL"
+                 spellcheck="false">
+        </label>
+        <label class="field">
+          <span class="fieldlabel">Type</span>
+          <select name="key.${index}.type">
+            ${['string', 'int', 'bool', 'url', 'string[]'].map(
+              (type) =>
+                html`<option value="${type}" ${row.type === type ? raw('selected') : html``}>${type}</option>`,
+            )}
+          </select>
+        </label>
+        <label class="field checkfield">
+          <input type="checkbox" name="key.${index}.secret" value="1" ${
+            row.secret ? raw('checked') : html``
+          }>
+          <span class="fieldlabel">Secret</span>
+        </label>
+      </div>
+      <div class="fieldrow">
+        <label class="field">
+          <span class="fieldlabel">Values <span class="hint">comma separated</span></span>
+          <input type="text" name="key.${index}.values" value="${row.values ?? ''}" placeholder="optional, all">
+        </label>
+        <label class="field">
+          <span class="fieldlabel">Min</span>
+          <input type="text" name="key.${index}.min" value="${row.min ?? ''}" inputmode="numeric">
+        </label>
+        <label class="field">
+          <span class="fieldlabel">Max</span>
+          <input type="text" name="key.${index}.max" value="${row.max ?? ''}" inputmode="numeric">
+        </label>
+        <label class="field">
+          <span class="fieldlabel">Default <span class="hint">blank means none</span></span>
+          <input type="text" name="key.${index}.default" value="${row.default ?? ''}">
+        </label>
+      </div>
+      <div class="fieldrow">
+        <label class="field wide">
+          <span class="fieldlabel">Description</span>
+          <input type="text" name="key.${index}.description" value="${row.description ?? ''}"
+                 placeholder="What this key does">
+        </label>
+      </div>
+      ${about(name).map((problem) => html`<p class="err">${problem.message}</p>`)}
+    </div>`;
+  });
+
+  const body = html`
+      ${pageHeader({
+        title: trail('Add a product'),
+        facts: html`An identity, a schema, and the environments it lives in`,
+      })}
+      ${about('').map((problem) => html`<div class="card error">${problem.message}</div>`)}
+      <form method="post" action="/products" hx-post="/products" hx-target="#page"
+            hx-swap="innerHTML" id="new-product">
+        <div class="card">
+          <div class="fieldrow">
+            <label class="field">
+              <span class="fieldlabel">Name</span>
+              <input type="text" name="name" value="${typed.name ?? ''}" placeholder="audit"
+                     spellcheck="false">
+            </label>
+            <label class="field">
+              <span class="fieldlabel">uid <span class="hint">must be unique</span></span>
+              <input type="text" name="uid" value="${typed.uid ?? ''}" inputmode="numeric" placeholder="1004">
+            </label>
+          </div>
+          <div class="fieldrow">
+            <span class="fieldlabel">Environments</span>
+            ${options.environments.map(
+              (environment) => html`<label class="field checkfield">
+                <input type="checkbox" name="environment" value="${environment}" ${
+                  (typed.environments ?? options.environments).includes(environment)
+                    ? raw('checked')
+                    : html``
+                }>
+                <span>${environment}</span>
+              </label>`,
+            )}
+          </div>
+        </div>
+        ${keyRows}
+        <div class="actionline">
+          ${writeAction({
+            className: 'linkbtn go',
+            post: '/products',
+            include: '#new-product',
+            resting: html`Save as a draft`,
+            running: 'Saving the draft…',
+          })}
+          <span class="sep">·</span>
+          <!-- Confirmed, because the form holds a whole schema and leaving is the one action here
+               that cannot be undone by pressing something else. -->
+          <a class="linkbtn no" href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML"
+             hx-push-url="true"
+             hx-confirm="You have unsaved changes. You still want to Discard?">Discard</a>
+        </div>
+      </form>
+    `;
+
+  return options.fragment
+    ? body
+    : layout('Add a product', body, options.settingsLink, options.build);
 }
 
 /** Inside a product: environments as tabs, each flagged when it holds unpublished changes. */
@@ -1154,6 +1313,13 @@ export function renderProduct(options: {
   settingsLink?: boolean;
   /** What is running: version, commit and container id, for the footer. */
   build?: string;
+  /**
+   * Declared environments that have no file yet, offered beside the tabs.
+   *
+   * Empty renders nothing at all rather than a disabled control: "everything already exists" is
+   * not something a reader should have to deduce from a greyed-out button.
+   */
+  creatable?: readonly string[];
   /** True when this environment is declared but has no file yet: nothing is editable until it
    *  exists, and the page offers to create it from the schema's defaults. */
   missingFile?: boolean;
@@ -1253,7 +1419,26 @@ export function renderProduct(options: {
               </form>`,
       })}
 
-      <div class="tabs">${tabs}</div>
+      <div class="tabs">${tabs}${
+        // Only the environments that are declared and have no file. Absent entirely when none
+        // are missing: a disabled control asks the reader to work out why it is disabled, and
+        // the answer here — "everything already exists" — is worth nothing to them.
+        (options.creatable ?? []).length > 0
+          ? html`<span class="tabadd">${(options.creatable ?? []).map(
+              (environment) => html`<form method="post"
+                    action="/p/${options.service}/${environment}" hx-post="/p/${options.service}/${environment}"
+                    hx-target="#page" hx-swap="innerHTML" style="display:inline;">
+                  <input type="hidden" name="intent" value="create">
+                  ${writeAction({
+                    post: `/p/${options.service}/${environment}`,
+                    vals: '{"intent":"create"}',
+                    resting: html`Add ${environment}`,
+                    running: 'Creating…',
+                  })}
+                </form>`,
+            )}</span>`
+          : html``
+      }</div>
       ${
         query && shownRows.length === 0
           ? html`<div class="card">No key in ${options.service} matches “${options.query}”.</div>`

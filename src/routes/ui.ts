@@ -3,6 +3,7 @@ import { buildInfo, buildLabel } from '../build-info.js';
 import type { GitRepository } from '../git/repository.js';
 import { ServiceRegistry } from '../identity/registry.js';
 import type { ServiceIdentity } from '../identity/types.js';
+import { buildSchema, type KeyDraft } from '../schema/builder.js';
 import type { KeyDefinition, SchemaSet } from '../schema/validator.js';
 import type { DraftStore } from '../store/draft-store.js';
 import { EnvironmentOrder } from '../store/environment-order.js';
@@ -17,6 +18,7 @@ import {
   type PendingChange,
   type ProductSummary,
   renderDrafts,
+  renderNewProduct,
   renderProduct,
   renderProducts,
   renderSettings,
@@ -176,6 +178,123 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     if (session.via === 'break-glass') return true;
     return settings.allow.includes(session.email.trim().toLowerCase());
   };
+
+  /**
+   * Declaring a product.
+   *
+   * The form is rendered from the declared environments, and every field it collects is checked
+   * again when it comes back: the inputs are a convenience, the POST body is user input.
+   */
+  app.get('/products/new', async (request: FastifyRequest, reply) =>
+    reply.type('text/html; charset=utf-8').send(
+      String(
+        renderNewProduct({
+          environments: await declaredEnvironments(),
+          settingsLink: maySeeSettings(request),
+          build,
+          fragment: isHtmx(request),
+        }),
+      ),
+    ),
+  );
+
+  app.post(
+    '/products',
+    async (request: FastifyRequest<{ Body: Record<string, string | string[]> }>, reply) => {
+      const body = request.body ?? {};
+      const name = String(body.name ?? '').trim();
+      const uid = String(body.uid ?? '').trim();
+      const environments = toList(body.environment);
+      const keys = keyDrafts(body);
+
+      const problems: Array<{ key: string; message: string }> = [];
+      if (!/^[a-z][a-z0-9-]*$/.test(name)) {
+        problems.push({
+          key: '',
+          message: `'${name}' is not a valid product name: lower case, letters, digits and hyphens`,
+        });
+      }
+      // Not Number(): an empty string is 0, and 0 is a real uid — root's.
+      if (!/^\d+$/.test(uid)) {
+        problems.push({ key: '', message: 'uid must be a whole, non-negative number' });
+      }
+      if (environments.length === 0) {
+        problems.push({ key: '', message: 'choose at least one environment' });
+      }
+
+      const schema = buildSchema({ service: name, keys });
+      if (!schema.ok) problems.push(...schema.error);
+
+      const typed = {
+        name,
+        uid,
+        environments,
+        keys: keyBodies(body),
+      };
+
+      if (problems.length > 0 || !schema.ok) {
+        return reply
+          .code(422)
+          .header('hx-retarget', '#page')
+          .header('hx-reswap', 'innerHTML')
+          .type('text/html; charset=utf-8')
+          .send(
+            String(
+              renderNewProduct({
+                environments: await declaredEnvironments(),
+                draft: typed,
+                problems,
+                settingsLink: maySeeSettings(request),
+                build,
+                fragment: isHtmx(request),
+              }),
+            ),
+          );
+      }
+
+      const session = request.session;
+      const staged = await writeService.stageProduct(
+        {
+          service: name,
+          uid: Number(uid),
+          environments,
+          schema: schema.value,
+          // What the schema declares, minus the secrets: a secret is created without a value.
+          defaults: defaultsOf(keys),
+        },
+        {
+          email: session?.email ?? 'unauthenticated@localhost',
+          id: session?.id ?? 'anonymous',
+          ...(session?.via ? { via: session.via } : {}),
+        },
+      );
+
+      if (!staged.ok) {
+        return reply
+          .code(422)
+          .header('hx-retarget', '#page')
+          .header('hx-reswap', 'innerHTML')
+          .type('text/html; charset=utf-8')
+          .send(
+            String(
+              renderNewProduct({
+                environments: await declaredEnvironments(),
+                draft: typed,
+                problems: [{ key: '', message: staged.error.detail }],
+                settingsLink: maySeeSettings(request),
+                build,
+                fragment: isHtmx(request),
+              }),
+            ),
+          );
+      }
+
+      if (!isHtmx(request)) {
+        return reply.code(303).header('location', '/?done=drafted&n=1').send();
+      }
+      return reply.header('hx-redirect', '/?done=drafted&n=1').code(204).send();
+    },
+  );
 
   app.get('/settings', async (request: FastifyRequest, reply) => {
     if (!maySeeSettings(request)) {
@@ -444,6 +563,14 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           // there is one, since that is the document on screen.
           revision: versionOf(shown),
           ...(missingFile ? { missingFile: true } : {}),
+          // Declared, but with nothing behind them. Computed from what the tree actually holds
+          // rather than from the tabs, so an environment stops being offered the moment its file
+          // exists — including one created by a draft that has not been published.
+          creatable: environments
+            .filter(
+              (env) => !sources.sources.has(env.namespace) && !draftsByNamespace.has(env.namespace),
+            )
+            .map((env) => env.name),
           ...(options.query ? { query: options.query } : {}),
           ...(options.highlight ? { highlight: options.highlight } : {}),
           ...(options.offerDeclined ? { offerDeclined: true } : {}),
@@ -577,15 +704,14 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           { service, environment, changes: schemaSet.defaultsFor(service) },
           actor,
         );
+        // A code, like every other outcome. This branch went on passing `notice` and
+        // `transientNotice` long after respond() stopped having them: TypeScript does not
+        // excess-property-check a SPREAD, so it compiled, and creating an environment reported
+        // nothing at all.
         return respond(reply, request, {
           service,
           env: environment,
-          ...(created.ok
-            ? {
-                notice: `Drafted ${service}/${environment}.yaml from the schema defaults.`,
-                transientNotice: true,
-              }
-            : { notice: created.error.detail }),
+          done: created.ok ? 'created' : 'create-failed',
         });
       }
 
@@ -810,6 +936,78 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 function noticeQuery(query: { done?: string; n?: string } | undefined): { notice?: PageNotice } {
   const notice = noticeFor(query?.done, query?.n === undefined ? {} : { n: Number(query.n) });
   return notice ? { notice } : {};
+}
+
+/**
+ * The key rows of the add-product form, as posted.
+ *
+ * Fields arrive as `key.0.name`, `key.0.type` and so on, because a form cannot post an array of
+ * objects. Rows are collected by index and rows with no name are dropped: the form always offers
+ * one blank row, and a product with no keys is allowed.
+ */
+function keyBodies(body: Record<string, string | string[]>): Array<Record<string, string>> {
+  const rows = new Map<number, Record<string, string>>();
+  for (const [field, value] of Object.entries(body)) {
+    const match = /^key\.(\d+)\.(\w+)$/.exec(field);
+    if (!match) continue;
+    const index = Number(match[1]);
+    const row = rows.get(index) ?? {};
+    row[String(match[2])] = Array.isArray(value) ? String(value[0]) : String(value);
+    rows.set(index, row);
+  }
+  return [...rows.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, row]) => row)
+    .filter((row) => (row.name ?? '').trim().length > 0);
+}
+
+/** Those rows as drafts the builder can check. Everything arrives as text and is parsed here. */
+function keyDrafts(body: Record<string, string | string[]>): KeyDraft[] {
+  return keyBodies(body).map((row) => {
+    const type = (row.type ?? 'string') as KeyDraft['type'];
+    const secret = row.secret === '1';
+    const values = (row.values ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+    const raw = (row.default ?? '').trim();
+    return {
+      name: (row.name ?? '').trim(),
+      type,
+      secret,
+      values,
+      description: row.description ?? '',
+      ...(row.min ? { min: Number(row.min) } : {}),
+      ...(row.max ? { max: Number(row.max) } : {}),
+      // Blank means no default, which is not the same as the empty string: a key declared with
+      // "" would be created holding an empty value rather than nothing.
+      default: raw.length === 0 ? null : parseDefault(type, raw),
+    };
+  });
+}
+
+/** A typed default from what was typed. Left as text where it does not parse, so the builder
+ *  refuses it with a message about the value rather than silently coercing it. */
+function parseDefault(type: KeyDraft['type'], raw: string): unknown {
+  if (type === 'int') return Number.isFinite(Number(raw)) ? Number(raw) : raw;
+  if (type === 'bool') {
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    return raw;
+  }
+  if (type === 'string[]') return raw.split(',').map((entry) => entry.trim());
+  return raw;
+}
+
+/** What every new environment file starts with: the declared defaults, and never a secret. */
+function defaultsOf(keys: readonly KeyDraft[]): Record<string, unknown> {
+  const defaults: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (key.secret) continue;
+    if (key.default === null || key.default === undefined) continue;
+    defaults[key.name.trim()] = key.default;
+  }
+  return defaults;
 }
 
 /** One form field that may arrive once, many times, or not at all. */

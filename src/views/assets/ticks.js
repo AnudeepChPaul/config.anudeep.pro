@@ -260,4 +260,22 @@
     if (form) refresh(form);
     document.querySelector('[autofocus]')?.focus();
   });
+
+  /**
+   * A refused write is an answer, so put it on the screen.
+   *
+   * htmx does not swap a 4xx response, and hx-retarget does not change that: the server rendered
+   * a page naming exactly which key was wrong and the browser threw it away. Saving an
+   * out-of-range value looked like pressing a button that did nothing — during an incident, that
+   * is indistinguishable from the console being broken.
+   *
+   * Only 422, and only because every 422 here IS a rendered page about what was refused. A 500
+   * still goes to htmx's error handling, because a stack trace is not a page.
+   */
+  document.addEventListener('htmx:beforeSwap', (event) => {
+    if (event.detail.xhr && event.detail.xhr.status === 422) {
+      event.detail.shouldSwap = true;
+      event.detail.isError = false;
+    }
+  });
 })();
