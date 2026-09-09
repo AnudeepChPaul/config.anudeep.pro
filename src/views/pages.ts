@@ -88,6 +88,7 @@ const layout = (
     --control-h: 34px;
     --radius: 6px;
     --radius-lg: 10px;
+    --type-xs: .75rem;         /* a reference table: settings, read by scanning */
     --type-sm: .8125rem;      /* toolbar, facts, chips, buttons */
     --type-base: .9375rem;    /* field values, body copy */
     --type-title: 1.15rem;    /* the page title */
@@ -219,8 +220,12 @@ const layout = (
   /* A value read out of the environment: monospace, because a path or a remote is read
      character by character, and that is the whole reason for the page. */
   .settings-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                    font-size: var(--type-sm); overflow-wrap: anywhere; }
-  .keyname { font-weight: 500; min-width: 16rem; }
+                    font-size: var(--type-xs); overflow-wrap: anywhere; }
+  /* A reference table, read by scanning: one step down from body copy, and the name and the
+     value at the SAME size so the eye can move between the two columns without resizing. */
+  .keyname { font-weight: 500; min-width: 18rem; font-size: var(--type-xs); }
+  .settings-unset { font-size: var(--type-xs); color: var(--muted); }
+  .settings-row { padding: 5px 14px; }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
      .selection, for instance — beats it and leaves a hidden element on screen. Everything the
@@ -896,7 +901,7 @@ export function renderSettings(options: { env: NodeJS.ProcessEnv; fragment?: boo
   const rows = settingsRows(options.env).map(
     (row) => html`<div class="keyrow">
       <span class="keyname">${row.name}</span>
-      <span class="${row.set ? 'settings-value' : 'hint'}">${row.shown}</span>
+      <span class="${row.set ? 'settings-value' : 'settings-unset'}">${row.shown}</span>
       ${row.secret ? html`<span class="chip">secret</span>` : html``}
     </div>`,
   );
@@ -907,7 +912,7 @@ export function renderSettings(options: { env: NodeJS.ProcessEnv; fragment?: boo
         title: trail('Settings'),
         facts: html`${set} of ${settingsRows(options.env).length} variables set`,
       })}
-      <div class="card"><div class="rows">${rows}</div></div>
+      <div class="rows">${rows}</div>
     `;
 
   return options.fragment ? body : layout('Settings', body, true);

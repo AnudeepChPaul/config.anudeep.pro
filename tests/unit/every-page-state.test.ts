@@ -4,6 +4,7 @@ import {
   renderLogin,
   renderProduct,
   renderProducts,
+  renderSettings,
 } from '@config/src/views/pages.js';
 import { describe, expect, it } from 'vitest';
 
@@ -186,6 +187,12 @@ const everyState = (): Array<[string, string]> => [
       }),
     ),
   ],
+  [
+    'settings',
+    String(
+      renderSettings({ env: { CONFIG_GIT_REMOTE: 'git@github.com:a/b.git' }, fragment: true }),
+    ),
+  ],
   ['drafts, empty', String(renderDrafts({ drafts: [] }))],
   [
     'drafts, some',
@@ -246,6 +253,19 @@ describe('the rules hold in every state, not just the ones anyone looked at', ()
       for (const control of negatives) {
         expect(control, `${name}: ${control}`).toMatch(/class="linkbtn no"/);
       }
+    }
+  });
+
+  // .card and .rows each draw their own 1px border and their own radius, so one directly inside
+  // the other renders two concentric outlines a few pixels apart. It reads as a rendering fault
+  // rather than a design, and it is invisible in markup assertions -- both elements are correct
+  // on their own.
+  it('never nests one bordered container directly inside another', () => {
+    for (const [name, html] of everyState()) {
+      const nested = bodyOf(html).match(
+        /<div class="(?:card|rows)"[^>]*>\s*<div class="(?:card|rows)"[^>]*>/g,
+      );
+      expect(nested ?? [], name).toEqual([]);
     }
   });
 
