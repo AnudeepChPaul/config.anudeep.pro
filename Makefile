@@ -16,7 +16,7 @@ check:           ## Lint and typecheck on the host, then the full suite in the c
 	pnpm lint && pnpm typecheck && docker compose build test && docker compose run --rm test
 
 up:              ## Start the service; UI at http://localhost:8200
-	docker compose build app && docker compose up -d app && docker compose logs -f app
+	BUILD_SHA=$$(git rev-parse HEAD) docker compose build app && docker compose up -d app && docker compose logs -f app
 
 seed:            ## Clone the configured registry into the app volume
 	docker compose run --rm -v ./scripts:/app/scripts:ro --entrypoint sh app /app/scripts/seed.sh

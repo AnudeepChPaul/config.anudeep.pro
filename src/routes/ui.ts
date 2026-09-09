@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { buildInfo, buildLabel } from '../build-info.js';
 import type { GitRepository } from '../git/repository.js';
 import { ServiceRegistry } from '../identity/registry.js';
 import type { ServiceIdentity } from '../identity/types.js';
@@ -161,6 +162,10 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
    * have it", which is a fact about the deployment worth withholding from anyone who is not
    * already trusted with the rest of it.
    */
+  // Read once. None of it changes while this process runs, and reading os.hostname() per render
+  // would be a syscall for a string that is constant.
+  const build = buildLabel(buildInfo());
+
   const maySeeSettings = (request: FastifyRequest): boolean => {
     const settings = options.settings;
     if (!settings?.enabled) return false;
@@ -179,7 +184,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
     return reply
       .type('text/html; charset=utf-8')
-      .send(String(renderSettings({ env: process.env, fragment: isHtmx(request) })));
+      .send(String(renderSettings({ env: process.env, build, fragment: isHtmx(request) })));
   });
 
   app.get(
@@ -203,6 +208,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
             // The link comes from the same answer that gates the route. Two predicates would
             // drift, and the way they drift is a link that leads to a 404.
             settingsLink: maySeeSettings(request),
+            build,
             fragment: isHtmx(request),
           }),
         ),
@@ -322,6 +328,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
             draftCount: [...draftsByNamespace.values()].reduce((total, n) => total + n, 0),
             ...noticeQuery(request.query),
             settingsLink: maySeeSettings(request),
+            build,
           }),
         ),
       );
@@ -445,6 +452,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           lastChange: await repository.lastChange(`config/${namespace}.yaml`),
           ...(options.notice ? { notice: options.notice } : {}),
           ...(options.settingsLink ? { settingsLink: true } : {}),
+          build,
           ...(offer ? { offer } : {}),
         }),
       ),

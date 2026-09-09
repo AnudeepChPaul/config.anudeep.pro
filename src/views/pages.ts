@@ -44,6 +44,7 @@ const layout = (
   title: string,
   body: SafeHtml,
   settingsLink = false,
+  build = '',
 ): SafeHtml => html`<!doctype html>
 <html lang="en">
 <head>
@@ -213,8 +214,12 @@ const layout = (
   .notice .linkbtn.no { font-weight: 400; }
   /* The footer carries the one link that is not part of the working surface. Outside #page, so
      an htmx swap leaves it alone, and quiet enough not to compete with the page above it. */
+  /* Centred, because it belongs to the page rather than to a column of it, and small: the
+     build is read once during an incident and never again. */
   .pagefoot { max-width: 62rem; margin: 0 auto; padding: 18px 24px 28px;
-              font-size: var(--type-sm); }
+              font-size: var(--type-xs); display: flex; justify-content: center;
+              align-items: center; gap: 10px; color: var(--muted); }
+  .pagefoot .build { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .pagefoot a { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
   .pagefoot a:hover { color: var(--accent); }
   /* A value read out of the environment: monospace, because a path or a remote is read
@@ -223,11 +228,11 @@ const layout = (
                     font-size: var(--type-xs); overflow-wrap: anywhere; }
   /* A reference table, read by scanning: one step down from body copy, and the name and the
      value at the SAME size so the eye can move between the two columns without resizing. */
-  .keyname { font-weight: 500; min-width: 18rem; font-size: var(--type-xs); }
+  .keyname { font-weight: 500; min-width: 18rem; font-size: var(--type-xs); line-height: 2rem; }
   .settings-unset { font-size: var(--type-xs); color: var(--muted); }
   /* The inset the .card used to supply. Dropping the card removed the duplicated border and
      took the padding with it, leaving every row flush against the edge. */
-  .settings-row { padding: 7px 16px; }
+  .settings-row { padding: 7px 16px; line-height: 2.5rem }
   .settings-row + .settings-row { border-top: 1px solid var(--hair); }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
@@ -358,10 +363,17 @@ const layout = (
 </head>
 <body>
 <main id="page">${body}</main>
+<!-- What is running, and the way to see how it is configured. Centred and quiet: not part of
+     the working surface, and read once — during an incident, to answer "is this the build I
+     think it is?" -->
 ${
-  settingsLink
-    ? html`<footer class="pagefoot"><a href="/settings" hx-get="/settings" hx-target="#page"
-        hx-swap="innerHTML" hx-push-url="true">Settings</a></footer>`
+  build || settingsLink
+    ? html`<footer class="pagefoot">${build ? html`<span class="build">${build}</span>` : html``}${
+        settingsLink
+          ? html`<a href="/settings" hx-get="/settings" hx-target="#page" hx-swap="innerHTML"
+              hx-push-url="true">Settings</a>`
+          : html``
+      }</footer>`
     : html``
 }
 <!-- Served from this origin, never a CDN: an editor that cannot render because someone
@@ -900,7 +912,12 @@ export interface DraftListEntry {
  * The masking is not done here. `settingsRows` classifies by name and hands back only what may
  * be rendered, so this function cannot leak a secret by forgetting to ask for the masked form.
  */
-export function renderSettings(options: { env: NodeJS.ProcessEnv; fragment?: boolean }): SafeHtml {
+export function renderSettings(options: {
+  env: NodeJS.ProcessEnv;
+  /** What is running: version, commit and container id, for the footer. */
+  build?: string;
+  fragment?: boolean;
+}): SafeHtml {
   const rows = settingsRows(options.env).map(
     (row) => html`<div class="keyrow settings-row">
       <span class="keyname">${row.name}</span>
@@ -918,7 +935,7 @@ export function renderSettings(options: { env: NodeJS.ProcessEnv; fragment?: boo
       <div class="rows">${rows}</div>
     `;
 
-  return options.fragment ? body : layout('Settings', body, true);
+  return options.fragment ? body : layout('Settings', body, true, options.build);
 }
 
 /**
@@ -933,6 +950,8 @@ export function renderDrafts(options: {
   notice?: PageNotice;
   /** True when this viewer may open the settings page. Absent renders no link to it. */
   settingsLink?: boolean;
+  /** What is running: version, commit and container id, for the footer. */
+  build?: string;
   fragment?: boolean;
 }): SafeHtml {
   const rows = options.drafts.map(
@@ -983,7 +1002,9 @@ export function renderDrafts(options: {
       }
     `;
 
-  return options.fragment ? body : layout('Unpublished drafts', body, options.settingsLink);
+  return options.fragment
+    ? body
+    : layout('Unpublished drafts', body, options.settingsLink, options.build);
 }
 
 /** The landing page: products, not namespaces. */
@@ -999,6 +1020,8 @@ export function renderProducts(options: {
   error?: string;
   /** True when this viewer may open the settings page. Absent renders no link to it. */
   settingsLink?: boolean;
+  /** What is running: version, commit and container id, for the footer. */
+  build?: string;
   /** True when htmx asked: the body alone, to be swapped into the page. */
   fragment?: boolean;
 }): SafeHtml {
@@ -1101,7 +1124,7 @@ export function renderProducts(options: {
       </form>
     `;
 
-  return options.fragment ? body : layout('Products', body, options.settingsLink);
+  return options.fragment ? body : layout('Products', body, options.settingsLink, options.build);
 }
 
 /** Inside a product: environments as tabs, each flagged when it holds unpublished changes. */
@@ -1129,6 +1152,8 @@ export function renderProduct(options: {
   highlight?: string;
   /** True when this viewer may open the settings page. Absent renders no link to it. */
   settingsLink?: boolean;
+  /** What is running: version, commit and container id, for the footer. */
+  build?: string;
   /** True when this environment is declared but has no file yet: nothing is editable until it
    *  exists, and the page offers to create it from the schema's defaults. */
   missingFile?: boolean;
@@ -1401,7 +1426,9 @@ export function renderProduct(options: {
       </form>`
       }
     `;
-  return options.fragment ? body : layout(options.service, body, options.settingsLink);
+  return options.fragment
+    ? body
+    : layout(options.service, body, options.settingsLink, options.build);
 }
 
 /**

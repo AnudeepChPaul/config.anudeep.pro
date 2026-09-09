@@ -40,6 +40,10 @@ grep -q '^CONFIG_IAM_HEALTH_URL=' .env 2>/dev/null || {
 }
 
 say "Building"
+# The commit the image is built from, shown in the console footer so an operator can tell which
+# build is in front of them. Exported rather than passed inline: compose reads it as a build arg.
+BUILD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+export BUILD_SHA
 docker compose build app >/dev/null
 
 # --- the configuration repository --------------------------------------------------------

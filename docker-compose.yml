@@ -8,6 +8,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+      args:
+        # Passed by `make up` / `make dev`; empty elsewhere, and the footer then shows the
+        # version alone rather than a commit nobody can trust.
+        BUILD_SHA: ${BUILD_SHA:-}
     environment:
       CONFIG_ENVIRONMENT: dev
       CONFIG_LOG_LEVEL: debug

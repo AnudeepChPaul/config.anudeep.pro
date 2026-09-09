@@ -4,6 +4,13 @@
 FROM node:24-bookworm-slim
 WORKDIR /app
 ARG SOPS_VERSION=3.13.3
+
+# The commit this image was built from, shown in the console footer. A footer version exists to
+# answer one question during an incident -- is this the build I think it is -- and package.json
+# alone cannot answer it, because 0.1.0 is every build of 0.1.0. Unset, the footer shows the
+# version without a commit rather than inventing one.
+ARG BUILD_SHA=""
+ENV CONFIG_BUILD_SHA=$BUILD_SHA
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git openssh-client ca-certificates curl age \
   && ARCH="$(dpkg --print-architecture)" \
