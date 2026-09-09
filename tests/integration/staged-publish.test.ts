@@ -472,6 +472,70 @@ withSops('staging and scoped publishing', () => {
     });
   });
 
+  /**
+   * Ticking a key that has never had a value.
+   *
+   * A tick on its own is a change — the operator's rule: five edits to a namespace means five
+   * version bumps, and saying "send this one along" counts as one of them. That held for a key
+   * with a committed value and was silently dropped for a key without one, because the tick was
+   * only recorded when the key already existed in the document.
+   *
+   * A product created with keys that declare no defaults has exactly that shape: every key is
+   * absent from the file, so ticking any of them did nothing and Save answered "nothing to
+   * save".
+   */
+  describe('ticking a key that holds no value yet', () => {
+    it('records the tick as a save', async () => {
+      const staged = await service.stage(
+        { service: 'iam', environment: 'dev', changes: {}, selected: ['SMTP_PASSWORD'] },
+        ACTOR,
+      );
+
+      expect(staged.ok).toBe(true);
+      expect(staged.ok && staged.value.saves.length).toBe(1);
+    });
+
+    it('bumps the version when it is published, which is the point of a tick', async () => {
+      const before = versionOf(
+        await new ConfigLoader(new SopsDecryptor(key.secret)).resolveOne(
+          'iam/dev',
+          await git.readFile('config/iam/dev.yaml'),
+        ),
+      );
+
+      await service.stage(
+        { service: 'iam', environment: 'dev', changes: {}, selected: ['SMTP_PASSWORD'] },
+        ACTOR,
+      );
+      await service.publish(['iam/dev'], ACTOR, REQUEST);
+
+      const after = versionOf(
+        await new ConfigLoader(new SopsDecryptor(key.secret)).resolveOne(
+          'iam/dev',
+          await git.readFile('config/iam/dev.yaml'),
+        ),
+      );
+
+      expect(after).toBe(before + 1);
+    });
+
+    // The tick says "send this along"; it does not invent a value for a key that has none.
+    it('writes no value for the key it ticked', async () => {
+      await service.stage(
+        { service: 'iam', environment: 'dev', changes: {}, selected: ['SMTP_PASSWORD'] },
+        ACTOR,
+      );
+      await service.publish(['iam/dev'], ACTOR, REQUEST);
+
+      const document = await new ConfigLoader(new SopsDecryptor(key.secret)).resolveOne(
+        'iam/dev',
+        await git.readFile('config/iam/dev.yaml'),
+      );
+
+      expect(document.SMTP_PASSWORD).toBeUndefined();
+    });
+  });
+
   describe('staging a selection with no edit in it', () => {
     // Ticking a key whose value has not changed is how you say "send this one along" — to a
     // publish, and from there to the next environment. It has to be possible to write that

@@ -576,9 +576,13 @@ export class ConfigWriteService {
       // Ticked, but not edited. Recorded as itself rather than as a value moving to itself, so
       // the change list says selected and not "optional → optional".
       const edited = new Set(changes.map((change) => change.key));
-      const selectedOnly = (request.selected ?? []).filter(
-        (key) => !edited.has(key) && key in base,
-      );
+      // Not filtered by whether the key already has a value. A tick is a statement of intent —
+      // "send this one along" — and it counts as a change on its own, which is what makes five
+      // edits to a namespace five version bumps. Requiring the key to exist in the document
+      // silently dropped every tick on a product created with keys that declare no defaults:
+      // every one of those keys is absent from the file, so ticking any of them did nothing and
+      // Save answered "nothing to save".
+      const selectedOnly = (request.selected ?? []).filter((key) => !edited.has(key));
 
       // Nothing moved and nothing was ticked. Writing a draft anyway would put an empty pending
       // marker on the environment and offer a publish with no content behind it.
