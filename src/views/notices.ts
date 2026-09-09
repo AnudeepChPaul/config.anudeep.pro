@@ -58,6 +58,19 @@ const WORDING: Record<string, (count: number | null) => Notice> = {
     text: 'Drafted this environment from the schema defaults. Nothing is published yet.',
   }),
   'create-failed': () => ({ tone: 'problem', text: 'That environment could not be created.' }),
+  retiring: () => ({
+    tone: 'done',
+    text: 'Marked as retiring, as a draft. Nothing changes for a consumer until it is published.',
+  }),
+  'retirement-cancelled': () => ({
+    tone: 'done',
+    text: 'Retirement cancelled, as a draft. Publish it to bring the product back.',
+  }),
+  'retire-failed': () => ({ tone: 'problem', text: 'That product could not be marked.' }),
+  archived: () => ({
+    tone: 'done',
+    text: 'Archived. It is no longer served, and everything it held is in archived/.',
+  }),
   'nothing-staged': () => ({
     tone: 'problem',
     text: 'Nothing to save — no value was edited and nothing was ticked.',

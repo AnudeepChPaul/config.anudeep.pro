@@ -113,6 +113,19 @@
     (event) => {
       const target = event.target;
       if (!target || !target.closest) return;
+      const archiving = target.closest('[data-archive]');
+      if (archiving) {
+        // Capture, like discard: htmx binds to the element, and its listener would otherwise run
+        // first and follow the link before the question is on screen.
+        event.preventDefault();
+        event.stopPropagation();
+        const row = archiving.closest('[data-retiring-row]');
+        const ask = row && row.querySelector('[data-archive-confirm]');
+        if (ask) ask.hidden = false;
+        archiving.hidden = true;
+        return;
+      }
+
       const leaving = target.closest('[data-discard]');
       if (!leaving) return;
       const form = document.querySelector('#new-product');
@@ -131,6 +144,20 @@
   document.addEventListener('click', (event) => {
     const target = event.target;
     if (!target || !target.closest) return;
+
+    // Archiving asks in the row it was clicked in, for the same reason discarding does: the
+    // question is about this product, and a browser dialog answers from somewhere that looks
+    // nothing like the page. Unlike discard, there is nothing to lose by asking every time —
+    // archiving commits immediately, so it is always worth a second look.
+    const archiveKeep = target.closest('[data-archive-keep]');
+    if (archiveKeep) {
+      const row = archiveKeep.closest('[data-retiring-row]');
+      const ask = row && row.querySelector('[data-archive-confirm]');
+      const start = row && row.querySelector('[data-archive]');
+      if (ask) ask.hidden = true;
+      if (start) start.hidden = false;
+      return;
+    }
 
     const keep = target.closest('[data-keep]');
     if (keep) {

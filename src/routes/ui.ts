@@ -21,6 +21,7 @@ import {
   renderNewProduct,
   renderProduct,
   renderProducts,
+  renderRetiring,
   renderSettings,
 } from '../views/pages.js';
 
@@ -190,6 +191,103 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
   // Fastify matches a static segment before a parameter, so this wins over `/p/:service` and a
   // product could never be reached at this address — which is why 'new' is a reserved name and
   // the form refuses it below.
+  /**
+   * The products on their way out.
+   *
+   * A static segment beats a parameter, so this address can never be a product — 'retiring' is
+   * reserved for the same reason 'new' is.
+   */
+  app.get('/p/retiring', async (request: FastifyRequest, reply) => {
+    const schemaSet = schemas();
+    const products = (await declaredServices())
+      .filter((service) => schemaSet.isRetiring(service.name))
+      .map((service) => ({ service: service.name, name: `${service.name} (${service.uid})` }));
+
+    return reply.type('text/html; charset=utf-8').send(
+      String(
+        renderRetiring({
+          products,
+          settingsLink: maySeeSettings(request),
+          build,
+          fragment: isHtmx(request),
+        }),
+      ),
+    );
+  });
+
+  /**
+   * Marking a product retiring, and taking the mark off again.
+   *
+   * Staged, never written: this is a change to the registry like any other, and it is published
+   * when the operator chooses. Cancelling is the same route with `retiring=false`, so the two
+   * directions cannot drift apart.
+   */
+  app.post(
+    '/p/:service/retire',
+    async (
+      request: FastifyRequest<{ Params: { service: string }; Body: { retiring?: string } }>,
+      reply,
+    ) => {
+      const { service } = request.params;
+      const retiring = String(request.body?.retiring ?? 'true') === 'true';
+      const session = request.session;
+
+      const staged = await writeService.stageSchemaFlag(
+        { service, retiring },
+        {
+          email: session?.email ?? 'unauthenticated@localhost',
+          id: session?.id ?? 'anonymous',
+          ...(session?.via ? { via: session.via } : {}),
+        },
+      );
+
+      const done = staged.ok ? (retiring ? 'retiring' : 'retirement-cancelled') : 'retire-failed';
+      if (!isHtmx(request)) {
+        return reply.code(303).header('location', `/?done=${done}`).send();
+      }
+      return reply.header('hx-redirect', `/?done=${done}`).code(204).send();
+    },
+  );
+
+  /**
+   * Archiving a retiring product.
+   *
+   * Commits immediately — the only write here that does not pass through a draft. The inline
+   * confirmation in the retiring list is the gate, and `archiveProduct` refuses anything that is
+   * not already marked retiring, so the gate cannot be walked around with a hand-made POST.
+   */
+  app.post(
+    '/p/:service/archive',
+    async (request: FastifyRequest<{ Params: { service: string } }>, reply) => {
+      const { service } = request.params;
+      const session = request.session;
+
+      const archived = await writeService.archiveProduct(
+        service,
+        {
+          email: session?.email ?? 'unauthenticated@localhost',
+          id: session?.id ?? 'anonymous',
+          ...(session?.via ? { via: session.via } : {}),
+        },
+        { id: request.id, sourceIp: request.ip },
+      );
+
+      if (!archived.ok) {
+        return reply
+          .code(422)
+          .header('hx-retarget', '#page')
+          .header('hx-reswap', 'innerHTML')
+          .type('text/html; charset=utf-8')
+          .send(String(renderRetiring({ products: [], fragment: isHtmx(request) })));
+      }
+
+      if (!isHtmx(request)) {
+        return reply.code(303).header('location', '/?done=archived').send();
+      }
+      return reply.header('hx-redirect', '/?done=archived').code(204).send();
+    },
+  );
+
   app.get('/p/new', async (request: FastifyRequest, reply) =>
     reply.type('text/html; charset=utf-8').send(
       String(
@@ -222,8 +320,13 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       // The form lives at /p/new, and Fastify matches a static segment before a parameter, so a
       // product called 'new' would have a page nothing could ever reach. Refused here rather
       // than discovered by whoever first tries to open it.
-      if (name === 'new') {
-        problems.push({ key: '', message: "'new' is reserved: it is the address of this form" });
+      // Both are addresses under /p/, and a static segment beats a parameter: a product with
+      // either name would have a page nothing could ever reach.
+      if (name === 'new' || name === 'retiring') {
+        problems.push({
+          key: '',
+          message: `'${name}' is reserved: it is an address in this console`,
+        });
       }
       // Not Number(): an empty string is 0, and 0 is a real uid — root's.
       if (!/^\d+$/.test(uid)) {
@@ -491,6 +594,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
             ...noticeQuery(request.query),
             settingsLink: maySeeSettings(request),
             build,
+            retiring: declared.filter((service) => schemas().isRetiring(service.name)).length,
           }),
         ),
       );

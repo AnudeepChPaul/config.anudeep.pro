@@ -264,6 +264,105 @@ export class ConfigWriteService {
    * Staged like every other change, so it is reviewable, droppable, and published as a commit
    * with the usual trailers.
    */
+  /**
+   * Takes a retiring product out of the live tree and files it under `archived/`.
+   *
+   * The one write here that does not pass through a draft: it commits immediately. That is the
+   * operator's decision, and it is why the act is reachable only from the retiring list — by the
+   * time it happens the product has been visibly retiring, and its consumers have been told.
+   *
+   * Refused unless the product is actually retiring. Archiving revokes a grant and stops a
+   * namespace being served, and doing that to a product nobody has marked would skip the entire
+   * interval the two steps exist to create.
+   */
+  async archiveProduct(
+    service: string,
+    actor: Actor,
+    context: RequestContext,
+  ): Promise<Result<{ commit: Sha; path: string }, SaveError>> {
+    if (!this.options.schemas().isRetiring(service)) {
+      return err({
+        code: 'failed',
+        detail: `${service} is not retiring; mark it retiring before archiving it`,
+      });
+    }
+
+    return this.lock.withLock(async () => {
+      const repository = this.options.repository;
+      const sources = await repository.readSources();
+
+      const registrySource = await this.readRegistry();
+      const registry = parseYaml(registrySource) as {
+        version?: number;
+        services?: Array<{ name: string; uid: number; namespaces: string[] }>;
+      } | null;
+      const entry = (registry?.services ?? []).find((candidate) => candidate.name === service);
+      if (!entry) return err({ code: 'failed', detail: `${service} is not in the registry` });
+
+      const schemaPath = `schema/${service}.yaml`;
+      const schema = await repository.readFile(schemaPath).catch(() => '');
+
+      // Each environment file is kept VERBATIM. Every one carries its own SOPS envelope — its own
+      // encrypted data key and its own message authentication code over that file's structure —
+      // so merging them into one document would destroy both, and nothing here decrypts anything
+      // in order to archive it.
+      const environments: Record<string, string> = {};
+      const removals: Record<string, string | null> = {};
+      for (const [namespace, contents] of sources.sources) {
+        const [owner, environment] = namespace.split('/');
+        if (owner !== service || !environment) continue;
+        environments[environment] = contents;
+        removals[`config/${namespace}.yaml`] = null;
+      }
+
+      const archive = {
+        version: 1,
+        archived: {
+          at: new Date().toISOString(),
+          by: actor.email,
+          // What the tree looked like when the product left it, so a restore knows which history
+          // to read without going hunting for the commit that did this.
+          commit: sources.commit,
+        },
+        service: { name: entry.name, uid: entry.uid, namespaces: entry.namespaces },
+        schema,
+        environments,
+      };
+
+      const remaining = (registry?.services ?? []).filter(
+        (candidate) => candidate.name !== service,
+      );
+      const path = `archived/${service}.yaml`;
+
+      const message = this.trailers.build(
+        actor,
+        {
+          message: `Archive ${service}\n\nRemoved from the live tree and filed under ${path}. Its grant, its schema and every environment are in that file; nothing was decrypted to write it.`,
+          service,
+          environment: Object.keys(environments).join(', '),
+          keys: [],
+        },
+        context,
+      );
+
+      const commit = await repository.writeAndCommit(
+        {
+          [path]: stringifyYaml(archive),
+          'services.yaml': stringifyYaml({ version: registry?.version ?? 1, services: remaining }),
+          [schemaPath]: null,
+          ...removals,
+        },
+        message,
+      );
+
+      // Whatever was staged for this product describes files that no longer exist.
+      await this.options.drafts?.remove(Object.keys(environments).map((e) => `${service}/${e}`));
+      await repository.push();
+
+      return ok({ commit, path });
+    });
+  }
+
   async stageSchemaFlag(
     request: { service: string; retiring: boolean },
     actor: Actor,

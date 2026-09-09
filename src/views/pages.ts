@@ -170,7 +170,7 @@ const layout = (
   .checkfield .fieldlabel { margin: 0; }
   .keydraft { margin-bottom: 12px; }
   .actionline { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-  .discard-ask { display: inline-flex; align-items: center; gap: 10px;
+  .discard-ask, .archive-ask { display: inline-flex; align-items: center; gap: 10px;
                  font-size: var(--type-sm); color: var(--danger); }
   input[type=text], input[type=password], input[type=number], input[type=search], select, textarea {
     width: 100%; height: var(--control-h); padding: 0 .6rem; border: 1px solid var(--field-line);
@@ -1040,6 +1040,8 @@ export function renderProducts(options: {
   query?: string;
   /** How many presses of Save are waiting across every product, for the link to the draft list. */
   draftCount?: number;
+  /** How many products are marked retiring, for the link to that list. Zero renders nothing. */
+  retiring?: number;
   notice?: PageNotice;
   error?: string;
   /** True when this viewer may open the settings page. Absent renders no link to it. */
@@ -1137,7 +1139,17 @@ export function renderProducts(options: {
                 running: 'Publishing…',
               })
             : html``
-        }${totalDrafts > 0 ? html`<span class="sep">·</span>` : html``}<a class="linkbtn"
+        }${totalDrafts > 0 ? html`<span class="sep">·</span>` : html``}${
+          // The only place a retiring product is visible without going looking for it. The
+          // interval between marking one and archiving it is worth nothing if nobody remembers
+          // it is running.
+          (options.retiring ?? 0) > 0
+            ? html`<a class="linkbtn" href="/p/retiring" hx-get="/p/retiring" hx-target="#page"
+                  hx-swap="innerHTML" hx-push-url="true">you have ${options.retiring} product${
+                    options.retiring === 1 ? '' : 's'
+                  } in retiring state</a><span class="sep">·</span>`
+            : html``
+        }<a class="linkbtn"
             href="/p/new" hx-get="/p/new" hx-target="#page" hx-swap="innerHTML"
             hx-push-url="true">Add a product</a>`,
       })}
@@ -1338,6 +1350,72 @@ export function renderNewProduct(options: {
     : layout('Add a product', body, options.settingsLink, options.build);
 }
 
+/**
+ * The products on their way out.
+ *
+ * Two ways off this page and they are deliberately unequal. Bringing one back is a draft like
+ * any other — reviewable, droppable, published when you choose. Archiving is not: it removes the
+ * product from the live tree there and then, which is why it asks first, in the row where it was
+ * clicked.
+ */
+export function renderRetiring(options: {
+  products: readonly { service: string; name: string }[];
+  settingsLink?: boolean;
+  build?: string;
+  fragment?: boolean;
+}): SafeHtml {
+  const rows = options.products.map(
+    (product) => html`<div class="row keyrow" data-retiring-row>
+      <strong style="flex-grow:1;">${product.name}</strong>
+      <form method="post" action="/p/${product.service}/retire" hx-post="/p/${product.service}/retire"
+            hx-target="#page" hx-swap="innerHTML" style="display:inline;">
+        <input type="hidden" name="retiring" value="false">
+        ${writeAction({
+          post: `/p/${product.service}/retire`,
+          vals: '{"retiring":"false"}',
+          resting: html`Bring back`,
+          running: 'Bringing back…',
+        })}
+      </form>
+      <span class="sep">·</span>
+      <a class="linkbtn no" data-archive href="/p/${product.service}/archive">Archive the Product</a>
+      <!-- Asked in the row, not in a browser dialog: the question is about this product, and it
+           belongs beside it. Answering it is the only gate — archiving commits immediately. -->
+      <span class="archive-ask" data-archive-confirm hidden>
+        <span>Stops serving ${product.service}. Archived, not deleted.</span>
+        <form method="post" action="/p/${product.service}/archive"
+              hx-post="/p/${product.service}/archive" hx-target="#page" hx-swap="innerHTML"
+              style="display:inline;">
+          ${writeAction({
+            className: 'linkbtn no',
+            post: `/p/${product.service}/archive`,
+            resting: html`Yes, Archive it`,
+            running: 'Archiving…',
+          })}
+        </form>
+        <span class="sep">·</span>
+        <button type="button" class="linkbtn" data-archive-keep>Cancel archive</button>
+      </span>
+    </div>`,
+  );
+
+  const body = html`
+      ${pageHeader({
+        title: trail('Retiring'),
+        facts: html`${options.products.length} product${
+          options.products.length === 1 ? '' : 's'
+        } marked retiring. Consumers can see this; nothing has stopped being served.`,
+      })}
+      ${
+        options.products.length === 0
+          ? html`<div class="card">Nothing is retiring.</div>`
+          : html`<div class="rows">${rows}</div>`
+      }
+    `;
+
+  return options.fragment ? body : layout('Retiring', body, options.settingsLink, options.build);
+}
+
 /** Inside a product: environments as tabs, each flagged when it holds unpublished changes. */
 export interface PromoteOffer {
   readonly nextEnvironment: string;
@@ -1365,6 +1443,8 @@ export function renderProduct(options: {
   settingsLink?: boolean;
   /** What is running: version, commit and container id, for the footer. */
   build?: string;
+  /** True when the schema marks this product retiring: shown, and offered a way back. */
+  retiring?: boolean;
   /**
    * Declared environments that have no file yet, offered beside the tabs.
    *
@@ -1437,7 +1517,10 @@ export function renderProduct(options: {
       ${pageHeader({
         ...(options.notice ? { notice: options.notice } : {}),
         dismissTo: `/p/${options.service}?env=${encodeURIComponent(options.active)}`,
-        title: trail(options.service),
+        title: options.retiring
+          ? html`${trail(options.service)}<span class="chip wait"
+                title="marked retiring; consumers can see it">retiring</span>`
+          : trail(options.service),
         search: searchBox({
           action: `/p/${options.service}`,
           query: options.query ?? '',
@@ -1451,10 +1534,21 @@ export function renderProduct(options: {
                 rel="noreferrer"><code>${options.commit.slice(0, 8)}</code></a>`
             : html`<code>${options.commit.slice(0, 8)}</code>`
         }`,
-        actions:
-          productDrafts === 0
-            ? html``
-            : html`<form method="post" action="/publish" style="display:flex;">
+        actions: html`<form method="post" action="/p/${options.service}/retire"
+              hx-post="/p/${options.service}/retire" hx-target="#page" hx-swap="innerHTML"
+              style="display:inline;">
+            <input type="hidden" name="retiring" value="${options.retiring ? 'false' : 'true'}">
+            ${writeAction({
+              className: options.retiring ? 'linkbtn' : 'linkbtn no',
+              post: `/p/${options.service}/retire`,
+              vals: options.retiring ? '{"retiring":"false"}' : '{"retiring":"true"}',
+              resting: options.retiring ? html`Bring back` : html`Mark as retiring`,
+              running: options.retiring ? 'Bringing back…' : 'Marking…',
+            })}
+          </form>${productDrafts === 0 ? html`` : html`<span class="sep">·</span>`}${
+            productDrafts === 0
+              ? html``
+              : html`<form method="post" action="/publish" style="display:flex;">
                 <!-- The service, not its environments. Posting every declared environment made
                      publish() abort on the first one with nothing staged, which is the ordinary
                      case; the route resolves a bare service to the environments that actually
@@ -1468,7 +1562,8 @@ export function renderProduct(options: {
                   } in ${options.service}?`,
                   running: 'Publishing…',
                 })}
-              </form>`,
+              </form>`
+          }`,
       })}
 
       <div class="tabs">${tabs}${

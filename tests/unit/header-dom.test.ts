@@ -140,7 +140,20 @@ describe('every page has the same header', () => {
     );
     const head = headerOf(busy);
 
-    const action = head.querySelector('.titlerow .actions-right button');
-    expect(action?.textContent).toMatch(/Publish all/);
+    // More than one action lives here now, so this asks whether the actions are IN the title
+    // row rather than which one comes first.
+    const actions = [...head.querySelectorAll('.titlerow .actions-right button')].map(
+      (button) => button.textContent ?? '',
+    );
+
+    expect(
+      actions.some((label) => /Publish all/.test(label)),
+      'publish',
+    ).toBe(true);
+    expect(
+      actions.some((label) => /Mark as retiring/.test(label)),
+      'retire',
+    ).toBe(true);
+    expect(head.querySelector('.facts .actions-right'), 'not below the title').toBeNull();
   });
 });

@@ -9,6 +9,7 @@ import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
 import { ConfigWriteService } from '@config/src/store/write-service.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import { type AgeKeypair, generateAgeKey, guarded, hasSops, TestRepo } from '../helpers.js';
 
 /**
@@ -21,31 +22,33 @@ import { type AgeKeypair, generateAgeKey, guarded, hasSops, TestRepo } from '../
  */
 const withSops = hasSops() ? describe : describe.skip;
 
-const SCHEMA = `version: 1
-keys:
+const SCHEMA_KEYS = `keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
 `;
+const SCHEMA = `version: 1\n${SCHEMA_KEYS}`;
 
 withSops('the settings page', () => {
   let key: AgeKeypair;
   let repo: TestRepo;
 
-  const build = async (over: Record<string, unknown>) => {
+  const build = async (over: Record<string, unknown> & { retiring?: readonly string[] } = {}) => {
+    const retiringSchema = (name: string) =>
+      (over.retiring ?? []).includes(name) ? `version: 1\nretiring: true\n${SCHEMA_KEYS}` : SCHEMA;
     const git = new GitRepository(repo.dir);
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
     const drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     return buildWebApp({
       repository: git,
       loader,
-      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+      schemas: () => SchemaSet.fromFiles({ iam: retiringSchema('iam') }),
       drafts,
       writeService: new ConfigWriteService({
         repository: git,
         loader,
         encryptor: new SopsEncryptor(repo.dir),
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+        schemas: () => SchemaSet.fromFiles({ iam: retiringSchema('iam') }),
         drafts,
       }),
       environment: 'dev',
@@ -203,21 +206,28 @@ withSops('adding a product', () => {
   let key: AgeKeypair;
   let repo: TestRepo;
 
-  const build = async () => {
+  const build = async (over: { retiring?: readonly string[] } = {}) => {
     const git = new GitRepository(repo.dir);
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
     const drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     const who = guarded();
+    // The schema is where retiring lives, so a retiring fixture is a schema with the flag on.
+    const schemas = () =>
+      SchemaSet.fromFiles({
+        iam: (over.retiring ?? []).includes('iam')
+          ? `version: 1\nretiring: true\n${SCHEMA_KEYS}`
+          : SCHEMA,
+      });
     const app = await buildWebApp({
       repository: git,
       loader,
-      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+      schemas,
       drafts,
       writeService: new ConfigWriteService({
         repository: git,
         loader,
         encryptor: new SopsEncryptor(repo.dir),
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
+        schemas,
         drafts,
       }),
       environmentOrder: async () => EnvironmentOrder.fromYaml('order: [dev, prod]\n'),
@@ -325,6 +335,138 @@ withSops('adding a product', () => {
 
     expect(page.body).not.toContain('nothing unpublished');
     await app.close();
+  });
+
+  /**
+   * Retiring, in the console.
+   *
+   * The count beside the Products header is the only place a retiring product is visible without
+   * going looking for it, which is the point: the interval between marking and archiving is
+   * worth nothing if nobody remembers it is running.
+   */
+  it('says how many products are retiring, beside the header', async () => {
+    const { app, headers } = await build({ retiring: ['iam'] });
+
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).toMatch(/1 product in retiring state/);
+    expect(page.body).toContain('/p/retiring');
+    await app.close();
+  });
+
+  it('says nothing at all when none are retiring', async () => {
+    const { app, headers } = await build({});
+
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).not.toMatch(/retiring state/);
+    await app.close();
+  });
+
+  it('lists them at /p/retiring, with both ways out', async () => {
+    const { app, headers } = await build({ retiring: ['iam'] });
+
+    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
+
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain('iam');
+    expect(page.body).toMatch(/Bring back/);
+    expect(page.body).toMatch(/Archive the Product/);
+    await app.close();
+  });
+
+  it('marks a product retiring by staging a draft, not by writing', async () => {
+    const { app, drafts, headers } = await build({});
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+
+    expect([200, 204, 303]).toContain(response.statusCode);
+    const staged = await drafts.all();
+    expect(staged.length).toBe(1);
+    expect(String(staged[0]?.files?.['schema/iam.yaml'])).toMatch(/retiring: true/);
+    await app.close();
+  });
+
+  /**
+   * Archiving.
+   *
+   * The one write in this console that does not pass through a draft: it commits immediately.
+   * That is the operator's decision, and it is why the act is reachable only from the retiring
+   * list and asks in the row before it goes.
+   */
+  describe('archiving a retiring product', () => {
+    const archive = async () => {
+      const { app, headers } = await build({ retiring: ['iam'] });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/p/iam/archive',
+        payload: '',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+      });
+      await app.close();
+      return response;
+    };
+
+    it('takes the product out of the live tree', async () => {
+      await archive();
+      const git = new GitRepository(repo.dir);
+
+      await expect(git.readFile('schema/iam.yaml')).rejects.toThrow();
+      await expect(git.readFile('config/iam/dev.yaml')).rejects.toThrow();
+      expect(await git.readFile('services.yaml')).not.toMatch(/name: iam/);
+    });
+
+    it('writes one archive holding the grant, the schema and every environment', async () => {
+      await archive();
+      const archived = parseYaml(await new GitRepository(repo.dir).readFile('archived/iam.yaml'));
+
+      expect(archived.service).toMatchObject({ name: 'iam', uid: 1002 });
+      expect(String(archived.schema)).toMatch(/MFA_ENFORCEMENT/);
+      expect(Object.keys(archived.environments)).toContain('dev');
+      expect(archived.archived.by).toBeTruthy();
+    });
+
+    // The whole reason the environments are kept as literal blocks: each carries its own SOPS
+    // envelope and its own MAC, and merging them would destroy both.
+    // Against a REAL envelope. The fixture commits plain text, and a plain file has no sops
+    // block to damage — so this test passed a mutation that stripped the envelope, which is the
+    // one thing it exists to catch.
+    it('keeps each environment byte-identical, envelope and all', async () => {
+      const git = new GitRepository(repo.dir);
+      const encrypted = await new SopsEncryptor(repo.dir).encrypt(
+        'iam/dev',
+        'MFA_ENFORCEMENT: optional\n',
+      );
+      await repo.commit({ 'config/iam/dev.yaml': encrypted });
+      expect(encrypted, 'the fixture is actually encrypted').toMatch(/^sops:/m);
+
+      const before = await git.readFile('config/iam/dev.yaml');
+      await archive();
+      const archived = parseYaml(await git.readFile('archived/iam.yaml'));
+
+      expect(archived.environments.dev).toBe(before);
+      // Not merely equal-ish: the envelope has to survive intact or the file cannot be decrypted.
+      expect(String(archived.environments.dev)).toMatch(/^sops:/m);
+    });
+
+    it('refuses to archive a product that is not retiring', async () => {
+      const { app, headers } = await build({});
+      const response = await app.inject({
+        method: 'POST',
+        url: '/p/iam/archive',
+        payload: '',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(await new GitRepository(repo.dir).readFile('schema/iam.yaml')).toBeTruthy();
+      await app.close();
+    });
   });
 
   it('offers the form, listing the declared environments', async () => {
