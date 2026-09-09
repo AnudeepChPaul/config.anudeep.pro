@@ -64,7 +64,21 @@ export class SchemaSet {
     private readonly services: ReadonlyMap<string, ReadonlyMap<string, KeyDefinition>>,
     /** What shape each file declared. Absent in the file means 1. */
     private readonly versions: ReadonlyMap<string, number> = new Map(),
+    /** Which services are on their way out. Absent means no. */
+    private readonly retiring: ReadonlySet<string> = new Set(),
   ) {}
+
+  /**
+   * Whether this product is being retired.
+   *
+   * The first half of removing a product: it changes no grant and deletes no file, so nothing a
+   * consumer reads stops working. It exists to be seen — in the console, and by a consuming
+   * service through the read API — for as long as the operator leaves it there, before anything
+   * is actually taken away.
+   */
+  isRetiring(service: string): boolean {
+    return this.retiring.has(service);
+  }
 
   /** The shape `schema/<service>.yaml` declares, or 1 where it does not say. */
   versionOf(service: string): number {
@@ -75,11 +89,13 @@ export class SchemaSet {
   static fromFiles(files: Record<string, string>): SchemaSet {
     const services = new Map<string, ReadonlyMap<string, KeyDefinition>>();
     const versions = new Map<string, number>();
+    const retiring = new Set<string>();
     for (const [service, source] of Object.entries(files)) {
       services.set(service, parseSchema(service, source));
       versions.set(service, parseSchemaVersion(service, source));
+      if (parseRetiring(service, source)) retiring.add(service);
     }
-    return new SchemaSet(services, versions);
+    return new SchemaSet(services, versions, retiring);
   }
 
   /**
@@ -237,6 +253,25 @@ function parseSchemaVersion(service: string, source: string): number {
   if (!KNOWN_VERSIONS.includes(declared)) {
     throw new SchemaError(
       `schema/${service}.yaml declares version ${declared}; this service knows ${KNOWN_VERSIONS.join(', ')}`,
+    );
+  }
+  return declared;
+}
+
+/**
+ * Whether the file says this product is retiring.
+ *
+ * Only a real boolean counts. A string is truthy in JavaScript, so `retiring: "no"` would retire
+ * the product — and YAML turns an unquoted `no` into a string in some readers and a boolean in
+ * others. Anything that is not true or false is refused rather than guessed at.
+ */
+function parseRetiring(service: string, source: string): boolean {
+  const parsed = parseYaml(source) as { retiring?: unknown } | null;
+  const declared = parsed?.retiring;
+  if (declared === undefined) return false;
+  if (typeof declared !== 'boolean') {
+    throw new SchemaError(
+      `schema/${service}.yaml declares 'retiring: ${String(declared)}'; it must be true or false`,
     );
   }
   return declared;

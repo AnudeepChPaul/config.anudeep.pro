@@ -101,6 +101,7 @@ linuxOnly('read API over a Unix socket', () => {
     service?: string;
     grants?: string[];
     namespaces?: Record<string, Record<string, unknown>>;
+    retiring?: readonly string[];
   }) => {
     audit = vi.fn();
     alert = vi.fn();
@@ -114,6 +115,9 @@ linuxOnly('read API over a Unix socket', () => {
         alert: alert as unknown as (e: AccessAuditEntry) => void,
       }),
       onRead: (entry) => reads.push(entry),
+      ...(options.retiring
+        ? { isRetiring: (service: string) => options.retiring?.includes(service) ?? false }
+        : {}),
     });
     await app.listen(socketPath);
     return app;
@@ -151,6 +155,9 @@ linuxOnly('read API over a Unix socket', () => {
         service: 'iam',
         environment: 'prod',
         commit: SHA,
+        // Part of the contract, always present: absent would read as "this server cannot tell
+        // you", which is a different fact from "this product is staying".
+        retiring: false,
         config: { MFA_ENFORCEMENT: 'all' },
       });
     });
@@ -353,6 +360,47 @@ linuxOnly('read API over a Unix socket', () => {
       app = null;
 
       expect(existsSync(socketPath)).toBe(false);
+    });
+  });
+
+  /**
+   * Telling a consumer its product is being retired.
+   *
+   * A consuming service never reads a schema — it reads values over the socket — so a flag written
+   * into schema/<service>.yaml would be invisible to the one process that most needs to see it.
+   * The server carries it across, in the same response as the values, where a client that looks
+   * will find it and a client that does not is unaffected.
+   *
+   * This is the whole point of retiring being a separate step from archiving: the consumer can
+   * find out while everything still works, rather than by restarting into a registry that has
+   * forgotten it.
+   */
+  describe('a product being retired', () => {
+    const served = async (retiring: readonly string[]) => {
+      await start({ retiring });
+      const response = await get(socketPath, '/config/iam/prod');
+      return { status: response.status, body: JSON.parse(response.body) };
+    };
+
+    it('says so in the response for that service', async () => {
+      const { status, body } = await served(['iam']);
+
+      expect(status).toBe(200);
+      expect(body.retiring).toBe(true);
+    });
+
+    // Absent would read as "this server is too old to tell you", which is a different fact from
+    // "this product is staying".
+    it('says so plainly when it is not retiring, rather than omitting it', async () => {
+      expect((await served([])).body.retiring).toBe(false);
+    });
+
+    it('does not retire every service because one is retiring', async () => {
+      expect((await served(['audit'])).body.retiring).toBe(false);
+    });
+
+    it('still serves every value it served before', async () => {
+      expect((await served(['iam'])).body.config).toEqual({ MFA_ENFORCEMENT: 'all' });
     });
   });
 });

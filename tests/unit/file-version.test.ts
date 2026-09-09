@@ -85,3 +85,53 @@ describe('a schema file', () => {
     ).toBe(false);
   });
 });
+
+/**
+ * A product on its way out.
+ *
+ * `retiring: true` is the first half of removing a product: it changes no grant and deletes no
+ * file, so nothing a consumer reads stops working. It exists to be SEEN — by an operator in the
+ * console, and by a consuming service through the read API — for as long as the operator leaves
+ * it there, before anything is actually taken away.
+ */
+describe('a retiring product', () => {
+  const retiring = (value: string) => `version: 1\nretiring: ${value}\n${SCHEMA}`;
+
+  it('is not retiring unless it says so', () => {
+    expect(SchemaSet.fromFiles({ iam: `version: 1\n${SCHEMA}` }).isRetiring('iam')).toBe(false);
+  });
+
+  it('is retiring when it says so', () => {
+    expect(SchemaSet.fromFiles({ iam: retiring('true') }).isRetiring('iam')).toBe(true);
+  });
+
+  it('is not retiring when it says false', () => {
+    expect(SchemaSet.fromFiles({ iam: retiring('false') }).isRetiring('iam')).toBe(false);
+  });
+
+  // A string here would be truthy, and "retiring: no" would then retire the product.
+  it('refuses a value that is not a boolean, rather than reading it as truthy', () => {
+    expect(() => SchemaSet.fromFiles({ iam: retiring('"no"') })).toThrow(SchemaError);
+    expect(() => SchemaSet.fromFiles({ iam: retiring('maybe') })).toThrow(/schema\/iam\.yaml/);
+  });
+
+  it('is not retiring when there is no schema at all', () => {
+    expect(SchemaSet.fromFiles({}).isRetiring('nothing')).toBe(false);
+  });
+
+  it('does not mistake the flag for a key', () => {
+    expect(
+      SchemaSet.fromFiles({ iam: retiring('true') })
+        .definitionsFor('iam')
+        .has('retiring'),
+    ).toBe(false);
+  });
+
+  it('keeps the keys beside it', () => {
+    expect(
+      SchemaSet.fromFiles({ iam: retiring('true') })
+        .definitionsFor('iam')
+        .has('MFA_ENFORCEMENT'),
+    ).toBe(true);
+  });
+});

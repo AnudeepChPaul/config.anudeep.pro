@@ -107,6 +107,9 @@ async function main(): Promise<void> {
 
   const readApi = await buildReadApi({
     cache,
+    // Asked per request, like the grant table: a product marked retiring must be reported as
+    // retiring without waiting for a restart, which is the whole point of telling consumers.
+    isRetiring: (service) => state.schemas().isRetiring(service),
     guard: new AccessGuard({
       resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
       // Asked per check: a revocation must not wait for a restart.

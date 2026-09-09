@@ -24,6 +24,18 @@ export interface ReadLogEntry {
 export interface InternalRouteOptions {
   readonly cache: ConfigCache;
   readonly guard: AccessGuard;
+  /**
+   * Whether this product is being retired.
+   *
+   * A consuming service never reads a schema — it reads values over this socket — so a flag in
+   * schema/<service>.yaml is invisible to the one process that most needs to see it. The server
+   * carries it across in the same response as the values: a client that looks will find it, and
+   * a client that does not is unaffected.
+   *
+   * Absent means nothing is retiring, which is the right default for a server that has not been
+   * told otherwise.
+   */
+  readonly isRetiring?: (service: string) => boolean;
   readonly onRead: (entry: ReadLogEntry) => void;
   /** How long a caller that is already current is held before being told "no change". */
   readonly waitTimeoutMs?: number;
@@ -73,6 +85,7 @@ function waitForChange(cache: ConfigCache, since: string, timeoutMs: number): Pr
 
 export function registerInternalRoutes(app: FastifyInstance, options: InternalRouteOptions): void {
   const { cache, guard, onRead } = options;
+  const isRetiring = options.isRetiring ?? (() => false);
 
   app.get(
     '/config/:service/:environment',
@@ -132,7 +145,15 @@ export function registerInternalRoutes(app: FastifyInstance, options: InternalRo
         keys: Object.keys(config),
       });
 
-      return reply.send({ service, environment, commit: cache.commit(), config });
+      // Always present, never omitted: an absent field reads as "this server is too old to tell
+      // you", which is a different fact from "this product is staying".
+      return reply.send({
+        service,
+        environment,
+        commit: cache.commit(),
+        retiring: isRetiring(service),
+        config,
+      });
     },
   );
 }
