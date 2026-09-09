@@ -439,6 +439,38 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         };
       });
 
+      /**
+       * A product that only a draft declares.
+       *
+       * The list is built from services.yaml, and a product being CREATED is not in there yet:
+       * its entry is inside the draft. Its draft therefore had nothing to be counted against,
+       * so the page said "1 unpublished draft" and "nothing unpublished" in the same line, and
+       * offered no way to publish the product it had just been asked to create.
+       */
+      const declaredNames = new Set(declared.map((service) => service.name));
+      const drafted = new Map<string, string[]>();
+      for (const namespace of draftsByNamespace.keys()) {
+        const [service, environment] = namespace.split('/');
+        if (!service || !environment || declaredNames.has(service)) continue;
+        drafted.set(service, [...(drafted.get(service) ?? []), environment]);
+      }
+      for (const [service, environments] of drafted) {
+        products.push({
+          // No uid to show: it is in the draft, not in the grant table, and printing one from an
+          // unpublished file would state as fact something no process can act on yet.
+          name: service,
+          service,
+          keys: 'not published yet',
+          notDeclared: true,
+          environments: environments.map((environment) => ({
+            name: environment,
+            namespace: `${service}/${environment}`,
+            pending: pendingByNamespace.get(`${service}/${environment}`) ?? [],
+            drafts: draftsByNamespace.get(`${service}/${environment}`) ?? 0,
+          })),
+        });
+      }
+
       // htmx swaps the CONTENTS of #page, so a response that carries its own frame puts one
       // <main id="page"> inside another and applies the frame's padding and width twice — the
       // page moved inward and down on every navigation back to this list, and again on the next.

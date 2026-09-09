@@ -660,6 +660,13 @@ export interface ProductSummary {
   readonly matched?: readonly string[];
   /** No schema file for this service: it cannot be edited, so the list says so and stops here. */
   readonly schemaMissing?: boolean;
+  /**
+   * Declared by a draft and not yet by the registry: the product is being created.
+   *
+   * It has no page — its schema is inside the draft, not committed — so the row does not link
+   * anywhere. It is listed because its draft has to be visible and publishable from here.
+   */
+  readonly notDeclared?: boolean;
   /** What the reader sees: "iam (1002)". The uid decides which process may read this product. */
   readonly name: string;
   /** What the links and the form use. The label carries the uid; the address must not. */
@@ -1061,11 +1068,15 @@ export function renderProducts(options: {
       <div style="display:flex;flex-direction:column;gap:4px;flex-grow:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:10px;">
           ${
-            product.schemaMissing
+            product.notDeclared
               ? html`<span class="pname">${product.name}</span>
+                  <span class="chip wait" title="declared by a draft, not yet by the registry"
+                    >not published yet</span>`
+              : product.schemaMissing
+                ? html`<span class="pname">${product.name}</span>
                   <span class="chip wait" title="schema/${product.service}.yaml is absent"
                     >schema is missing</span>`
-              : html`<a href="/p/${product.service}" hx-get="/p/${product.service}" hx-target="#page"
+                : html`<a href="/p/${product.service}" hx-get="/p/${product.service}" hx-target="#page"
                   hx-swap="innerHTML" hx-push-url="true"
                   class="pname">${product.name}</a>`
           }

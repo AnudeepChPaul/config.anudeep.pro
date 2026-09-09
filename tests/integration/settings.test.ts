@@ -286,6 +286,47 @@ withSops('adding a product', () => {
     expect(staged.length).toBe(0);
   });
 
+  /**
+   * A product that exists only in a draft.
+   *
+   * The list is built from services.yaml, and a product being CREATED is not in services.yaml
+   * yet -- its entry is inside the draft. So its draft had no row to be counted against: the
+   * page said "1 unpublished draft" and "nothing unpublished" in the same line, and offered no
+   * way to publish the thing it had just been asked to create.
+   */
+  it('lists a product that only a draft declares, and offers to publish it', async () => {
+    const { app, headers } = await build();
+    await app.inject({
+      method: 'POST',
+      url: '/p/new',
+      payload: new URLSearchParams(audit()).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).toContain('audit');
+    expect(page.body).toMatch(/Publish selected drafts/);
+    // And it says which it is: nothing about it is committed yet.
+    expect(page.body).toMatch(/not published yet/i);
+    await app.close();
+  });
+
+  it('does not claim there is nothing unpublished while a draft exists', async () => {
+    const { app, headers } = await build();
+    await app.inject({
+      method: 'POST',
+      url: '/p/new',
+      payload: new URLSearchParams(audit()).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).not.toContain('nothing unpublished');
+    await app.close();
+  });
+
   it('offers the form, listing the declared environments', async () => {
     const { app, headers } = await build();
     const page = await app.inject({ method: 'GET', url: '/p/new', headers });
