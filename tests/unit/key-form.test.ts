@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { renderNewProduct } from '@config/src/views/pages.js';
+import { renderNewProduct, renderRetiring } from '@config/src/views/pages.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 /**
@@ -304,5 +304,56 @@ describe('the action line', () => {
 describe('the secret checkbox', () => {
   it('says what ticking it means', () => {
     expect(secretBox().closest('label')?.textContent).toMatch(/treated as secret/i);
+  });
+});
+
+/**
+ * Bringing a product back.
+ *
+ * Asked in the row, like archiving and like discarding a form: the question is about this
+ * product and belongs beside it, not in a browser dialog that answers from somewhere else.
+ *
+ * It is the gentler of the two acts on this page — nothing stops being served either way — so
+ * the question exists to stop a misclick undoing a decision somebody made deliberately, not to
+ * warn about damage.
+ */
+describe('bringing a product back', () => {
+  const retiringMarkup = String(
+    renderRetiring({
+      products: [{ service: 'iam', name: 'iam (1002)', published: true }],
+      fragment: true,
+    }),
+  );
+
+  const load = () => {
+    document.body.innerHTML = retiringMarkup;
+    new Function(source)();
+  };
+
+  const row = () => document.querySelector('[data-retiring-row]') as HTMLElement;
+  const start = () => row().querySelector('[data-bring-back]') as HTMLElement;
+  const ask = () => row().querySelector('[data-bring-back-confirm]') as HTMLElement;
+
+  beforeEach(load);
+
+  it('asks in the row rather than acting at once', () => {
+    expect(ask().hidden).toBe(true);
+
+    start().click();
+
+    expect(ask().hidden).toBe(false);
+    expect(ask().textContent).toMatch(/retiring/i);
+  });
+
+  it('puts the question back when it is declined', () => {
+    start().click();
+    (row().querySelector('[data-bring-back-keep]') as HTMLElement).click();
+
+    expect(ask().hidden).toBe(true);
+    expect(start().hidden).toBe(false);
+  });
+
+  it('raises no browser dialog', () => {
+    expect(start().getAttribute('hx-confirm')).toBeNull();
   });
 });

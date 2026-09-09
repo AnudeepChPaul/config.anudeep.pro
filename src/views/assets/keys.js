@@ -113,6 +113,17 @@
     (event) => {
       const target = event.target;
       if (!target || !target.closest) return;
+      const bringingBack = target.closest('[data-bring-back]');
+      if (bringingBack) {
+        event.preventDefault();
+        event.stopPropagation();
+        const row = bringingBack.closest('[data-retiring-row]');
+        const ask = row && row.querySelector('[data-bring-back-confirm]');
+        if (ask) ask.hidden = false;
+        bringingBack.hidden = true;
+        return;
+      }
+
       const archiving = target.closest('[data-archive]');
       if (archiving) {
         // Capture, like discard: htmx binds to the element, and its listener would otherwise run
@@ -149,6 +160,16 @@
     // question is about this product, and a browser dialog answers from somewhere that looks
     // nothing like the page. Unlike discard, there is nothing to lose by asking every time —
     // archiving commits immediately, so it is always worth a second look.
+    const bringBackKeep = target.closest('[data-bring-back-keep]');
+    if (bringBackKeep) {
+      const row = bringBackKeep.closest('[data-retiring-row]');
+      const ask = row && row.querySelector('[data-bring-back-confirm]');
+      const start = row && row.querySelector('[data-bring-back]');
+      if (ask) ask.hidden = true;
+      if (start) start.hidden = false;
+      return;
+    }
+
     const archiveKeep = target.closest('[data-archive-keep]');
     if (archiveKeep) {
       const row = archiveKeep.closest('[data-retiring-row]');

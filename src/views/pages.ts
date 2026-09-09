@@ -172,6 +172,9 @@ const layout = (
   .actionline { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
   .discard-ask, .archive-ask { display: inline-flex; align-items: center; gap: 10px;
                  font-size: var(--type-sm); color: var(--danger); }
+  /* Not danger: bringing a product back takes nothing away. */
+  .bring-back-ask { display: inline-flex; align-items: center; gap: 10px;
+                    font-size: var(--type-sm); color: var(--muted); }
   input[type=text], input[type=password], input[type=number], input[type=search], select, textarea {
     width: 100%; height: var(--control-h); padding: 0 .6rem; border: 1px solid var(--field-line);
     border-radius: var(--radius); font: inherit; font-size: var(--type-base);
@@ -1413,16 +1416,26 @@ export function renderRetiring(options: {
               >unpublished</span>`
       }
       <span style="flex-grow:1;"></span>
-      <form method="post" action="/p/${product.service}/retire" hx-post="/p/${product.service}/retire"
-            hx-target="#page" hx-swap="innerHTML" style="display:inline;">
-        <input type="hidden" name="retiring" value="false">
-        ${writeAction({
-          post: `/p/${product.service}/retire`,
-          vals: '{"retiring":"false"}',
-          resting: html`Bring back`,
-          running: 'Bringing back…',
-        })}
-      </form>
+      <!-- Asked in the row, like archiving: the question is about this product and belongs
+           beside it. The gentler of the two acts — nothing stops being served either way — so
+           this exists to stop a misclick undoing a decision somebody made deliberately. -->
+      <a class="linkbtn" data-bring-back href="/p/${product.service}/retire">Bring back</a>
+      <span class="bring-back-ask" data-bring-back-confirm hidden>
+        <span>Cancels the retirement. ${product.service} stays as it is.</span>
+        <form method="post" action="/p/${product.service}/retire"
+              hx-post="/p/${product.service}/retire" hx-target="#page" hx-swap="innerHTML"
+              style="display:inline;">
+          <input type="hidden" name="retiring" value="false">
+          ${writeAction({
+            post: `/p/${product.service}/retire`,
+            vals: '{"retiring":"false"}',
+            resting: html`Yes, bring it back`,
+            running: 'Bringing back…',
+          })}
+        </form>
+        <span class="sep">·</span>
+        <button type="button" class="linkbtn no" data-bring-back-keep>Keep retiring</button>
+      </span>
       ${
         // A retirement is not an environment update, so the products screen does not offer to
         // publish it. This page has to, or a marked product could never reach its consumers.
