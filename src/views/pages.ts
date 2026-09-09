@@ -684,8 +684,38 @@ function writeAction(options: {
   running: string;
   className?: string;
   attributes?: SafeHtml;
+  /**
+   * Where this action posts. Given, the BUTTON issues the request rather than the form around
+   * it, which is the whole point: htmx marks the issuing element with .htmx-request, and
+   * `.htmx-request .resting` then matches this button alone.
+   *
+   * With the request on the form the class landed on the form, so the toolbar's two actions --
+   * Save and Publish share one form -- both showed a spinner whichever was pressed, and the
+   * global publish, whose button sits in the header and submits through `form=`, was outside
+   * the form and showed none at all.
+   */
+  post?: string;
+  /**
+   * What to send with it. The button is not the form, so the fields have to be named: "closest
+   * form" for an action inside one, an id for the header action that submits a form it is not in.
+   */
+  include?: string;
+  /**
+   * The intent, as htmx values. A submit button's name and value are sent when the FORM submits;
+   * when the button issues the request they are not, so an intent left as name/value would
+   * simply be missing and the route would have to guess.
+   */
+  vals?: string;
 }): SafeHtml {
-  return html`<button type="submit" class="${options.className ?? 'linkbtn'}" ${options.attributes ?? html``}>
+  // The form keeps its own method, action and hx-post: this is progressive enhancement, so a
+  // keyboard submit and a no-JS browser must still work. htmx handles the click on a button that
+  // carries hx-post and the form's submit never fires, so a click makes exactly one request.
+  const request = options.post
+    ? html`hx-post="${options.post}" hx-target="#page" hx-swap="innerHTML" hx-include="${
+        options.include ?? 'closest form'
+      }"${options.vals ? raw(` hx-vals='${options.vals}'`) : html``}`
+    : html``;
+  return html`<button type="submit" class="${options.className ?? 'linkbtn'}" ${request} ${options.attributes ?? html``}>
     <span class="resting">${options.resting}</span>
     <span class="running"><span class="spinner"></span>${options.running}</span>
   </button>`;
@@ -801,7 +831,12 @@ export function renderDrafts(options: {
                 hx-confirm="Drop draft #${index + 1} of ${entry.namespace}? A draft is not in git, so this cannot be undone.">
             <input type="hidden" name="namespace" value="${entry.namespace}">
             <input type="hidden" name="index" value="${index}">
-            ${writeAction({ className: 'linkbtn no', resting: html`Drop`, running: 'Dropping…' })}
+            ${writeAction({
+              className: 'linkbtn no',
+              post: '/drafts/drop',
+              resting: html`Drop`,
+              running: 'Dropping…',
+            })}
           </form>
         </div>`,
       )}
@@ -916,6 +951,8 @@ export function renderProducts(options: {
             ? writeAction({
                 className: 'linkbtn go',
                 attributes: html`form="publish-products"`,
+                post: '/publish',
+                include: '#publish-products',
                 resting: html`Publish selected drafts?`,
                 running: 'Publishing…',
               })
@@ -1049,6 +1086,7 @@ export function renderProduct(options: {
                 <input type="hidden" name="namespace" value="${options.service}">
                 ${writeAction({
                   className: 'linkbtn go',
+                  post: '/publish',
                   resting: html`Publish all ${productDrafts} draft${
                     productDrafts === 1 ? '' : 's'
                   } in ${options.service}?`,
@@ -1196,6 +1234,8 @@ export function renderProduct(options: {
                    the page is not in the draft, without a round trip to find that out. -->
               <span data-draft-action ${nothingToDraft ? 'hidden' : ''}>
                 ${writeAction({
+                  post: `/p/${options.service}/${options.active}`,
+                  vals: '{"intent":"save"}',
                   attributes: html`name="intent" value="save" data-needs-ticks ${
                     ticked === 0 ? raw('disabled') : html``
                   }`,
@@ -1218,6 +1258,8 @@ export function renderProduct(options: {
                       <span data-publish-action ${nothingToDraft ? '' : 'hidden'}>
                         ${writeAction({
                           className: 'linkbtn go',
+                          post: `/p/${options.service}/${options.active}`,
+                          vals: '{"intent":"publish"}',
                           attributes: html`name="intent" value="publish"`,
                           resting: html`Publish ${drafts} draft${drafts === 1 ? '' : 's'} in ${options.active}?`,
                           running: 'Publishing…',
