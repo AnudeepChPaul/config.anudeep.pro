@@ -415,7 +415,9 @@ describe('nothing moves when you navigate', () => {
     const sheet = css();
 
     // The crumb row is gone: the heading is the trail now, so there is one row fewer to hold.
-    for (const row of ['titlerow', 'facts', 'searchrow']) {
+    // noticerow included: a row that only takes height when it holds something is the shift
+    // it was added to prevent.
+    for (const row of ['titlerow', 'facts', 'searchrow', 'noticerow']) {
       expect(sheet, `${row} is fixed, not floored`).toMatch(
         new RegExp(`\\.${row} \\{[^}]*\\bheight:`),
       );
@@ -530,5 +532,32 @@ describe('a negative action is danger-coloured', () => {
 
   it('does not weight the trail link, so both halves of the heading match', () => {
     expect(rule('.pagehead h1 a')).not.toMatch(/font-weight/);
+  });
+});
+
+/**
+ * A notice is a line, not a banner.
+ *
+ * A bordered, filled block shouted one sentence louder than the thing it reported, and it lived
+ * in the page body, so it pushed the content down as it arrived and back up as it cleared.
+ */
+describe('the notice line', () => {
+  const rule = (selector: string) =>
+    (productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '').match(
+      new RegExp(`\\${selector} \\{[^}]*\\}`),
+    )?.[0] ?? '';
+
+  it('is underlined text at the weight the operator asked for', () => {
+    expect(rule('.notice')).toMatch(/font-weight:\s*500/);
+    expect(rule('.notice')).toMatch(/text-decoration:\s*underline/);
+  });
+
+  it('says which kind of news by colour alone', () => {
+    expect(rule('.notice.done')).toMatch(/color:\s*var\(--accent\)/);
+    expect(rule('.notice.problem')).toMatch(/color:\s*var\(--danger\)/);
+  });
+
+  it('is not a banner: no border, no fill', () => {
+    expect(rule('.notice')).not.toMatch(/border:|background:/);
   });
 });

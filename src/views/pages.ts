@@ -180,16 +180,20 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
      exactly what put Search and Clear on two baselines. */
   .linkbtn.no { color: var(--danger); }
   .linkbtn.no:hover:not(:disabled) { color: var(--ink); }
-  /* Typed by colour, because "Published 3 changes" and "Publishing failed" are not the same
-     kind of news and were rendered identically. Sits below the header and above the content:
-     first thing under the title, in the reading path, never overlapping what it describes. */
-  .notice { display: flex; align-items: center; gap: 10px; margin: 0 0 12px;
-            padding: 8px 12px; border: 1px solid var(--line); border-left-width: 3px;
-            border-radius: var(--radius); background: var(--surface);
-            font-size: var(--type-sm); min-height: var(--control-h); box-sizing: border-box; }
-  .notice.done { border-left-color: var(--accent); }
-  .notice.problem { border-left-color: var(--danger); background: var(--danger-fill); }
-  .notice [data-dismiss] { margin-left: auto; }
+  /* The row kept for the outcome of the last write, between the search and the title. It is
+     rendered on every page whether or not it holds anything and has a fixed height, so a notice
+     appears in place rather than pushing the title and everything under it down the page.
+
+     Not a banner: a bordered, filled block for one sentence shouted louder than the thing it
+     reported. Underlined text carries it, and the colour says which kind of news it is --
+     --accent for something that worked, --danger for something that did not. */
+  .noticerow { height: 22px; display: flex; align-items: center; overflow: hidden; }
+  .notice { display: inline-flex; align-items: baseline; gap: 10px; font-size: var(--type-sm);
+            font-weight: 500; text-decoration: underline; text-underline-offset: 3px; }
+  .notice.done { color: var(--accent); }
+  .notice.problem { color: var(--danger); }
+  .notice-dismiss { color: inherit; font-weight: 400; text-decoration: underline;
+                    text-underline-offset: 3px; }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
      .selection, for instance — beats it and leaves a hidden element on screen. Everything the
@@ -748,16 +752,14 @@ export interface PageNotice {
   readonly text: string;
 }
 
-function noticeBanner(notice: PageNotice | undefined, dismissTo: string): SafeHtml {
+function noticeLine(notice: PageNotice | undefined, dismissTo: string): SafeHtml {
   if (!notice) return html``;
   const done = notice.tone === 'done';
-  return html`<div class="notice ${done ? 'done' : 'problem'}" data-notice ${
+  return html`<span class="notice ${done ? 'done' : 'problem'}" data-notice ${
     done ? raw('data-transient') : html``
-  }>
-    <span>${notice.text}</span>
-    <a class="linkbtn no" data-dismiss href="${dismissTo}" hx-get="${dismissTo}" hx-target="#page"
-       hx-swap="innerHTML" hx-push-url="true">Dismiss</a>
-  </div>`;
+  }><span class="notice-text">${notice.text}</span><a class="notice-dismiss" data-dismiss
+      href="${dismissTo}" hx-get="${dismissTo}" hx-target="#page" hx-swap="innerHTML"
+      hx-push-url="true">Dismiss</a></span>`;
 }
 
 /**
@@ -777,9 +779,17 @@ function pageHeader(options: {
   actions?: SafeHtml;
   /** The search box, top right. Rendered only where searching does something. */
   search?: SafeHtml;
+  /** The outcome of the last write, in the row kept for it. */
+  notice?: PageNotice;
+  /** Where "dismiss" goes: this page, without the outcome code. */
+  dismissTo?: string;
 }): SafeHtml {
   return html`<div class="pagehead">
     <div class="searchrow">${options.search ?? html``}</div>
+    <!-- Rendered whether or not it holds anything. A notice that appears in a row created for it
+         pushes the title, the tabs and every row below down the page as it arrives and back up
+         as it clears; the reserved row is what makes it appear in place instead. -->
+    <div class="noticerow">${noticeLine(options.notice, options.dismissTo ?? '/')}</div>
     <div class="titlerow">
       <h1>${options.title}</h1>
       <div class="actions-right">${options.actions ?? html``}</div>
@@ -884,12 +894,13 @@ export function renderDrafts(options: {
 
   const body = html`
       ${pageHeader({
+        ...(options.notice ? { notice: options.notice } : {}),
+        dismissTo: '/drafts',
         title: trail('Unpublished drafts'),
         facts: html`${options.drafts.length} namespace${
           options.drafts.length === 1 ? '' : 's'
         } with unpublished work`,
       })}
-      ${noticeBanner(options.notice, '/drafts')}
       ${
         options.drafts.length === 0
           ? html`<div class="card">Nothing is drafted anywhere. Every environment is published.</div>`
@@ -967,6 +978,8 @@ export function renderProducts(options: {
            form and a Search click came to publish. The header's publish action reaches its form
            by id instead, which needs no script. -->
       ${pageHeader({
+        ...(options.notice ? { notice: options.notice } : {}),
+        dismissTo: options.query ? `/?q=${encodeURIComponent(options.query)}` : '/',
         title: html`Products`,
         search: searchBox({
           action: '/',
@@ -997,7 +1010,6 @@ export function renderProducts(options: {
               })
             : html``,
       })}
-      ${noticeBanner(options.notice, options.query ? `/?q=${encodeURIComponent(options.query)}` : '/')}
       ${
         options.query && options.products.length === 0
           ? html`<div class="card">No key matches “${options.query}”.</div>`
@@ -1101,6 +1113,8 @@ export function renderProduct(options: {
 
 
       ${pageHeader({
+        ...(options.notice ? { notice: options.notice } : {}),
+        dismissTo: `/p/${options.service}?env=${encodeURIComponent(options.active)}`,
         title: trail(options.service),
         search: searchBox({
           action: `/p/${options.service}`,
@@ -1142,15 +1156,6 @@ export function renderProduct(options: {
           : html``
       }
       ${promoteOffer(options)}
-      ${
-        // Transient or not is the notice's own tone now: a confirmation clears itself, a
-        // problem — a failed write, a commit that never reached the remote — stays, because the
-        // page would otherwise quietly delete the only report of it.
-        noticeBanner(
-          options.notice,
-          `/p/${options.service}?env=${encodeURIComponent(options.active)}`,
-        )
-      }
       ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
 
       ${

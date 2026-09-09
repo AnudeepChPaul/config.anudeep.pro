@@ -4,7 +4,7 @@ import { renderDrafts, renderProducts } from '@config/src/views/pages.js';
 import { describe, expect, it } from 'vitest';
 
 /**
- * One banner, in one place, that says what kind of thing it is.
+ * One notice line, in a slot that is always there.
  *
  * Before this a notice was a plain card in the page body, identical whether it reported a
  * publish or a failure, with nothing to dismiss it and no way to tell the two apart at a glance.
@@ -15,6 +15,8 @@ const load = (html: string) => {
   document.body.innerHTML = html;
   return document.querySelector('[data-notice]');
 };
+
+const slot = () => document.querySelector('.noticerow');
 
 const products = (over: Record<string, unknown> = {}) =>
   String(
@@ -63,6 +65,20 @@ describe('the notice banner', () => {
 
   it('renders nothing at all when there is no notice', () => {
     expect(load(products())).toBeNull();
+  });
+
+  // The whole point of the reserved row: a notice arriving must not push the page down.
+  it('keeps the row even with nothing to say, so nothing shifts when something arrives', () => {
+    load(products());
+    expect(slot(), 'the row is rendered empty').toBeTruthy();
+    expect(slot()?.textContent?.trim()).toBe('');
+  });
+
+  it('puts the notice in that row, between the search and the title', () => {
+    load(products({ notice: { tone: 'done', text: 'Published 3 changes.' } }));
+    const rows = [...(document.querySelector('.pagehead')?.children ?? [])].map((r) => r.className);
+    expect(rows).toEqual(['searchrow', 'noticerow', 'titlerow', 'facts']);
+    expect(slot()?.querySelector('[data-notice]')).toBeTruthy();
   });
 
   it('appears on the drafts page too, in the same shape', () => {

@@ -1208,7 +1208,7 @@ describe('the tick and button behaviour the page depends on', () => {
 
       // This repository has no remote at all, so the push cannot have happened.
       expect(done.body).toMatch(/not yet pushed/);
-      const notice = done.body.match(/<div class="notice[^>]*>/);
+      const notice = done.body.match(/<span class="notice[^>]*>/);
       expect(notice?.[0], 'the banner is rendered').toBeTruthy();
       expect(notice?.[0]).not.toContain('data-transient');
       expect(notice?.[0]).toContain('problem');

@@ -67,14 +67,17 @@ describe('every page has the same header', () => {
     }
   });
 
-  it('puts the rows in one order: search, title, facts', () => {
+  it('puts the rows in one order: search, notice, title, facts', () => {
     // No separate breadcrumb row. The title IS the trail, so there is one thing to read rather
     // than a crumb saying where you are above a heading repeating it.
+    //
+    // The notice row sits between the search and the title and is rendered on every page,
+    // holding a notice or nothing, so one arriving does not push the title down the page.
     for (const html of Object.values(pages())) {
       const head = headerOf(html);
       const order = [...head.children].map((child) => child.className.split(' ')[0]);
 
-      expect(order).toEqual(['searchrow', 'titlerow', 'facts']);
+      expect(order).toEqual(['searchrow', 'noticerow', 'titlerow', 'facts']);
     }
   });
 
