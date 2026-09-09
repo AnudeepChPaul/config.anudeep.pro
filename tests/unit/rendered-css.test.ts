@@ -1,4 +1,9 @@
-import { type KeyRow, renderProduct, renderProducts } from '@config/src/views/pages.js';
+import {
+  type KeyRow,
+  renderProduct,
+  renderProducts,
+  renderSettings,
+} from '@config/src/views/pages.js';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -567,5 +572,34 @@ describe('the notice line', () => {
 
   it('is not a banner: no border, no fill', () => {
     expect(rule('.notice')).not.toMatch(/border:|background:/);
+  });
+});
+
+/**
+ * The settings table has an inset.
+ *
+ * It used to sit inside a .card, which supplied padding along with the second border that had to
+ * go. Removing the card took the padding with it and the rows went flush against the edge -- the
+ * class meant to replace it was written in the stylesheet and never attached to the markup, so
+ * the rule existed and applied to nothing.
+ */
+describe('the settings table', () => {
+  const sheet = () =>
+    (renderSettings({ env: {}, fragment: false })
+      .toString()
+      .match(/<style>[\s\S]*?<\/style>/) ?? [''])[0];
+  const rule = (selector: string) =>
+    sheet().match(new RegExp(`\\${selector} \\{[^}]*\\}`))?.[0] ?? '';
+
+  it('insets its rows from the border rather than letting them touch it', () => {
+    expect(rule('.settings-row')).toMatch(/padding:/);
+  });
+
+  // The rule is worthless unless something wears the class.
+  it('actually puts that class on every row', () => {
+    const body = String(renderSettings({ env: { CONFIG_GIT_REMOTE: 'x' }, fragment: true }));
+    const rows = body.match(/<div class="[^"]*keyrow[^"]*"/g) ?? [];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row).toContain('settings-row');
   });
 });

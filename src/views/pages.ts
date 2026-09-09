@@ -225,7 +225,10 @@ const layout = (
      value at the SAME size so the eye can move between the two columns without resizing. */
   .keyname { font-weight: 500; min-width: 18rem; font-size: var(--type-xs); }
   .settings-unset { font-size: var(--type-xs); color: var(--muted); }
-  .settings-row { padding: 5px 14px; }
+  /* The inset the .card used to supply. Dropping the card removed the duplicated border and
+     took the padding with it, leaving every row flush against the edge. */
+  .settings-row { padding: 7px 16px; }
+  .settings-row + .settings-row { border-top: 1px solid var(--hair); }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
      .selection, for instance — beats it and leaves a hidden element on screen. Everything the
@@ -899,7 +902,7 @@ export interface DraftListEntry {
  */
 export function renderSettings(options: { env: NodeJS.ProcessEnv; fragment?: boolean }): SafeHtml {
   const rows = settingsRows(options.env).map(
-    (row) => html`<div class="keyrow">
+    (row) => html`<div class="keyrow settings-row">
       <span class="keyname">${row.name}</span>
       <span class="${row.set ? 'settings-value' : 'settings-unset'}">${row.shown}</span>
       ${row.secret ? html`<span class="chip">secret</span>` : html``}
