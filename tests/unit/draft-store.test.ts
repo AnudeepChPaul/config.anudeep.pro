@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
  */
 
 const draft = (namespace: string, overrides: Partial<Draft> = {}): Draft => ({
+  kind: 'ENV_UPDATES',
   namespace,
   document: 'MFA_ENFORCEMENT: all\n',
   changes: [{ key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false }],
@@ -186,6 +187,7 @@ describe('the saves inside a draft', () => {
   it('round-trips every save, in the order they were made', async () => {
     const store = new DraftStore(path);
     await store.put({
+      kind: 'ENV_UPDATES',
       namespace: 'iam/dev',
       document: 'A: 1\n',
       changes: [{ key: 'A', from: 0, to: 1, secret: false }],
@@ -208,6 +210,7 @@ describe('the saves inside a draft', () => {
       JSON.stringify({
         drafts: [
           {
+            kind: 'ENV_UPDATES',
             namespace: 'iam/dev',
             document: 'A: 1\n',
             changes: [{ key: 'A', from: 0, to: 1, secret: false }],
@@ -232,6 +235,7 @@ describe('the saves inside a draft', () => {
       JSON.stringify({
         drafts: [
           {
+            kind: 'ENV_UPDATES',
             namespace: 'iam/dev',
             document: 'A: 1\n',
             changes: [{ key: 'A', from: 0, to: 1, secret: false }],
@@ -254,6 +258,7 @@ describe('the saves inside a draft', () => {
 
     await expect(
       store.put({
+        kind: 'ENV_UPDATES',
         namespace: 'iam/dev',
         document: 'A: 1\n',
         changes: [],
@@ -266,72 +271,67 @@ describe('the saves inside a draft', () => {
 });
 
 /**
- * A retirement staged before retirements had their own draft.
+ * What a draft IS, rather than what it looks like.
  *
- * Retiring a product used to attach the flag to the namespace's draft, under a declared
- * environment. Everything that counts drafts counts per declared environment, so such a draft
- * reads as an environment update: it is counted as work waiting to publish, it marks the
- * environment as pending, and the products screen offers to publish it — which would fail, since
- * the change it carries names no key any schema declares.
+ * Three kinds of thing are staged here — an environment update, a product being created, a
+ * product being retired — and every one was told apart by shape: an empty change list, a
+ * namespace suffix, a schema path in the files map. Twice that inference caught something it was
+ * not meant to. A product whose keys declare no defaults moves no key, exactly like a retirement
+ * does, so publish skipped its first environment file and the product arrived with an
+ * environment missing.
  *
- * Migrated on read, the way a draft written before saves existed is. Leaving it to be fixed by
- * hand means the console keeps mis-describing a draft somebody already made.
+ * The kind says it outright, and nothing infers it any more.
  */
-describe('a retirement staged under an environment', () => {
-  /** Writes drafts straight to disk, the way an older build left them. */
+describe('the kind of a draft', () => {
   const storeWith = async (drafts: unknown[]) => {
     await writeFile(path, JSON.stringify({ drafts }), 'utf8');
     return new DraftStore(path);
   };
 
-  const legacy = {
-    namespace: 'test/dev',
-    document: 'SESSION_TTL: 60\n',
-    changes: [{ key: 'retiring', from: undefined, to: undefined, secret: false }],
-    saves: [{ keys: ['retiring'], actor: 'me@anudeep.pro', at: 1, document: 'SESSION_TTL: 60\n' }],
-    actor: 'me@anudeep.pro',
-    updatedAt: 1,
-    files: { 'schema/test.yaml': 'version: 1\nretiring: true\nkeys: {}\n' },
-  };
-
-  it('is moved to the namespace retirements live under', async () => {
-    const store = await storeWith([legacy]);
-
-    expect((await store.all()).map((draft) => draft.namespace)).toEqual(['test/retiring']);
+  const kinded = (kind: string, namespace = 'iam/prod') => ({
+    ...draft(namespace),
+    kind,
   });
 
-  it('drops the change that named no key, so it can be published at all', async () => {
-    const store = await storeWith([legacy]);
+  it('reads back the kind it was written with', async () => {
+    const store = await storeWith([kinded('ENV_UPDATES')]);
 
-    expect((await store.all())[0]?.changes).toEqual([]);
+    expect((await store.all())[0]?.kind).toBe('ENV_UPDATES');
   });
 
-  it('keeps the schema it carries, which is the whole draft', async () => {
-    const store = await storeWith([legacy]);
+  it('keeps every kind it knows', async () => {
+    const store = await storeWith([
+      kinded('ENV_UPDATES', 'iam/prod'),
+      kinded('PRODUCT_CREATION', 'audit/dev'),
+      kinded('PRODUCT_RETIREMENT', 'api/retiring'),
+    ]);
 
-    expect((await store.all())[0]?.files?.['schema/test.yaml']).toMatch(/retiring: true/);
+    expect((await store.all()).map((entry) => entry.kind).sort()).toEqual([
+      'ENV_UPDATES',
+      'PRODUCT_CREATION',
+      'PRODUCT_RETIREMENT',
+    ]);
   });
 
-  it('leaves an ordinary draft alone', async () => {
-    const ordinary = {
-      ...legacy,
-      changes: [{ key: 'SESSION_TTL', from: 60, to: 90, secret: false }],
-      files: {},
-    };
-    const store = await storeWith([ordinary]);
+  // A draft is not durable state, and one written before kinds existed cannot be told apart from
+  // the others reliably — which is the whole reason the field exists.
+  it('drops a draft that does not say what it is', async () => {
+    const { kind: _kind, ...unkinded } = kinded('ENV_UPDATES');
+    const store = await storeWith([unkinded]);
 
-    expect((await store.all())[0]?.namespace).toBe('test/dev');
+    expect(await store.all()).toEqual([]);
   });
 
-  // A draft holding both is not a retirement to be moved: moving it would take the value change
-  // with it, out of the environment it belongs to.
-  it('leaves a draft that also changes values where it is', async () => {
-    const mixed = {
-      ...legacy,
-      changes: [{ key: 'SESSION_TTL', from: 60, to: 90, secret: false }],
-    };
-    const store = await storeWith([mixed]);
+  it('drops one claiming a kind nothing here defines', async () => {
+    const store = await storeWith([kinded('SOMETHING_ELSE')]);
 
-    expect((await store.all())[0]?.namespace).toBe('test/dev');
+    expect(await store.all()).toEqual([]);
+  });
+
+  it('keeps the ones that do say, beside one that does not', async () => {
+    const { kind: _kind, ...unkinded } = kinded('ENV_UPDATES', 'iam/dev');
+    const store = await storeWith([unkinded, kinded('ENV_UPDATES', 'iam/prod')]);
+
+    expect((await store.all()).map((entry) => entry.namespace)).toEqual(['iam/prod']);
   });
 });

@@ -361,6 +361,9 @@ withSops('staging and scoped publishing', () => {
         JSON.stringify({
           drafts: [
             {
+              // Predates saves, not kinds: a draft that does not say what it is is dropped on
+              // read now, which would make this test about the wrong thing.
+              kind: 'ENV_UPDATES',
               namespace: 'iam/dev',
               document: legacy?.document,
               changes: legacy?.changes,

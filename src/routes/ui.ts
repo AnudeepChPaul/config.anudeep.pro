@@ -9,7 +9,7 @@ import type { DraftStore } from '../store/draft-store.js';
 import { EnvironmentOrder } from '../store/environment-order.js';
 import type { ConfigLoader } from '../store/loader.js';
 import { isMetadataKey, versionOf } from '../store/metadata.js';
-import { type ConfigWriteService, RETIRING_ENVIRONMENT } from '../store/write-service.js';
+import type { ConfigWriteService } from '../store/write-service.js';
 import { noticeFor } from '../views/notices.js';
 import {
   type EnvironmentSummary,
@@ -144,7 +144,13 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     const draftsByNamespace = new Map<string, number>(
       staged.map((draft) => [draft.namespace, draft.saves.length]),
     );
-    return { sources, tree, pendingByNamespace, draftsByNamespace };
+    // Environment work only, and the draft says which it is rather than the caller working it
+    // out from a namespace. This is the number beside Products: a retirement and a product being
+    // created are unpublished too, and neither is an environment update waiting to be published.
+    const envDraftSaves = staged
+      .filter((draft) => draft.kind === 'ENV_UPDATES')
+      .reduce((total, draft) => total + draft.saves.length, 0);
+    return { sources, tree, pendingByNamespace, draftsByNamespace, envDraftSaves };
   };
 
   /**
@@ -212,13 +218,11 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     // Staged retirements belong here too: the count on the product list links to this page, and
     // a link that leads to "Nothing is retiring" is worse than no link. What separates them is
     // what each one can DO — archiving is offered only once a retirement is published.
-    const staged = new Set<string>();
-    for (const draft of await drafts.all()) {
-      for (const [path, contents] of Object.entries(draft.files ?? {})) {
-        const match = /^schema\/(.+)\.yaml$/.exec(path);
-        if (match && /^retiring:\s*true\s*$/m.test(contents)) staged.add(String(match[1]));
-      }
-    }
+    const staged = new Set(
+      (await drafts.all())
+        .filter((draft) => draft.kind === 'PRODUCT_RETIREMENT')
+        .map((draft) => String(draft.namespace.split('/')[0])),
+    );
 
     const products = (await declaredServices())
       .filter((service) => schemaSet.isRetiring(service.name) || staged.has(service.name))
@@ -526,7 +530,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       request: FastifyRequest<{ Querystring: { done?: string; n?: string; q?: string } }>,
       reply,
     ) => {
-      const { sources, tree, pendingByNamespace, draftsByNamespace } = await readState();
+      const { sources, tree, pendingByNamespace, draftsByNamespace, envDraftSaves } =
+        await readState();
 
       // Declared, not discovered: a product is listed because services.yaml says it exists.
       const declared = await declaredServices();
@@ -542,14 +547,11 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
        * published, so no consumer can see it. Read from the drafts rather than the schemas,
        * because the schemas are what is committed — which is precisely what this is not yet.
        */
-      const retiringDrafted = new Set<string>();
-      for (const draft of await drafts.all()) {
-        for (const [path, contents] of Object.entries(draft.files ?? {})) {
-          const match = /^schema\/(.+)\.yaml$/.exec(path);
-          if (!match) continue;
-          if (/^retiring:\s*true\s*$/m.test(contents)) retiringDrafted.add(String(match[1]));
-        }
-      }
+      const retiringDrafted = new Set(
+        (await drafts.all())
+          .filter((draft) => draft.kind === 'PRODUCT_RETIREMENT')
+          .map((draft) => String(draft.namespace.split('/')[0])),
+      );
 
       const products: ProductSummary[] = declared.map((service) => {
         const environments = environmentsOf(
@@ -645,9 +647,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
             // Environment work waiting, and only that. A retirement is unpublished too, but it
             // is not an environment update: counting it here is the same mistake as offering to
             // publish it from this screen. It is reported separately, below.
-            draftCount: [...draftsByNamespace.entries()]
-              .filter(([namespace]) => !namespace.endsWith(`/${RETIRING_ENVIRONMENT}`))
-              .reduce((total, [, saves]) => total + saves, 0),
+            draftCount: envDraftSaves,
             ...noticeQuery(request.query),
             settingsLink: maySeeSettings(request),
             build,

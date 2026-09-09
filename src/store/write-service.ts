@@ -429,6 +429,7 @@ export class ConfigWriteService {
       if (stringifyYaml(next) === committedSchema) {
         await drafts.remove([namespace]);
         return ok({
+          kind: 'PRODUCT_RETIREMENT',
           namespace,
           document: '',
           changes: [],
@@ -437,7 +438,7 @@ export class ConfigWriteService {
           updatedAt: Date.now(),
           basedOn: null,
           files: {},
-        } as Draft);
+        } satisfies Draft);
       }
       const existing = await drafts.get(namespace);
       // Never written: this draft changes no values. A draft has to carry a document, and the
@@ -451,10 +452,9 @@ export class ConfigWriteService {
       };
 
       const draft: Draft = {
+        kind: 'PRODUCT_RETIREMENT',
         namespace,
         document,
-        // No key moved. This is what tells publish to write the files and leave the document
-        // alone.
         changes: existing?.changes ?? [],
         saves: [...(existing?.saves ?? []), save],
         actor: actor.email,
@@ -521,6 +521,7 @@ export class ConfigWriteService {
 
       const primary = namespaces[0] as string;
       const draft: Draft = {
+        kind: 'PRODUCT_CREATION',
         namespace: primary,
         document: await this.options.encryptor.encrypt(primary, stringifyYaml(sortKeys(document))),
         changes: Object.keys(request.defaults).map((key) => ({
@@ -635,6 +636,9 @@ export class ConfigWriteService {
       ];
 
       const draft: Draft = {
+        // An ordinary edit to an environment's values, which is what stage() is for. A product
+        // being created and a product being retired each say so themselves.
+        kind: 'ENV_UPDATES',
         namespace,
         document,
         changes: dedupeByKey(recorded),
@@ -731,15 +735,14 @@ export class ConfigWriteService {
 
         const chosen = draft.changes.map((change) => change.key);
 
-        // A RETIREMENT carries files and no document worth writing: rewriting the namespace
+        // A retirement carries files and no document worth writing: rewriting the namespace
         // would bump its revision for a change nobody made, and that counter is how a consumer
         // decides whether it is up to date.
         //
-        // Recognised by which namespace it is filed under, not by having no changes. Inferring
-        // it from an empty change list caught a product whose keys declare no defaults — that
-        // draft moves no key either, and skipping its document left the product declared, schema
-        // and all, with its first environment missing.
-        if (selection.namespace.endsWith(`/${RETIRING_ENVIRONMENT}`)) {
+        // The draft says which it is. This was inferred twice — first from an empty change list,
+        // then from the namespace — and the first inference caught a product whose keys declare
+        // no defaults, skipping its first environment file.
+        if (draft.kind === 'PRODUCT_RETIREMENT') {
           Object.assign(files, draft.files);
           summaryLines.push(...draft.saves.map((save) => draftLine(selection.namespace, save)));
           drafted += draft.saves.length;

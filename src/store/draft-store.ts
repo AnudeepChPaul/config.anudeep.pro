@@ -47,7 +47,25 @@ export interface DraftSave {
   readonly at: number;
 }
 
+/**
+ * What a draft is for.
+ *
+ * Three different things are staged here and they behave differently at every step: an
+ * environment update carries values, a product creation carries a registry entry and a schema
+ * beside its first environment's file, and a retirement carries a schema and no values at all.
+ *
+ * They used to be told apart by shape — an empty change list, a namespace suffix, a schema path
+ * among the files — and twice that inference caught something it was not meant to. A product
+ * whose keys declare no defaults moves no key, exactly as a retirement does, so publish skipped
+ * its first environment file and the product arrived with an environment missing.
+ */
+export const DRAFT_KINDS = ['ENV_UPDATES', 'PRODUCT_CREATION', 'PRODUCT_RETIREMENT'] as const;
+
+export type DraftKind = (typeof DRAFT_KINDS)[number];
+
 export interface Draft {
+  /** What this draft is for. Every decision that asks "what is this" reads this and nothing else. */
+  readonly kind: DraftKind;
   readonly namespace: Namespace;
   /** The full document as it would be committed — secrets already encrypted. */
   readonly document: string;
@@ -82,44 +100,17 @@ const isDraft = (value: unknown): value is Draft => {
   if (typeof value !== 'object' || value === null) return false;
   const d = value as Partial<Draft>;
   return (
+    // A draft that does not say what it is cannot be told apart from the others reliably, which
+    // is the whole reason the field exists. Dropped rather than guessed at: a draft is not
+    // durable state, and guessing is what this replaced.
+    typeof d.kind === 'string' &&
+    (DRAFT_KINDS as readonly string[]).includes(d.kind) &&
     typeof d.namespace === 'string' &&
     typeof d.document === 'string' &&
     Array.isArray(d.changes) &&
     typeof d.actor === 'string' &&
     typeof d.updatedAt === 'number'
   );
-};
-
-/**
- * A retirement staged before retirements had a draft of their own.
- *
- * Retiring a product used to attach the flag to the namespace's draft, under a declared
- * environment — and everything that counts drafts counts per declared environment. So such a
- * draft reads as an environment update: counted as work waiting to publish, marking the
- * environment pending, and offered to the publish action, which would then fail, because the
- * change it carries names no key any schema declares.
- *
- * Recognised by shape rather than by a flag: it carries a schema file with the retirement in it,
- * and it changes no real value. A draft that also changes a value is left exactly where it is —
- * moving it would drag that value change out of the environment it belongs to.
- */
-const RETIREMENT_ONLY = /^retiring$/;
-
-const asRetirement = (draft: Draft): Draft => {
-  const [service, environment] = draft.namespace.split('/');
-  if (!service || environment === 'retiring') return draft;
-
-  const schema = draft.files?.[`schema/${service}.yaml`];
-  if (!schema || !/^retiring:\s*true\s*$/m.test(schema)) return draft;
-  if (draft.changes.some((change) => !RETIREMENT_ONLY.test(change.key))) return draft;
-
-  return {
-    ...draft,
-    namespace: `${service}/retiring` as Draft['namespace'],
-    // `retiring` was never a key: it is a property of the schema, and a change naming it would
-    // be validated against a schema that has no such key and refused.
-    changes: [],
-  };
 };
 
 /**
@@ -164,7 +155,7 @@ export class DraftStore {
 
     // One malformed entry discards itself, not the rest: losing every pending change because
     // one is unreadable would be a worse outcome than losing the one.
-    return drafts.filter(isDraft).map(withSaves).map(asRetirement);
+    return drafts.filter(isDraft).map(withSaves);
   }
 
   async get(namespace: Namespace): Promise<Draft | null> {
