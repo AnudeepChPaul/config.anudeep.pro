@@ -110,6 +110,38 @@ keys:
     const retire = (retiring: boolean) =>
       service.stageSchemaFlag({ service: 'iam', retiring }, ACTOR);
 
+    // A retirement is not an environment update and must not ride along with one. Kept in its
+    // own draft, under a reserved environment name, so publishing a value change cannot ship a
+    // retirement nobody chose to publish — and so the products screen, which counts drafts per
+    // declared environment, does not count it as work waiting there.
+    it('keeps the retirement in its own draft, away from the values', async () => {
+      await service.stage(
+        { service: 'iam', environment: 'prod', changes: { MFA_ENFORCEMENT: 'all' } },
+        ACTOR,
+      );
+      await retire(true);
+
+      const all = await drafts.all();
+      const namespaces = all.map((draft) => draft.namespace).sort();
+
+      expect(namespaces).toEqual(['iam/prod', 'iam/retiring']);
+      // The value draft is untouched: no schema rode along with it.
+      expect(all.find((draft) => draft.namespace === 'iam/prod')?.files ?? {}).toEqual({});
+    });
+
+    it('publishes the values without publishing the retirement', async () => {
+      await service.stage(
+        { service: 'iam', environment: 'prod', changes: { MFA_ENFORCEMENT: 'all' } },
+        ACTOR,
+      );
+      await retire(true);
+
+      await service.publish(['iam/prod'], ACTOR, REQUEST);
+
+      expect(await git.readFile('schema/iam.yaml')).not.toMatch(/retiring: true/);
+      expect(await git.readFile('config/iam/prod.yaml')).toMatch(/MFA_ENFORCEMENT: all/);
+    });
+
     it('stages a draft rather than writing the schema', async () => {
       const before = await git.readFile('schema/iam.yaml');
 
@@ -128,7 +160,7 @@ keys:
     it('publishes it without touching the values or their revision', async () => {
       const before = await git.readFile('config/iam/prod.yaml');
       await retire(true);
-      await service.publish(['iam/prod'], ACTOR, REQUEST);
+      await service.publish(['iam/retiring'], ACTOR, REQUEST);
 
       expect(await git.readFile('schema/iam.yaml')).toMatch(/retiring: true/);
       // Byte-identical: the revision counter did not move for a change nobody made.
@@ -137,9 +169,9 @@ keys:
 
     it('takes the flag off again, which is how a retirement is cancelled', async () => {
       await retire(true);
-      await service.publish(['iam/prod'], ACTOR, REQUEST);
+      await service.publish(['iam/retiring'], ACTOR, REQUEST);
       await retire(false);
-      await service.publish(['iam/prod'], ACTOR, REQUEST);
+      await service.publish(['iam/retiring'], ACTOR, REQUEST);
 
       expect(await git.readFile('schema/iam.yaml')).not.toMatch(/retiring: true/);
     });

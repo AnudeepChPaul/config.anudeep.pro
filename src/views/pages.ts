@@ -1389,14 +1389,21 @@ export function renderNewProduct(options: {
  * clicked.
  */
 export function renderRetiring(options: {
-  products: readonly { service: string; name: string }[];
+  products: readonly { service: string; name: string; published?: boolean }[];
   settingsLink?: boolean;
   build?: string;
   fragment?: boolean;
 }): SafeHtml {
   const rows = options.products.map(
     (product) => html`<div class="row keyrow" data-retiring-row>
-      <strong style="flex-grow:1;">${product.name}</strong>
+      <strong>${product.name}</strong>
+      ${
+        product.published
+          ? html``
+          : html`<span class="chip wait" title="staged, not published: no consumer can see it yet"
+              >unpublished</span>`
+      }
+      <span style="flex-grow:1;"></span>
       <form method="post" action="/p/${product.service}/retire" hx-post="/p/${product.service}/retire"
             hx-target="#page" hx-swap="innerHTML" style="display:inline;">
         <input type="hidden" name="retiring" value="false">
@@ -1407,8 +1414,33 @@ export function renderRetiring(options: {
           running: 'Bringing back…',
         })}
       </form>
-      <span class="sep">·</span>
-      <a class="linkbtn no" data-archive href="/p/${product.service}/archive">Archive the Product</a>
+      ${
+        // A retirement is not an environment update, so the products screen does not offer to
+        // publish it. This page has to, or a marked product could never reach its consumers.
+        product.published
+          ? html``
+          : html`<span class="sep">·</span>
+            <form method="post" action="/publish" hx-post="/publish" hx-target="#page"
+                  hx-swap="innerHTML" style="display:inline;">
+              <input type="hidden" name="namespace" value="${product.service}/retiring">
+              ${writeAction({
+                className: 'linkbtn go',
+                post: '/publish',
+                resting: html`Publish this retirement`,
+                running: 'Publishing…',
+              })}
+            </form>`
+      }
+      ${
+        // Archiving stops a namespace being served, and a staged retirement has told no consumer
+        // anything at all. Offering it here would skip the entire interval the two steps exist
+        // to create, so it appears only once the retirement is published.
+        product.published
+          ? html`<span class="sep">·</span>
+            <a class="linkbtn no" data-archive href="/p/${product.service}/archive"
+              >Archive the Product</a>`
+          : html``
+      }
       <!-- Asked in the row, not in a browser dialog: the question is about this product, and it
            belongs beside it. Answering it is the only gate — archiving commits immediately. -->
       <span class="archive-ask" data-archive-confirm hidden>
@@ -1432,9 +1464,22 @@ export function renderRetiring(options: {
   const body = html`
       ${pageHeader({
         title: trail('Retiring'),
-        facts: html`${options.products.length} product${
-          options.products.length === 1 ? '' : 's'
-        } marked retiring. Consumers can see this; nothing has stopped being served.`,
+        // Said separately, because they are different facts: a published retirement has reached
+        // consumers, and a staged one has reached nobody. Claiming the first about the second
+        // would undercut the only thing the two steps exist to give you — an interval in which
+        // somebody still reading this product can notice.
+        facts: (() => {
+          const published = options.products.filter((product) => product.published).length;
+          const staged = options.products.length - published;
+          const parts: string[] = [];
+          if (published > 0) {
+            parts.push(
+              `${published} published: consumers can see it, and nothing has stopped being served`,
+            );
+          }
+          if (staged > 0) parts.push(`${staged} staged: no consumer can see it until you publish`);
+          return html`${parts.join(' · ') || 'Nothing is retiring.'}`;
+        })(),
       })}
       ${
         options.products.length === 0

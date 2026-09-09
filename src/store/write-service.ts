@@ -83,6 +83,15 @@ export interface PromoteRequest {
 }
 
 /** A product to declare: its identity, where it lives, and what its keys are. */
+/**
+ * The environment name a retirement draft is filed under.
+ *
+ * Not a real environment and never declared in environments.yaml, which is exactly why it works:
+ * everything that counts drafts per declared environment ignores it, so a retirement never
+ * appears as an environment update waiting to be published.
+ */
+export const RETIRING_ENVIRONMENT = 'retiring';
+
 export interface ProductRequest {
   readonly service: string;
   readonly uid: number;
@@ -388,10 +397,21 @@ export class ConfigWriteService {
       else delete next.retiring;
 
       const sources = await this.options.repository.readSources();
-      const namespace = [...sources.sources.keys()]
+      /**
+       * Its own draft, under a reserved environment name.
+       *
+       * A retirement is not an environment update. Attaching it to a namespace's draft put a
+       * value change and a retirement in one draft, so publishing the values would have shipped
+       * a retirement nobody chose to publish — and the products screen, which counts drafts per
+       * DECLARED environment, would have counted it as work waiting there.
+       *
+       * `retiring` is declared as an environment nowhere, which is what keeps it out of both.
+       */
+      const namespace = `${request.service}/${RETIRING_ENVIRONMENT}`;
+      const anyEnvironment = [...sources.sources.keys()]
         .filter((entry) => entry.startsWith(`${request.service}/`))
         .sort()[0];
-      if (!namespace) {
+      if (!anyEnvironment) {
         return err({
           code: 'failed',
           detail: `${request.service} has no environment to stage against`,
@@ -399,7 +419,9 @@ export class ConfigWriteService {
       }
 
       const existing = await drafts.get(namespace);
-      const document = existing?.document ?? (sources.sources.get(namespace) as string);
+      // Never written: this draft changes no values. A draft has to carry a document, and the
+      // emptiest honest one is what the service already serves.
+      const document = existing?.document ?? (sources.sources.get(anyEnvironment) as string);
       const save = {
         keys: [request.retiring ? 'retiring' : 'retirement cancelled'],
         actor: actor.email,
@@ -416,7 +438,8 @@ export class ConfigWriteService {
         saves: [...(existing?.saves ?? []), save],
         actor: actor.email,
         updatedAt: Date.now(),
-        basedOn: sources.sources.get(namespace) ?? null,
+        // Nothing underneath it to go stale: this draft writes a schema, not a namespace file.
+        basedOn: null,
         files: { ...(existing?.files ?? {}), [path]: stringifyYaml(next) },
       };
 

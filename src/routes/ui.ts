@@ -209,9 +209,24 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
    */
   app.get('/p/retiring', async (request: FastifyRequest, reply) => {
     const schemaSet = schemas();
+    // Staged retirements belong here too: the count on the product list links to this page, and
+    // a link that leads to "Nothing is retiring" is worse than no link. What separates them is
+    // what each one can DO — archiving is offered only once a retirement is published.
+    const staged = new Set<string>();
+    for (const draft of await drafts.all()) {
+      for (const [path, contents] of Object.entries(draft.files ?? {})) {
+        const match = /^schema\/(.+)\.yaml$/.exec(path);
+        if (match && /^retiring:\s*true\s*$/m.test(contents)) staged.add(String(match[1]));
+      }
+    }
+
     const products = (await declaredServices())
-      .filter((service) => schemaSet.isRetiring(service.name))
-      .map((service) => ({ service: service.name, name: `${service.name} (${service.uid})` }));
+      .filter((service) => schemaSet.isRetiring(service.name) || staged.has(service.name))
+      .map((service) => ({
+        service: service.name,
+        name: `${service.name} (${service.uid})`,
+        published: schemaSet.isRetiring(service.name),
+      }));
 
     return reply.type('text/html; charset=utf-8').send(
       String(
@@ -631,7 +646,16 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
             ...noticeQuery(request.query),
             settingsLink: maySeeSettings(request),
             build,
-            retiring: declared.filter((service) => schemaSet.isRetiring(service.name)).length,
+            // Published or staged: the count answers "what is on the way out", which is an
+            // operator's question, and a product marked an hour ago is on the way out whether or
+            // not its draft has been published yet. A Set, because a product can be both — its
+            // schema already retiring and a draft touching it again — and it is still one
+            // product. The consumer-facing difference stays on the row and on /p/retiring.
+            retiring: new Set(
+              declared
+                .map((service) => service.name)
+                .filter((name) => schemaSet.isRetiring(name) || retiringDrafted.has(name)),
+            ).size,
           }),
         ),
       );

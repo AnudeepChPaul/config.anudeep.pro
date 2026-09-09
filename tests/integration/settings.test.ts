@@ -387,10 +387,11 @@ withSops('adding a product', () => {
     });
     expect(reloads.length, 'staging alone changes no file').toBe(0);
 
+    // A retirement is filed under its own namespace, away from the environments.
     await app.inject({
       method: 'POST',
       url: '/publish',
-      payload: new URLSearchParams([['namespace', 'iam/dev']]).toString(),
+      payload: new URLSearchParams([['namespace', 'iam/retiring']]).toString(),
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
     });
 
@@ -409,6 +410,24 @@ withSops('adding a product', () => {
    * It cannot wear the same marker as a published retirement, because no consumer can see it
    * yet — that is the difference the two markers have to carry.
    */
+  // A retirement is not an environment update, so it must not be counted as work waiting on the
+  // products screen, and the publish action there must not offer to ship it.
+  it('keeps a staged retirement out of the products screen publish', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).not.toMatch(/Publish selected drafts/);
+    expect(page.body).not.toMatch(/draft to publish/);
+    await app.close();
+  });
+
   it('shows a staged retirement on the list, before it is published', async () => {
     const { app, headers } = await build({});
 
@@ -426,7 +445,10 @@ withSops('adding a product', () => {
     await app.close();
   });
 
-  it('does not count a staged retirement among the products actually retiring', async () => {
+  // The count answers "what have I got on the way out", which is an operator's question, and a
+  // product marked an hour ago is on the way out whether or not the draft has been published.
+  // The consumer-facing distinction is kept where it belongs: on the row, and on /p/retiring.
+  it('counts a staged retirement too, so marking one is visible at once', async () => {
     const { app, headers } = await build({});
 
     await app.inject({
@@ -437,8 +459,23 @@ withSops('adding a product', () => {
     });
     const page = await app.inject({ method: 'GET', url: '/', headers });
 
-    // The count is about what consumers can see, and they cannot see a draft.
-    expect(page.body).not.toMatch(/product in retiring state/);
+    expect(page.body).toMatch(/1 product in retiring state/);
+    await app.close();
+  });
+
+  it('counts a product once, however many ways it is marked', async () => {
+    const { app, headers } = await build({ retiring: ['iam'] });
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).toMatch(/1 product in retiring state/);
+    expect(page.body).not.toMatch(/2 products in retiring state/);
     await app.close();
   });
 
@@ -458,6 +495,89 @@ withSops('adding a product', () => {
     const row = page.body.slice(page.body.indexOf('iam ('), page.body.indexOf('iam (') + 600);
 
     expect(row).toMatch(/retiring/);
+    await app.close();
+  });
+
+  // The count links here, so anything it counts has to be here — a link that leads to a page
+  // saying "nothing is retiring" is worse than no link.
+  it('lists a staged retirement too, and says it is not published', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
+
+    // Not a bare toContain: 'iam' appears in the page frame regardless. This asks whether a ROW
+    // for it is rendered.
+    expect(page.body).toMatch(/data-retiring-row/);
+    expect(page.body).toMatch(/iam \(1002\)/);
+    expect(page.body).toMatch(/unpublished|not published/i);
+    expect(page.body).not.toMatch(/Nothing is retiring/);
+    await app.close();
+  });
+
+  // Archiving stops a namespace being served, and a staged retirement has told no consumer
+  // anything. Offering it here would skip the entire interval the two steps exist to create.
+  // The page said "Consumers can see this" whatever it was listing. For a staged retirement
+  // that is simply untrue, and it is the one fact the whole two-step design turns on.
+  it('does not claim a consumer can see a retirement that is only staged', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
+
+    expect(page.body).not.toMatch(/Consumers can see this/);
+    await app.close();
+  });
+
+  it('says so when one IS published, because then they can', async () => {
+    const { app, headers } = await build({ retiring: ['iam'] });
+
+    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
+
+    expect(page.body).toMatch(/consumers can see/i);
+    await app.close();
+  });
+
+  // If the products screen must not publish it, this page has to — otherwise a marked product
+  // can never reach its consumers at all.
+  it('offers to publish a staged retirement from the retiring page', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
+
+    expect(page.body).toMatch(/Publish/);
+    expect(page.body).toContain('iam/retiring');
+    await app.close();
+  });
+
+  it('does not offer to archive one whose retirement is only staged', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
+
+    expect(page.body).not.toMatch(/Archive the Product/);
     await app.close();
   });
 
