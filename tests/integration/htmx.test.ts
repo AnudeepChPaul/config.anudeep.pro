@@ -23,7 +23,8 @@ const signedIn = guarded();
 
 const withSops = hasSops() ? describe : describe.skip;
 
-const SCHEMA = `keys:
+const SCHEMA = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -46,7 +47,7 @@ withSops('htmx as progressive enhancement', () => {
       'schema/iam.yaml': SCHEMA,
       'environments.yaml': 'order: [dev, prod]\n',
       'services.yaml':
-        'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+        'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
       'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key.recipient}\n`,

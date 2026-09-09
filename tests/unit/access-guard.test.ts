@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  */
 
 const SERVICES_YAML = `
+version: 1
 services:
   - name: iam
     uid: 1002

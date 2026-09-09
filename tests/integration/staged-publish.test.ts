@@ -22,7 +22,8 @@ import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.j
 
 const withSops = hasSops() ? describe : describe.skip;
 
-const IAM_SCHEMA = `keys:
+const IAM_SCHEMA = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -34,7 +35,8 @@ const IAM_SCHEMA = `keys:
     type: string
     secret: true
 `;
-const API_SCHEMA = `keys:
+const API_SCHEMA = `version: 1
+keys:
   RATE_LIMIT:
     type: int
     min: 1

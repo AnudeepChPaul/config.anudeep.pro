@@ -22,21 +22,23 @@ const ServiceSchema = z.object({
 /**
  * The shape of the file itself.
  *
- * `version` is optional and means 1 when absent, so the files already in a registry keep working
- * while they are migrated. It exists so this shape can change later without a reader guessing:
- * meeting an unknown version here means misreading a GRANT TABLE, which is the one file where
- * reading it wrongly hands a service someone else's secrets.
+ * `version` is required, now that the registry has been migrated to declare it. A file without
+ * one is a file this service has never written, and reading it as though it were the shape we
+ * happen to expect is how a GRANT TABLE gets misread -- the one file where reading it wrongly
+ * hands a service someone else's secrets.
+ *
+ * It was optional for exactly one step, so acceptance could ship before the migration and the
+ * requirement after it, with no deploy in between that cannot read its own registry.
  */
 const KNOWN_VERSIONS = [1] as const;
 
 const FileSchema = z.object({
   version: z
-    .number()
+    .number('version is required')
     .int()
     .refine((value) => (KNOWN_VERSIONS as readonly number[]).includes(value), {
       message: `version must be one of ${KNOWN_VERSIONS.join(', ')}`,
-    })
-    .optional(),
+    }),
   services: z.array(ServiceSchema).min(1),
 });
 
@@ -79,7 +81,7 @@ export class ServiceRegistry {
       parsed.data.services.map((s) =>
         Object.freeze({ ...s, namespaces: Object.freeze(s.namespaces) }),
       ),
-      parsed.data.version ?? 1,
+      parsed.data.version,
     );
   }
 

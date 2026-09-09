@@ -55,7 +55,7 @@ linuxOnly('ConfigClient', () => {
         resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
         registry: () =>
           ServiceRegistry.fromYaml(
-            `services:\n  - name: iam\n    uid: ${uid()}\n    namespaces: [iam/prod]\n`,
+            `version: 1\nservices:\n  - name: iam\n    uid: ${uid()}\n    namespaces: [iam/prod]\n`,
           ),
         audit: vi.fn(),
         alert: vi.fn(),
@@ -124,7 +124,7 @@ linuxOnly('ConfigClient', () => {
           resolver: new PeerCredentialResolver(platformPeerCredentialReader()),
           registry: () =>
             ServiceRegistry.fromYaml(
-              'services:\n  - name: other\n    uid: 65500\n    namespaces: [other/prod]\n',
+              'version: 1\nservices:\n  - name: other\n    uid: 65500\n    namespaces: [other/prod]\n',
             ),
           audit: vi.fn(),
           alert: vi.fn(),

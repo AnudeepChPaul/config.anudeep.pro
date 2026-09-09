@@ -20,7 +20,8 @@ import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.j
 
 const withSops = hasSops() ? describe : describe.skip;
 
-const SCHEMA = `keys:
+const SCHEMA = `version: 1
+keys:
   AUDIT_ENABLED:
     type: bool
   MFA_ENFORCEMENT:

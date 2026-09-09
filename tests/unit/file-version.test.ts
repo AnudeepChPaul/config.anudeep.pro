@@ -29,8 +29,11 @@ const SCHEMA = `keys:
 const withVersion = (source: string, version: unknown) => `version: ${version}\n${source}`;
 
 describe('services.yaml', () => {
-  it('is version 1 when it does not say, so an existing file keeps working', () => {
-    expect(ServiceRegistry.fromYaml(SERVICES).version).toBe(1);
+  // Step three: the registry has been migrated, so a file without a version is a file this
+  // service has never written and cannot vouch for. Silence is no longer read as 1.
+  it('refuses a file that declares no version at all', () => {
+    expect(() => ServiceRegistry.fromYaml(SERVICES)).toThrow(ServiceRegistryError);
+    expect(() => ServiceRegistry.fromYaml(SERVICES)).toThrow(/version/);
   });
 
   it('reads the version it declares', () => {
@@ -57,8 +60,9 @@ describe('services.yaml', () => {
 });
 
 describe('a schema file', () => {
-  it('is version 1 when it does not say', () => {
-    expect(SchemaSet.fromFiles({ iam: SCHEMA }).versionOf('iam')).toBe(1);
+  it('refuses a file that declares no version at all', () => {
+    expect(() => SchemaSet.fromFiles({ iam: SCHEMA })).toThrow(SchemaError);
+    expect(() => SchemaSet.fromFiles({ iam: SCHEMA })).toThrow(/schema\/iam\.yaml/);
   });
 
   it('reads the version it declares, and the keys beside it', () => {

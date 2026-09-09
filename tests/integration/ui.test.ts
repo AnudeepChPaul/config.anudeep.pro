@@ -27,9 +27,10 @@ const withSops = hasSops() ? describe : describe.skip;
 
 /** Whatever a hostile file happens to hold: the point of those fixtures is the rendering. */
 const EVIL_SCHEMA =
-  'keys:\n  A:\n    type: string\n  "<img src=x onerror=alert(1)>":\n    type: int\n';
+  'version: 1\nkeys:\n  A:\n    type: string\n  "<img src=x onerror=alert(1)>":\n    type: int\n';
 
-const SCHEMA = `keys:
+const SCHEMA = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -97,7 +98,7 @@ withSops('the CRUD UI', () => {
     await repo.commit({
       'schema/iam.yaml': SCHEMA,
       'services.yaml':
-        'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+        'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
       'environments.yaml': 'order: [dev, prod]\n',
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(SMTP_PASSWORD)$"\n    age: ${key.recipient}\n`,
@@ -253,7 +254,8 @@ withSops('the CRUD UI', () => {
       // point here is that a hostile VALUE in a declared namespace is escaped.
       await repo.commit({
         'config/evil/prod.yaml': "A: '</textarea><script>alert(1)</script>'\n",
-        'services.yaml': 'services:\n  - name: evil\n    uid: 1099\n    namespaces: [evil/prod]\n',
+        'services.yaml':
+          'version: 1\nservices:\n  - name: evil\n    uid: 1099\n    namespaces: [evil/prod]\n',
       });
       await start();
 
@@ -266,7 +268,8 @@ withSops('the CRUD UI', () => {
     it('escapes a hostile key name too', async () => {
       await repo.commit({
         'config/evil/prod.yaml': '"<img src=x onerror=alert(1)>": 1\n',
-        'services.yaml': 'services:\n  - name: evil\n    uid: 1099\n    namespaces: [evil/prod]\n',
+        'services.yaml':
+          'version: 1\nservices:\n  - name: evil\n    uid: 1099\n    namespaces: [evil/prod]\n',
       });
       await start();
 
@@ -405,7 +408,8 @@ withSops('the CRUD UI', () => {
 describe('the controls a key renders', () => {
   // The schema declares the type; the console must not make an operator type "true" into a text
   // box or guess an integer's bounds. These assert the control, not the styling.
-  const TYPED_SCHEMA = `keys:
+  const TYPED_SCHEMA = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -436,7 +440,7 @@ describe('the controls a key renders', () => {
       await repo2.commit({
         'schema/iam.yaml': TYPED_SCHEMA,
         'services.yaml':
-          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+          'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
         'environments.yaml': 'order: [dev, prod]\n',
         'config/iam/prod.yaml':
           'FP_COMPONENTS: [ua, lang]\nKILL_PASSWORD_LOGIN: false\nMFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
@@ -540,7 +544,8 @@ describe('the controls a key renders', () => {
 });
 
 describe('publishing ticked keys and promoting them', () => {
-  const SCHEMA2 = `keys:
+  const SCHEMA2 = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -586,7 +591,7 @@ describe('publishing ticked keys and promoting them', () => {
         'schema/iam.yaml': SCHEMA2,
         'environments.yaml': 'order: [dev, prod]\n',
         'services.yaml':
-          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+          'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
         'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
         '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(SMTP_PASSWORD)$"\n    age: ${key3.recipient}\n`,
@@ -751,7 +756,8 @@ describe('the environment tab offers the controls its routes accept', () => {
    *
    * So these assert the PAGE: that what a person can click matches what the server accepts.
    */
-  const SCHEMA4 = `keys:
+  const SCHEMA4 = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -790,7 +796,7 @@ describe('the environment tab offers the controls its routes accept', () => {
         'schema/iam.yaml': SCHEMA4,
         'environments.yaml': 'order: [dev, prod]\n',
         'services.yaml':
-          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+          'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
         'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
         '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key4.recipient}\n`,
@@ -949,9 +955,10 @@ describe('the tick and button behaviour the page depends on', () => {
    */
   /** A default, so a declared environment with no file can be created from it. */
   const API_SCHEMA5 =
-    'keys:\n  RATE_LIMIT:\n    type: int\n    min: 1\n    max: 1000\n    default: 100\n';
+    'version: 1\nkeys:\n  RATE_LIMIT:\n    type: int\n    min: 1\n    max: 1000\n    default: 100\n';
 
-  const SCHEMA5 = `keys:
+  const SCHEMA5 = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -996,7 +1003,7 @@ describe('the tick and button behaviour the page depends on', () => {
         'schema/api.yaml': API_SCHEMA5,
         'environments.yaml': 'order: [dev, prod]\n',
         'services.yaml':
-          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n' +
+          'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n' +
           '  - name: api\n    uid: 1003\n    namespaces: [api/prod]\n',
         // api has prod and no dev: the declared dev tab is the one with no file behind it.
         'config/api/prod.yaml': 'RATE_LIMIT: 50\n',
@@ -1600,7 +1607,7 @@ describe('the tick and button behaviour the page depends on', () => {
       // typed. Better to say so on the list than to let someone find out at the end.
       await repo5.commit({
         'services.yaml':
-          'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n' +
+          'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n' +
           '  - name: audit\n    uid: 1004\n    namespaces: [audit/prod]\n',
       });
 

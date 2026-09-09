@@ -105,7 +105,7 @@ describe('GitRepository.readSources', () => {
       'config/iam/prod.yaml': 'A: 1\n',
       'schema/iam.yaml': 'A: {type: int}\n',
       '.sops.yaml': 'creation_rules: []\n',
-      'services.yaml': 'services: []\n',
+      'services.yaml': 'version: 1\nservices: []\n',
     });
 
     const { sources } = await new GitRepository(repo.dir).readSources();
@@ -148,8 +148,8 @@ describe('GitRepository.readSchemas', () => {
   it('keys every schema file by its service name', async () => {
     const repo = await newRepo();
     await repo.commit({
-      'schema/iam.yaml': 'keys:\n  A:\n    type: int\n',
-      'schema/api.yaml': 'keys:\n  B:\n    type: bool\n',
+      'schema/iam.yaml': 'version: 1\nkeys:\n  A:\n    type: int\n',
+      'schema/api.yaml': 'version: 1\nkeys:\n  B:\n    type: bool\n',
     });
 
     const schemas = await new GitRepository(repo.dir).readSchemas();
@@ -160,7 +160,7 @@ describe('GitRepository.readSchemas', () => {
 
   it('reads schemas as committed, not as edited in the working tree', async () => {
     const repo = await newRepo();
-    await repo.commit({ 'schema/iam.yaml': 'keys:\n  A:\n    type: int\n' });
+    await repo.commit({ 'schema/iam.yaml': 'version: 1\nkeys:\n  A:\n    type: int\n' });
     await repo.write('schema/iam.yaml', 'keys: {}\n');
 
     const schemas = await new GitRepository(repo.dir).readSchemas();

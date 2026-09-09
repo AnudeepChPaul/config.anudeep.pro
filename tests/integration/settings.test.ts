@@ -20,7 +20,8 @@ import { type AgeKeypair, generateAgeKey, guarded, hasSops, TestRepo } from '../
  */
 const withSops = hasSops() ? describe : describe.skip;
 
-const SCHEMA = `keys:
+const SCHEMA = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -57,7 +58,8 @@ withSops('the settings page', () => {
     await repo.commit({
       'schema/iam.yaml': SCHEMA,
       'environments.yaml': 'order: [dev, prod]\n',
-      'services.yaml': 'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev]\n',
+      'services.yaml':
+        'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev]\n',
       'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key.recipient}\n`,
     });

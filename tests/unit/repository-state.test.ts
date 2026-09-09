@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
  * rotated secret reached exactly the uid the change was taking it away from.
  */
 const SERVICES = (namespaces: string) =>
-  `services:\n  - name: iam\n    uid: 1002\n    namespaces: [${namespaces}]\n`;
+  `version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [${namespaces}]\n`;
 
 const stateWith = (files: Record<string, string>) => {
   const current = { ...files };
@@ -24,7 +24,7 @@ const stateWith = (files: Record<string, string>) => {
     },
     loadSchemas: async () => {
       order.push('schemas');
-      return { iam: 'keys:\n  A:\n    type: string\n' };
+      return { iam: 'version: 1\nkeys:\n  A:\n    type: string\n' };
     },
     breakGlassPath: 'break-glass.yaml',
     onRegistry: () => {

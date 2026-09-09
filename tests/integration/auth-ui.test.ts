@@ -32,7 +32,8 @@ const SECRET = 'x'.repeat(64);
 const SECRET_BASE32 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
 const BREAK_GLASS_PASSWORD = 'correct horse battery staple';
 
-const SCHEMA = `keys:
+const SCHEMA = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -165,7 +166,7 @@ withSops('the editor behind authentication', () => {
     await repo.commit({
       'schema/iam.yaml': SCHEMA,
       'services.yaml':
-        'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
+        'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n',
       'environments.yaml': 'order: [dev, prod]\n',
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key.recipient}\n`,

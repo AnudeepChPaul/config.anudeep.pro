@@ -11,7 +11,8 @@ import { TestRepo } from '../helpers.js';
  * give away the thing being protected. So everything here is decided from ciphertext.
  */
 
-const SCHEMA = `keys:
+const SCHEMA = `version: 1
+keys:
   MFA_ENFORCEMENT:
     type: enum
     values: [optional, admins, all]
@@ -24,7 +25,8 @@ const SCHEMA = `keys:
     secret: true
 `;
 
-const SERVICES = `services:
+const SERVICES = `version: 1
+services:
   - name: iam
     uid: 1002
     namespaces: [iam/prod]
@@ -164,7 +166,7 @@ describe('the grant table', () => {
     repos.push(repo.dir);
     await repo.commit({
       'schema/iam.yaml': SCHEMA,
-      'services.yaml': 'services:\n  - name: iam\n    uid: 1002\n    namespaces: []\n',
+      'services.yaml': 'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: []\n',
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: all\n',
     });
 
@@ -178,7 +180,8 @@ describe('the grant table', () => {
     repos.push(repo.dir);
     await repo.commit({
       'schema/iam.yaml': SCHEMA,
-      'services.yaml': 'services:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/nowhere]\n',
+      'services.yaml':
+        'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/nowhere]\n',
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: all\n',
     });
 

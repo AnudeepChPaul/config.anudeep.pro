@@ -39,7 +39,7 @@ export class RepositoryState {
    * every read is refused until services.yaml has actually been read.
    */
   private currentRegistry = ServiceRegistry.fromYaml(
-    'services:\n  - name: none\n    uid: 65534\n    namespaces: [none/none]\n',
+    'version: 1\nservices:\n  - name: none\n    uid: 65534\n    namespaces: [none/none]\n',
   );
   private currentSchemas = SchemaSet.fromFiles({});
   private currentRecord: BreakGlassRecord | null = null;

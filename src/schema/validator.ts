@@ -52,10 +52,10 @@ const fail = (key: string, message: string): ValidationError => ({ key, message 
 /**
  * The file shapes this reader understands.
  *
- * Absent means 1, so the schemas already in a registry keep working while they are migrated.
- * A version nobody here knows is refused rather than read as best it can be: a schema decides
- * what a value is allowed to be, and misreading one lets a wrong value through at the moment
- * somebody is fixing an outage with it.
+ * Required, now that the registry declares it. A version nobody here knows -- and a file that
+ * declares none at all -- is refused rather than read as best it can be: a schema decides what a
+ * value is allowed to be, and misreading one lets a wrong value through at the moment somebody is
+ * fixing an outage with it.
  */
 const KNOWN_VERSIONS: readonly number[] = [1];
 
@@ -226,7 +226,11 @@ function checkValue(
 function parseSchemaVersion(service: string, source: string): number {
   const parsed = parseYaml(source) as { version?: unknown } | null;
   const declared = parsed?.version;
-  if (declared === undefined) return 1;
+  if (declared === undefined) {
+    throw new SchemaError(
+      `schema/${service}.yaml declares no version; every schema must declare one`,
+    );
+  }
   if (typeof declared !== 'number' || !Number.isInteger(declared)) {
     throw new SchemaError(`schema/${service}.yaml declares a version that is not a whole number`);
   }

@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
  */
 
 const IAM_SCHEMA = `
+version: 1
 keys:
   MFA_ENFORCEMENT:
     type: enum
@@ -42,19 +43,23 @@ const badKeys = (result: ReturnType<SchemaSet['validate']>) =>
 
 describe('SchemaSet.fromFiles', () => {
   it('rejects a key declaring a type it does not support', () => {
-    expect(() => schemas({ iam: 'keys:\n  A:\n    type: timestamp\n' })).toThrow(/timestamp/);
+    expect(() => schemas({ iam: 'version: 1\nkeys:\n  A:\n    type: timestamp\n' })).toThrow(
+      /timestamp/,
+    );
   });
 
   it('rejects an enum with no values, which could never be satisfied', () => {
-    expect(() => schemas({ iam: 'keys:\n  A:\n    type: enum\n    values: []\n' })).toThrow(/A/);
+    expect(() =>
+      schemas({ iam: 'version: 1\nkeys:\n  A:\n    type: enum\n    values: []\n' }),
+    ).toThrow(/A/);
   });
 
   it('rejects an int whose min exceeds its max', () => {
     // No value satisfies it, so every future write to the key would fail with a message about
     // the value rather than about the schema.
-    expect(() => schemas({ iam: 'keys:\n  A:\n    type: int\n    min: 10\n    max: 1\n' })).toThrow(
-      /A/,
-    );
+    expect(() =>
+      schemas({ iam: 'version: 1\nkeys:\n  A:\n    type: int\n    min: 10\n    max: 1\n' }),
+    ).toThrow(/A/);
   });
 
   it('rejects a schema file that is not a mapping of keys', () => {
@@ -63,7 +68,7 @@ describe('SchemaSet.fromFiles', () => {
 
   it('accepts a schema declaring no keys', () => {
     // A service that is known but overrides nothing yet.
-    expect(() => schemas({ iam: 'keys: {}\n' })).not.toThrow();
+    expect(() => schemas({ iam: 'version: 1\nkeys: {}\n' })).not.toThrow();
   });
 });
 
@@ -240,14 +245,14 @@ describe('SchemaSet secrets', () => {
 describe('key defaults', () => {
   it('reads a default per key', () => {
     const schemas = SchemaSet.fromFiles({
-      api: 'keys:\n  RATE_LIMIT:\n    type: int\n    default: 100\n  NAME:\n    type: string\n',
+      api: 'version: 1\nkeys:\n  RATE_LIMIT:\n    type: int\n    default: 100\n  NAME:\n    type: string\n',
     });
 
     expect(schemas.defaultsFor('api')).toEqual({ RATE_LIMIT: 100 });
   });
 
   it('leaves out a key that declares none, which then writes nothing', () => {
-    const schemas = SchemaSet.fromFiles({ api: 'keys:\n  NAME:\n    type: string\n' });
+    const schemas = SchemaSet.fromFiles({ api: 'version: 1\nkeys:\n  NAME:\n    type: string\n' });
 
     expect(schemas.defaultsFor('api')).toEqual({});
   });
@@ -255,7 +260,7 @@ describe('key defaults', () => {
   it('refuses a default that does not match the key it belongs to', () => {
     expect(() =>
       SchemaSet.fromFiles({
-        api: 'keys:\n  RATE_LIMIT:\n    type: int\n    default: fast\n',
+        api: 'version: 1\nkeys:\n  RATE_LIMIT:\n    type: int\n    default: fast\n',
       }),
     ).toThrow(/RATE_LIMIT/);
   });
@@ -263,7 +268,7 @@ describe('key defaults', () => {
   it('refuses a default outside the bounds the key declares', () => {
     expect(() =>
       SchemaSet.fromFiles({
-        api: 'keys:\n  RATE_LIMIT:\n    type: int\n    min: 1\n    max: 10\n    default: 99\n',
+        api: 'version: 1\nkeys:\n  RATE_LIMIT:\n    type: int\n    min: 1\n    max: 10\n    default: 99\n',
       }),
     ).toThrow(/RATE_LIMIT/);
   });
@@ -271,7 +276,7 @@ describe('key defaults', () => {
   it('says whether a service has a schema at all', () => {
     // A product with no schema cannot be edited: every save fails validation at the last step,
     // after the operator has typed the values.
-    const schemas = SchemaSet.fromFiles({ api: 'keys:\n  NAME:\n    type: string\n' });
+    const schemas = SchemaSet.fromFiles({ api: 'version: 1\nkeys:\n  NAME:\n    type: string\n' });
 
     expect(schemas.has('api')).toBe(true);
     expect(schemas.has('audit')).toBe(false);

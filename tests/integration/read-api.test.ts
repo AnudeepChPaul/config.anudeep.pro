@@ -35,7 +35,7 @@ const uid = () => process.getuid?.() ?? -1;
 /** A grant table naming this test process as `service`, so the kernel reports a granted uid. */
 const registryFor = (service: string, namespaces: string[]) =>
   ServiceRegistry.fromYaml(
-    `services:\n  - name: ${service}\n    uid: ${uid()}\n    namespaces: [${namespaces.join(', ')}]\n`,
+    `version: 1\nservices:\n  - name: ${service}\n    uid: ${uid()}\n    namespaces: [${namespaces.join(', ')}]\n`,
   );
 
 /**
@@ -188,7 +188,7 @@ linuxOnly('read API over a Unix socket', () => {
 
     it('denies a uid that holds no grant at all', async () => {
       const registry = ServiceRegistry.fromYaml(
-        'services:\n  - name: iam\n    uid: 65500\n    namespaces: [iam/prod]\n',
+        'version: 1\nservices:\n  - name: iam\n    uid: 65500\n    namespaces: [iam/prod]\n',
       );
       audit = vi.fn();
       alert = vi.fn();

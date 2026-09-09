@@ -15,6 +15,7 @@ const mustIdentify = (registry: ServiceRegistry, uid: number) => {
 };
 
 const SERVICES_YAML = `
+version: 1
 services:
   - name: iam
     uid: 1002
@@ -83,6 +84,7 @@ describe('ServiceRegistry.fromYaml validation', () => {
     // Ambiguous identity is unresolvable at request time: SO_PEERCRED reports a uid and the
     // registry would have to pick. Fail at load, where a human is watching.
     const duplicate = `
+version: 1
 services:
   - name: iam
     uid: 1002
@@ -97,6 +99,7 @@ services:
 
   it('rejects a service with no namespaces rather than granting it nothing quietly', () => {
     const empty = `
+version: 1
 services:
   - name: iam
     uid: 1002
@@ -108,6 +111,7 @@ services:
 
   it('rejects a malformed entry', () => {
     const malformed = `
+version: 1
 services:
   - name: iam
     namespaces: [iam/prod]
@@ -118,6 +122,7 @@ services:
 
   it('rejects a namespace that is not service/environment shaped', () => {
     const bad = `
+version: 1
 services:
   - name: iam
     uid: 1002

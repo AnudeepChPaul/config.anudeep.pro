@@ -43,7 +43,7 @@ describe('the version counter', () => {
 
 describe('the schema ignores it', () => {
   const schemas = SchemaSet.fromFiles({
-    iam: 'keys:\n  SESSION_TTL:\n    type: int\n',
+    iam: 'version: 1\nkeys:\n  SESSION_TTL:\n    type: int\n',
   });
 
   it('accepts a document carrying a version, which is in no schema', () => {
