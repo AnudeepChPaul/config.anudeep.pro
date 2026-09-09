@@ -119,7 +119,27 @@ function checkKey(draft: KeyDraft, seen: Set<string>): SchemaProblem[] {
       problem(name, `min and max can only be declared for an int, not for ${draft.type}`),
     );
   }
-  if (draft.min !== undefined && draft.max !== undefined && draft.min > draft.max) {
+  // A bound on an int is a whole number by definition: nothing downstream rounds it, so 1.5
+  // would sit in the schema deciding by halves what values are legal. NaN is what Number('')
+  // and Number('sixty') both produce, and it compares false against everything — a NaN bound
+  // silently permits every value while appearing to constrain them.
+  for (const [label, bound] of [
+    ['min', draft.min],
+    ['max', draft.max],
+  ] as const) {
+    if (bound === undefined) continue;
+    if (typeof bound !== 'number' || !Number.isInteger(bound)) {
+      problems.push(problem(name, `${label} must be a whole number`));
+    }
+  }
+
+  if (
+    typeof draft.min === 'number' &&
+    typeof draft.max === 'number' &&
+    Number.isFinite(draft.min) &&
+    Number.isFinite(draft.max) &&
+    draft.min > draft.max
+  ) {
     problems.push(
       problem(name, `min ${draft.min} is above max ${draft.max}: no value could satisfy it`),
     );

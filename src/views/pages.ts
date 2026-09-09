@@ -313,7 +313,7 @@ const layout = (
   .actions { font-size: var(--type-sm); }
   .actionslot { min-height: 3.35rem; }
   .actionslot .card { margin-bottom: 0; }
-  .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; flex-direction: row-reverse; justify-content: end }
   .actionline input, .actionline code { font-size: inherit; }
   .actionline .count { color: var(--unpublished); }
   .actionline .idle { color: var(--muted); }
@@ -1217,19 +1217,22 @@ export function renderNewProduct(options: {
           <span class="fieldlabel">Values <span class="hint">comma separated</span></span>
           <input type="text" name="key.${index}.values" value="${row.values ?? ''}" placeholder="optional, all">
         </label>
+        <!-- A bound belongs to an int and to nothing else, so it is a number in the markup
+             rather than something the script has to arrange. Whole steps: a schema bound of 1.5
+             is not a thing, and the browser says so before the server has to. -->
         <label class="field" data-when="int">
           <span class="fieldlabel">Min</span>
-          <input type="text" name="key.${index}.min" value="${row.min ?? ''}" inputmode="numeric">
+          <input type="number" step="1" name="key.${index}.min" value="${row.min ?? ''}">
         </label>
         <label class="field" data-when="int">
           <span class="fieldlabel">Max</span>
-          <input type="text" name="key.${index}.max" value="${row.max ?? ''}" inputmode="numeric">
+          <input type="number" step="1" name="key.${index}.max" value="${row.max ?? ''}">
         </label>
         <!-- Every type but a secret has a default, and it defaults to nothing: blank means the
              key is declared without a value. -->
         <label class="field" data-when="string int url string[]" data-not-secret>
           <span class="fieldlabel">Default <span class="hint">blank means none</span></span>
-          <input type="text" name="key.${index}.default" value="${row.default ?? ''}">
+          <input type="text" data-key-default name="key.${index}.default" value="${row.default ?? ''}">
         </label>
         <!-- A bool is ticked, not typed: "true" in a text box is a string, and a string in a
              bool key is the exact mistake the schema exists to catch.

@@ -34,6 +34,17 @@
     if (secretBox && type !== 'string' && secretBox.checked) secretBox.checked = false;
     const secret = Boolean(secretBox && secretBox.checked);
 
+    // The default box serves every type, so its own type follows the key's: a number for an
+    // int, text for the rest. Set here rather than in the markup because there is one box and
+    // it has to go back — a string default typed into a number input is untypeable.
+    const fallback = row.querySelector('[data-key-default]');
+    if (fallback) {
+      const numeric = type === 'int';
+      fallback.type = numeric ? 'number' : 'text';
+      if (numeric) fallback.step = '1';
+      else fallback.removeAttribute('step');
+    }
+
     for (const field of row.querySelectorAll('[data-when]')) {
       const wanted = belongs(field, type) && !(secret && field.hasAttribute('data-not-secret'));
       field.hidden = !wanted;

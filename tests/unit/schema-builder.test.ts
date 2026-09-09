@@ -69,6 +69,17 @@ describe('what the builder refuses', () => {
     expect(errorsOf([key({ type: 'string', min: 1, max: 10 })]).join(' ')).toMatch(/min|max|int/i);
   });
 
+  // A bound on an int is a whole number by definition. Nothing downstream rounds it, so a
+  // fractional bound would sit in the schema deciding what values are legal by halves.
+  it('refuses a bound that is not a whole number', () => {
+    expect(errorsOf([key({ type: 'int', min: 1.5 })]).join(' ')).toMatch(/min|whole/i);
+    expect(errorsOf([key({ type: 'int', max: 3.2 })]).join(' ')).toMatch(/max|whole/i);
+  });
+
+  it('refuses a bound that is not a number at all', () => {
+    expect(errorsOf([key({ type: 'int', min: Number.NaN })]).join(' ')).toMatch(/min|number/i);
+  });
+
   it('refuses a minimum above its maximum, which no value could satisfy', () => {
     expect(errorsOf([key({ type: 'int', min: 10, max: 1 })]).join(' ')).toMatch(/min|max/i);
   });

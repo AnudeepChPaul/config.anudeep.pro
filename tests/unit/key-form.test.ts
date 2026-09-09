@@ -138,6 +138,35 @@ describe('a secret', () => {
 });
 
 describe('an int key', () => {
+  const input = (suffix: string) => row().querySelector(`[name$=".${suffix}"]`) as HTMLInputElement;
+
+  // A bound is a whole number by definition, and a text box invites "sixty" — which the server
+  // then refuses, after the operator has filled in the rest of the form.
+  it('takes its bounds as numbers, in whole steps', () => {
+    chooseType('int');
+
+    for (const field of ['min', 'max']) {
+      expect(input(field).type, field).toBe('number');
+      expect(input(field).step, field).toBe('1');
+    }
+  });
+
+  it('takes its default as a number too', () => {
+    chooseType('int');
+
+    expect(input('default').type).toBe('number');
+    expect(input('default').step).toBe('1');
+  });
+
+  // The same box serves every type, so it has to go back to text or a string default becomes
+  // untypeable.
+  it('gives the default box back to text for a string', () => {
+    chooseType('int');
+    chooseType('string');
+
+    expect(input('default').type).toBe('text');
+  });
+
   it('offers min, max and a default', () => {
     chooseType('int');
 
