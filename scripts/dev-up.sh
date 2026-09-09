@@ -43,45 +43,17 @@ say "Building"
 docker compose build app >/dev/null
 
 # --- the configuration repository --------------------------------------------------------
+# Cloned, never generated. A history invented here shares no ancestor with the remote and can
+# never be pushed, and the console gives no sign of it beyond saying "not yet pushed" forever.
 if ! docker compose run --rm --entrypoint sh app -c 'test -d /var/lib/config/repo/.git' 2>/dev/null; then
-  say "Seeding a configuration repository"
+  say "Cloning the configuration repository"
   docker compose run --rm -v ./scripts:/app/scripts:ro --entrypoint sh app /app/scripts/seed.sh
 fi
 
-# Seeding generates a fresh age key, and `make reset` leaves .env alone, so the key named there
-# can belong to a volume that no longer exists. Appending only when absent left that stale key
-# in place and every secret failed to decrypt with nothing saying why: overwrite whenever a key
-# was generated. A clone generates none, and the operator's own key in .env is left untouched.
-AGE_KEY="$(docker compose run --rm --entrypoint sh app -c 'grep AGE-SECRET-KEY /var/lib/config/age.key 2>/dev/null' 2>/dev/null | tr -d '\r')"
-if [ -n "$AGE_KEY" ]; then
-  # Never lose a key by overwriting it. The key in .env may be the operator's own -- the one
-  # that decrypts the remote's secrets -- and a clone that failed falls back to seeding, which
-  # would otherwise replace it with a throwaway. It may also be the only copy.
-  PREVIOUS="$(grep '^CONFIG_AGE_KEY=.' .env 2>/dev/null | head -1 | cut -d= -f2-)"
-  if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$AGE_KEY" ]; then
-    printf '# replaced on %s when a sample repository was seeded; the volume it belonged to is gone\n' \
-      "$(date -u +%Y-%m-%d)" >> .env
-    printf '# CONFIG_AGE_KEY=%s\n' "$PREVIOUS" >> .env
-    say "Kept the previous age key in .env as a comment"
-  fi
-  ./scripts/env-set.sh .env CONFIG_AGE_KEY "$AGE_KEY"
-else
-  grep -q '^CONFIG_AGE_KEY=' .env 2>/dev/null || printf 'CONFIG_AGE_KEY=\n' >> .env
-fi
-
-# --- the break-glass credential ----------------------------------------------------------
-# Without iam there is no other way to sign in, and the editor refuses to run unguarded.
-# Written beside the repository, never into it. Committed, the credential is pushable, and on a
-# repository with a remote the first publish sent it to GitHub — the reason a history had to be
-# rewritten once already. A file the tree does not contain cannot be committed by accident.
-if ! docker compose run --rm --entrypoint sh app -c 'test -f /var/lib/config/break-glass.yaml' 2>/dev/null; then
-  say "Minting a break-glass credential"
-  pnpm -s tsx --conditions=development src/cli/bootstrap-breakglass.ts ops@anudeep.pro \
-    > /tmp/config-break-glass.yaml 2> /tmp/config-break-glass.txt
-  docker compose run --rm -v /tmp/config-break-glass.yaml:/tmp/record.yaml:ro --entrypoint sh app -c '
-    cp /tmp/record.yaml /var/lib/config/break-glass.yaml' >/dev/null
-  cat /tmp/config-break-glass.txt
-fi
+# Nothing generates an age key any more, so this is the operator's own: the secret half of the
+# recipient the remote's .sops.yaml encrypts to. Left empty, the clone above refuses to run and
+# says so, which is the only place that can tell the difference.
+grep -q '^CONFIG_AGE_KEY=' .env 2>/dev/null || printf 'CONFIG_AGE_KEY=\n' >> .env
 
 say "Starting"
 docker compose up -d app >/dev/null

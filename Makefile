@@ -1,6 +1,6 @@
 .PHONY: dev code test check up seed logs down reset
 
-dev:             ## Everything: seed, credentials, start. UI at http://localhost:8200
+dev:             ## Everything: clone, credentials, start. UI at http://localhost:8200
 	./scripts/dev-up.sh
 
 code:            ## Print the current break-glass sign-in code
@@ -18,7 +18,7 @@ check:           ## Lint and typecheck on the host, then the full suite in the c
 up:              ## Start the service; UI at http://localhost:8200
 	docker compose build app && docker compose up -d app && docker compose logs -f app
 
-seed:            ## Create a sample config repository inside the app volume
+seed:            ## Clone the configured registry into the app volume
 	docker compose run --rm -v ./scripts:/app/scripts:ro --entrypoint sh app /app/scripts/seed.sh
 
 logs:
@@ -32,11 +32,12 @@ down:
 # back, and compose then mounts a DIRECTORY where the deploy key belongs, so every push fails
 # with "Permission denied (publickey)" long after the reset that caused it.
 #
-# The age key in there can outlive the volume, so dev-up.sh overwrites it whenever it seeds.
+# The age key in there is the operator's own now that nothing generates one, so it is exactly
+# the kind of value a reset must not touch.
 reset:           ## Throw away the local repository, drafts and credentials, and start over
 	docker compose down -v
 	@# Compose creates a directory for a bind mount whose source is missing. Left behind, it is
 	@# the thing ssh is handed as a private key on the next run.
 	rmdir deploy/no-deploy-key 2>/dev/null || true
 	@echo "Removed the local volumes. .env is untouched, so the git remote, deploy key and"
-	@echo "age key are still there. Run 'make dev' to rebuild the repository."
+	@echo "age key are still there. Run 'make dev' to clone the registry again."
