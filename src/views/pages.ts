@@ -1194,9 +1194,15 @@ export function renderNewProduct(options: {
             )}
           </select>
         </label>
-        <!-- Only a string can be secret: the file records a string marked secret, so there is
-             no such thing as a secret int. -->
-        <label class="field checkfield" data-when="string">
+      </div>
+      <!-- Its own line, above the fields it governs. Beside the key and its type it read as part
+           of the key's identity, and it is not: it is a property of a string, and ticking it
+           decides whether the values and the default below exist at all.
+
+           Only a string can be secret -- the file records a string marked secret, so there is no
+           such thing as a secret int. -->
+      <div class="fieldrow" data-when="string">
+        <label class="field checkfield">
           <input type="checkbox" name="key.${index}.secret" value="1" data-key-secret ${
             row.secret ? raw('checked') : html``
           }>

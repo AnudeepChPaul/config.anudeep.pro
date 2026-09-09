@@ -35,7 +35,19 @@ const fieldFor = (suffix: string) =>
   row().querySelector(`[name$=".${suffix}"]`)?.closest('.field') as HTMLElement | null;
 const secretField = () => secretBox()?.closest('.field') as HTMLElement | null;
 
-const shown = (element: HTMLElement | null) => Boolean(element && !element.hidden);
+/**
+ * Visible means no hidden ancestor, not merely "this element is not hidden".
+ *
+ * The secret checkbox is toggled by its ROW, so asking only about the label said "visible" for
+ * a control nobody could see.
+ */
+const shown = (element: HTMLElement | null): boolean => {
+  for (let node = element; node; node = node.parentElement) {
+    if (node.hidden) return false;
+    if (node === document.body) break;
+  }
+  return Boolean(element);
+};
 
 const chooseType = (value: string) => {
   typeSelect().value = value;
@@ -63,6 +75,30 @@ describe('a string key', () => {
 
     expect(shown(fieldFor('min'))).toBe(false);
     expect(shown(fieldFor('max'))).toBe(false);
+  });
+});
+
+describe('where the secret checkbox sits', () => {
+  // On the same line as Key and Type it read as part of the key's identity, and it is not: it
+  // is a property of a string, and ticking it changes which fields below it exist.
+  it('is on its own line, not beside the key and its type', () => {
+    chooseType('string');
+    const typeRow = typeSelect().closest('.fieldrow');
+    const secretRow = secretBox().closest('.fieldrow');
+
+    expect(secretRow).toBeTruthy();
+    expect(secretRow).not.toBe(typeRow);
+  });
+
+  it('still comes before the fields it governs', () => {
+    chooseType('string');
+    const rows = [...row().querySelectorAll('.fieldrow')];
+    const secretRow = secretBox().closest('.fieldrow') as HTMLElement;
+    const valuesRow = (row().querySelector('[name$=".values"]') as HTMLElement).closest(
+      '.fieldrow',
+    ) as HTMLElement;
+
+    expect(rows.indexOf(secretRow)).toBeLessThan(rows.indexOf(valuesRow));
   });
 });
 
