@@ -970,6 +970,19 @@ function keyDrafts(body: Record<string, string | string[]>): KeyDraft[] {
       .split(',')
       .map((value) => value.trim())
       .filter((value) => value.length > 0);
+    // A bool is ticked, not typed. An unticked checkbox posts NOTHING — it is absent from the
+    // body rather than present and false — which is exactly what "no default" means here.
+    if (type === 'bool') {
+      return {
+        name: (row.name ?? '').trim(),
+        type,
+        secret: false,
+        values: [],
+        description: row.description ?? '',
+        default: row.defaultBool === 'true' ? true : null,
+      };
+    }
+
     const raw = (row.default ?? '').trim();
     return {
       name: (row.name ?? '').trim(),

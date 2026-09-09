@@ -154,12 +154,34 @@ describe('an int key', () => {
   });
 });
 
+describe('a bool key', () => {
+  const boolDefault = () =>
+    row().querySelector('[name$=".defaultBool"]') as HTMLInputElement | null;
+  const textDefault = () => row().querySelector('[name$=".default"]') as HTMLInputElement;
+
+  it('offers a checkbox for its default, not a box to type true into', () => {
+    chooseType('bool');
+
+    expect(shown(boolDefault()?.closest('.field') ?? null), 'checkbox').toBe(true);
+    expect(shown(textDefault().closest('.field') as HTMLElement), 'text box').toBe(false);
+  });
+
+  it('offers the typed default to every other type instead', () => {
+    for (const type of ['string', 'int', 'url', 'string[]']) {
+      chooseType(type);
+      expect(shown(textDefault().closest('.field') as HTMLElement), type).toBe(true);
+      expect(shown(boolDefault()?.closest('.field') ?? null), type).toBe(false);
+    }
+  });
+});
+
 describe('every other type', () => {
   for (const type of ['bool', 'url', 'string[]']) {
     it(`offers ${type} a default and nothing else`, () => {
       chooseType(type);
 
-      expect(shown(fieldFor('default')), 'default').toBe(true);
+      // bool has its own default control, checked separately.
+      if (type !== 'bool') expect(shown(fieldFor('default')), 'default').toBe(true);
       expect(shown(fieldFor('values')), 'values').toBe(false);
       expect(shown(fieldFor('min')), 'min').toBe(false);
       expect(shown(secretField()), 'secret').toBe(false);

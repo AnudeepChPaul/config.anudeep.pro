@@ -161,7 +161,7 @@ const layout = (
      own card so a schema of several keys reads as a list rather than one long column. */
   .fieldrow { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 1rem; }
   .fieldrow:last-child { margin-bottom: 0; }
-  .fieldrow .field { flex: 1 1 12rem; margin-bottom: .75rem; }
+  .fieldrow .field { flex: 1 1 12rem; margin-bottom: 0; }
   .fieldrow .field.wide { flex-basis: 100%; }
   .fieldlabel { display: block; font-size: var(--type-sm); font-weight: 500; margin-bottom: 4px; }
   .fieldlabel .hint { font-weight: 400; }
@@ -1224,9 +1224,21 @@ export function renderNewProduct(options: {
         </label>
         <!-- Every type but a secret has a default, and it defaults to nothing: blank means the
              key is declared without a value. -->
-        <label class="field" data-when="string int bool url string[]" data-not-secret>
+        <label class="field" data-when="string int url string[]" data-not-secret>
           <span class="fieldlabel">Default <span class="hint">blank means none</span></span>
           <input type="text" name="key.${index}.default" value="${row.default ?? ''}">
+        </label>
+        <!-- A bool is ticked, not typed: "true" in a text box is a string, and a string in a
+             bool key is the exact mistake the schema exists to catch.
+
+             Unticked means no default, like a blank box for every other type -- which is why a
+             bool cannot declare a default of false here. Declaring one would need a third state
+             this control does not have. -->
+        <label class="field checkfield" data-when="bool">
+          <input type="checkbox" name="key.${index}.defaultBool" value="true" ${
+            row.defaultBool === 'true' ? raw('checked') : html``
+          }>
+          <span class="fieldlabel">Default <span class="hint">unticked means none</span></span>
         </label>
       </div>
       <div class="fieldrow">

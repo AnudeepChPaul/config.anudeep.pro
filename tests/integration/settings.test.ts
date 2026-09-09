@@ -332,6 +332,34 @@ withSops('adding a product', () => {
     expect(response.body).toContain('RETENTION_DAYS');
   });
 
+  it('takes a bool default from the tick rather than from typed text', async () => {
+    const { staged } = await post(
+      audit([
+        ['key.1.name', 'KILL_SWITCH'],
+        ['key.1.type', 'bool'],
+        ['key.1.defaultBool', 'true'],
+      ]),
+    );
+
+    const schema = String(staged[0]?.files?.['schema/audit.yaml']);
+    expect(schema).toMatch(/KILL_SWITCH:[\s\S]*?default: true/);
+  });
+
+  // An unticked checkbox is absent from the body, which is what "no default" means for every
+  // other type too.
+  it('declares a bool with no default when the box is not ticked', async () => {
+    const { staged } = await post(
+      audit([
+        ['key.1.name', 'KILL_SWITCH'],
+        ['key.1.type', 'bool'],
+      ]),
+    );
+
+    const schema = String(staged[0]?.files?.['schema/audit.yaml']);
+    expect(schema).toMatch(/KILL_SWITCH/);
+    expect(schema).not.toMatch(/KILL_SWITCH:[\s\S]*?default:/);
+  });
+
   it('declares a secret without a value', async () => {
     const { staged } = await post(
       audit([
