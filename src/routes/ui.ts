@@ -552,8 +552,21 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
 
       if (result.ok) {
         // Two buttons, one form: saving keeps the draft, publishing ships what is ticked.
+        //
+        // A save says what it saved. It used to say nothing at all, so the only evidence that
+        // the most frequent write in the console had worked was the publish action appearing --
+        // and when a save staged nothing, the two outcomes were indistinguishable.
+        //
+        // The count is what was WRITTEN DOWN, not what was posted: a key submitted at the value
+        // it already holds stages nothing, and saying otherwise sends the operator looking for a
+        // change that is not in the draft.
         if (!publishing) {
-          return respond(reply, request, { service, env: environment });
+          return respond(reply, request, {
+            service,
+            env: environment,
+            done: 'drafted',
+            n: result.value.changes.length,
+          });
         }
 
         // The whole draft is published — a draft publishes whole, and its commit message is

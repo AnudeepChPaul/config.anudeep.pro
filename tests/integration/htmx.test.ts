@@ -149,7 +149,9 @@ withSops('htmx as progressive enhancement', () => {
       ]);
 
       expect(response.statusCode).toBe(303);
-      expect(response.headers.location).toBe('/p/iam?env=dev');
+      // Back to the namespace it wrote to. What the save DID rides along in the query, so the
+      // browser without a script gets the same confirmation the swapped page does.
+      expect(String(response.headers.location)).toMatch(/^\/p\/iam\?env=dev(&|$)/);
     });
   });
 

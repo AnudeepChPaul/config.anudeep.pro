@@ -285,8 +285,41 @@ withSops('the CRUD UI', () => {
       });
 
       expect(response.statusCode).toBe(303);
-      expect(response.headers.location).toBe('/p/iam?env=prod');
+      // Back to the namespace, now carrying what the save did.
+      expect(response.headers.location).toBe('/p/iam?env=prod&done=drafted&n=1');
       expect((await get('/p/iam?env=prod')).body).toContain('all');
+    });
+
+    // Every other write says what it did. Saving -- the write the operator makes most often,
+    // and the one that decides whether anything is publishable at all -- said nothing, so the
+    // only way to tell a save had worked was to notice the publish action appearing.
+    it('says what it saved', async () => {
+      await start();
+
+      const response = await post('/p/iam/prod', {
+        baseCommit: await git.headCommit(),
+        'key.MFA_ENFORCEMENT': 'all',
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(String(response.headers.location)).toContain('done=drafted');
+      expect(String(response.headers.location)).toContain('n=1');
+
+      // And the page says it in the console's own words, not the URL's.
+      expect((await get('/p/iam?env=prod&done=drafted&n=1')).body).toContain('as a draft');
+    });
+
+    it('counts what it actually wrote down, not what was posted', async () => {
+      await start();
+
+      // One key changed; the other is posted at the value it already holds, so it stages nothing.
+      const response = await post('/p/iam/prod', {
+        baseCommit: await git.headCommit(),
+        'key.MFA_ENFORCEMENT': 'all',
+        'key.SESSION_TTL': '3600',
+      });
+
+      expect(String(response.headers.location)).toContain('n=1');
     });
 
     it('shows validation errors instead of applying the change', async () => {
