@@ -18,6 +18,7 @@ import {
   renderDrafts,
   renderProduct,
   renderProducts,
+  renderSettings,
 } from '../views/pages.js';
 
 /**
@@ -48,6 +49,14 @@ export interface UiRouteOptions {
    * sha as plain text: a wrong link sends an operator mid-incident to somebody else's history.
    */
   readonly repoWebUrl?: string | null;
+  /**
+   * The settings page: whether it exists, and who may see it beside a break-glass session.
+   *
+   * Absent means it does not exist, which is the default a page showing a map of the deployment
+   * should have. `allow` empty admits nobody rather than everybody: an allowlist whose empty case
+   * means "everyone" is a disclosure the first time someone enables the toggle and stops reading.
+   */
+  readonly settings?: { readonly enabled: boolean; readonly allow: readonly string[] };
 }
 
 interface NamespaceParams {
@@ -145,6 +154,34 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       drafts: draftSaves.get(`${service}/${name}`) ?? 0,
     }));
 
+  /**
+   * Who may see how this service is configured.
+   *
+   * Both refusals are a 404, never a 403. A 403 says "there is a settings page and you may not
+   * have it", which is a fact about the deployment worth withholding from anyone who is not
+   * already trusted with the rest of it.
+   */
+  const maySeeSettings = (request: FastifyRequest): boolean => {
+    const settings = options.settings;
+    if (!settings?.enabled) return false;
+    const session = request.session;
+    if (!session) return false;
+    // Break-glass is the credential of last resort and is used when iam is unreachable, which is
+    // exactly when someone needs to know what this service is configured with.
+    if (session.via === 'break-glass') return true;
+    return settings.allow.includes(session.email.trim().toLowerCase());
+  };
+
+  app.get('/settings', async (request: FastifyRequest, reply) => {
+    if (!maySeeSettings(request)) {
+      return reply.code(404).type('text/html; charset=utf-8').send('Not found');
+    }
+
+    return reply
+      .type('text/html; charset=utf-8')
+      .send(String(renderSettings({ env: process.env, fragment: isHtmx(request) })));
+  });
+
   app.get(
     '/drafts',
     async (request: FastifyRequest<{ Querystring: { done?: string; n?: string } }>, reply) =>
@@ -163,6 +200,9 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
                 })),
               })),
             ...noticeQuery(request.query),
+            // The link comes from the same answer that gates the route. Two predicates would
+            // drift, and the way they drift is a link that leads to a 404.
+            settingsLink: maySeeSettings(request),
             fragment: isHtmx(request),
           }),
         ),
@@ -281,6 +321,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
             commit: sources.commit,
             draftCount: [...draftsByNamespace.values()].reduce((total, n) => total + n, 0),
             ...noticeQuery(request.query),
+            settingsLink: maySeeSettings(request),
           }),
         ),
       );
@@ -304,6 +345,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     query?: string | undefined;
     /** The key a search result linked to, marked so the eye lands on it. */
     highlight?: string | undefined;
+    /** True when this viewer may open the settings page; the footer link follows the gate. */
+    settingsLink?: boolean;
     published?: readonly string[];
     fragment: boolean;
   }): Promise<{ html: string; active: string } | null> => {
@@ -401,6 +444,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           // about to add to it.
           lastChange: await repository.lastChange(`config/${namespace}.yaml`),
           ...(options.notice ? { notice: options.notice } : {}),
+          ...(options.settingsLink ? { settingsLink: true } : {}),
           ...(offer ? { offer } : {}),
         }),
       ),
@@ -443,6 +487,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
     const page = await productPage({
       service: options.service,
       env: options.env,
+      settingsLink: maySeeSettings(request),
       ...(notice ? { notice } : {}),
       published: options.published ?? [],
       fragment: true,
@@ -472,6 +517,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       const page = await productPage({
         service: request.params.service,
         env: request.query?.env,
+        settingsLink: maySeeSettings(request),
         ...noticeQuery(request.query),
         ...(request.query?.create === 'no' ? { offerDeclined: true } : {}),
         query: request.query?.q,

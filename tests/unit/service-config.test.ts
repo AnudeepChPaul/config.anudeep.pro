@@ -128,3 +128,55 @@ describe('the guards do not depend on it', () => {
     ).toBe(false);
   });
 });
+
+/**
+ * The settings page is off unless it is switched on, and its allowlist is a list of people.
+ *
+ * The page shows a map of the deployment, so its default has to be "not there". A toggle that
+ * defaults on, or an allowlist that is empty-means-everyone, would each turn a convenience into a
+ * disclosure the first time someone deployed without reading the documentation.
+ */
+describe('the settings gate', () => {
+  it('is off when nothing says otherwise', () => {
+    expect(loadConfig({ ...secrets() }).enableSettings).toBe(false);
+  });
+
+  it('is on only for values that plainly mean on', () => {
+    for (const value of ['1', 'true', 'TRUE', 'yes']) {
+      expect(
+        loadConfig({ ...secrets(), CONFIG_ENABLE_SETTINGS: value }).enableSettings,
+        value,
+      ).toBe(true);
+    }
+  });
+
+  // "false" reading as true is the classic way a flag ends up on in production.
+  it('stays off for anything that does not', () => {
+    for (const value of ['', '0', 'false', 'no', 'off', 'maybe']) {
+      expect(
+        loadConfig({ ...secrets(), CONFIG_ENABLE_SETTINGS: value }).enableSettings,
+        value,
+      ).toBe(false);
+    }
+  });
+
+  it('reads the allowlist as addresses, trimmed, ignoring the empties', () => {
+    const config = loadConfig({
+      ...secrets(),
+      CONFIG_SETTINGS_ALLOW: ' me@anudeep.pro , ops@anudeep.pro ,,',
+    });
+
+    expect(config.settingsAllow).toEqual(['me@anudeep.pro', 'ops@anudeep.pro']);
+  });
+
+  it('is an empty list when unset, which admits nobody rather than everybody', () => {
+    expect(loadConfig({ ...secrets() }).settingsAllow).toEqual([]);
+  });
+
+  // An address is compared against a session's email; case is not identity.
+  it('lowercases the list, so Me@ and me@ are the same person', () => {
+    expect(
+      loadConfig({ ...secrets(), CONFIG_SETTINGS_ALLOW: 'Me@Anudeep.PRO' }).settingsAllow,
+    ).toEqual(['me@anudeep.pro']);
+  });
+});

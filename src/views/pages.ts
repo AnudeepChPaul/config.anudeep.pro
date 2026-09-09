@@ -1,6 +1,7 @@
 import type { UnpushedCommit } from '../git/repository.js';
 import type { KeyDefinition } from '../schema/validator.js';
 import { html, raw, type SafeHtml } from './html.js';
+import { settingsRows } from './settings.js';
 
 /**
  * Server-rendered pages. No client framework: the whole UI is a list, a form and a redirect,
@@ -31,7 +32,19 @@ export interface KeyRow {
  * thing that turns one into a document. One render path serves both; two would drift, and the
  * drift would show up only for whichever half nobody was looking at.
  */
-const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
+/**
+ * The page frame.
+ *
+ * `settingsLink` is false unless the viewer may actually open the page: the link is rendered from
+ * the same answer that gates the route, so a link never leads to a 404 and the page's existence
+ * is not disclosed by a link to it. The footer sits outside `#page`, so an htmx swap leaves it
+ * alone and it only has to be right on a full load.
+ */
+const layout = (
+  title: string,
+  body: SafeHtml,
+  settingsLink = false,
+): SafeHtml => html`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -197,6 +210,17 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
      painted it as an ordinary action whenever the news was good. .linkbtn carries the colour
      and the underline; only the weight is local, so the message stays the heavier of the two. */
   .notice .linkbtn.no { font-weight: 400; }
+  /* The footer carries the one link that is not part of the working surface. Outside #page, so
+     an htmx swap leaves it alone, and quiet enough not to compete with the page above it. */
+  .pagefoot { max-width: 62rem; margin: 0 auto; padding: 18px 24px 28px;
+              font-size: var(--type-sm); }
+  .pagefoot a { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
+  .pagefoot a:hover { color: var(--accent); }
+  /* A value read out of the environment: monospace, because a path or a remote is read
+     character by character, and that is the whole reason for the page. */
+  .settings-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                    font-size: var(--type-sm); overflow-wrap: anywhere; }
+  .keyname { font-weight: 500; min-width: 16rem; }
   .hidden-attr-guard {}
   /* The hidden attribute is only a UA "display: none", so any author display rule — the one on
      .selection, for instance — beats it and leaves a hidden element on screen. Everything the
@@ -326,6 +350,12 @@ const layout = (title: string, body: SafeHtml): SafeHtml => html`<!doctype html>
 </head>
 <body>
 <main id="page">${body}</main>
+${
+  settingsLink
+    ? html`<footer class="pagefoot"><a href="/settings" hx-get="/settings" hx-target="#page"
+        hx-swap="innerHTML" hx-push-url="true">Settings</a></footer>`
+    : html``
+}
 <!-- Served from this origin, never a CDN: an editor that cannot render because someone
      else's network is down is exactly backwards for a tool reached during an incident. -->
 <script src="/assets/htmx.js" defer></script>
@@ -852,6 +882,38 @@ export interface DraftListEntry {
 }
 
 /**
+ * What this service is configured with.
+ *
+ * Gated twice before anything here runs: a toggle decides whether the page exists at all, and
+ * identity decides who may see it. Both refusals are a 404 rather than a 403 — a page that
+ * declines to answer still confirms it is there, and what is on this one is a map of the
+ * deployment.
+ *
+ * The masking is not done here. `settingsRows` classifies by name and hands back only what may
+ * be rendered, so this function cannot leak a secret by forgetting to ask for the masked form.
+ */
+export function renderSettings(options: { env: NodeJS.ProcessEnv; fragment?: boolean }): SafeHtml {
+  const rows = settingsRows(options.env).map(
+    (row) => html`<div class="keyrow">
+      <span class="keyname">${row.name}</span>
+      <span class="${row.set ? 'settings-value' : 'hint'}">${row.shown}</span>
+      ${row.secret ? html`<span class="chip">secret</span>` : html``}
+    </div>`,
+  );
+  const set = settingsRows(options.env).filter((row) => row.set).length;
+
+  const body = html`
+      ${pageHeader({
+        title: trail('Settings'),
+        facts: html`${set} of ${settingsRows(options.env).length} variables set`,
+      })}
+      <div class="card"><div class="rows">${rows}</div></div>
+    `;
+
+  return options.fragment ? body : layout('Settings', body, true);
+}
+
+/**
  * Everything unpublished, in one place.
  *
  * A draft in an environment nobody has open is otherwise invisible: a number on the product
@@ -861,6 +923,8 @@ export interface DraftListEntry {
 export function renderDrafts(options: {
   drafts: readonly DraftListEntry[];
   notice?: PageNotice;
+  /** True when this viewer may open the settings page. Absent renders no link to it. */
+  settingsLink?: boolean;
   fragment?: boolean;
 }): SafeHtml {
   const rows = options.drafts.map(
@@ -911,7 +975,7 @@ export function renderDrafts(options: {
       }
     `;
 
-  return options.fragment ? body : layout('Unpublished drafts', body);
+  return options.fragment ? body : layout('Unpublished drafts', body, options.settingsLink);
 }
 
 /** The landing page: products, not namespaces. */
@@ -925,6 +989,8 @@ export function renderProducts(options: {
   draftCount?: number;
   notice?: PageNotice;
   error?: string;
+  /** True when this viewer may open the settings page. Absent renders no link to it. */
+  settingsLink?: boolean;
   /** True when htmx asked: the body alone, to be swapped into the page. */
   fragment?: boolean;
 }): SafeHtml {
@@ -1027,7 +1093,7 @@ export function renderProducts(options: {
       </form>
     `;
 
-  return options.fragment ? body : layout('Products', body);
+  return options.fragment ? body : layout('Products', body, options.settingsLink);
 }
 
 /** Inside a product: environments as tabs, each flagged when it holds unpublished changes. */
@@ -1053,6 +1119,8 @@ export function renderProduct(options: {
   query?: string;
   /** The key a search result linked to, marked so the eye lands on it. */
   highlight?: string;
+  /** True when this viewer may open the settings page. Absent renders no link to it. */
+  settingsLink?: boolean;
   /** True when this environment is declared but has no file yet: nothing is editable until it
    *  exists, and the page offers to create it from the schema's defaults. */
   missingFile?: boolean;
@@ -1325,7 +1393,7 @@ export function renderProduct(options: {
       </form>`
       }
     `;
-  return options.fragment ? body : layout(options.service, body);
+  return options.fragment ? body : layout(options.service, body, options.settingsLink);
 }
 
 /**

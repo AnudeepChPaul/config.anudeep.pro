@@ -125,6 +125,9 @@ async function main(): Promise<void> {
     // and the editor — agree on what exists.
     services: () => state.registry().services(),
     repoWebUrl: config.repoWebUrl,
+    // Off unless the deployment says otherwise, and then only for a break-glass session or a
+    // named address: this page is a map of how the service is configured.
+    settings: { enabled: config.enableSettings, allow: config.settingsAllow },
     loader,
     schemas: () => state.schemas(),
     drafts,

@@ -37,6 +37,12 @@ services:
       # from the remote when one is set; settable alone, since linking is a read and needs
       # neither a key nor a push.
       CONFIG_REPO_WEB_URL: ${CONFIG_REPO_WEB_URL:-}
+      # The settings page: a map of how this service is configured, so it is off unless the
+      # deployment says otherwise, and then only for a break-glass session or a named address.
+      # Compose passes only what is declared here — an undeclared variable is simply absent
+      # inside the container, however carefully .env sets it.
+      CONFIG_ENABLE_SETTINGS: ${CONFIG_ENABLE_SETTINGS:-}
+      CONFIG_SETTINGS_ALLOW: ${CONFIG_SETTINGS_ALLOW:-}
     volumes:
       - ./src:/app/src:ro
       - ./deploy:/app/deploy:ro

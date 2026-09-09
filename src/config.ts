@@ -47,6 +47,10 @@ export interface ServiceConfig {
   readonly webhookPort: number;
   readonly pushRetryIntervalMs: number;
   readonly pollIntervalMs: number;
+  /** Whether the settings page exists at all. Off, its route answers 404 like any other path. */
+  readonly enableSettings: boolean;
+  /** Addresses admitted to it beside a break-glass session. Lowercased; empty admits nobody. */
+  readonly settingsAllow: readonly string[];
 }
 
 /** The environments this service knows how to be. Anything else is a misconfiguration. */
@@ -122,5 +126,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     webhookPort: Number(env.CONFIG_WEBHOOK_PORT ?? 8201),
     pushRetryIntervalMs: Number(env.CONFIG_PUSH_RETRY_INTERVAL_MS ?? 60_000),
     pollIntervalMs: Number(env.CONFIG_POLL_INTERVAL_MS ?? 60_000),
+    // The settings page shows a map of the deployment, so its default is "not there". Read as a
+    // set of words that plainly mean yes rather than as truthiness: `Boolean('false')` is true,
+    // which is how a flag ends up on in production while the file says it is off.
+    enableSettings: ['1', 'true', 'yes', 'on'].includes(
+      (env.CONFIG_ENABLE_SETTINGS ?? '').trim().toLowerCase(),
+    ),
+    // Empty admits nobody, never everybody: an allowlist whose empty case is "allow all" is a
+    // disclosure the first time someone enables the toggle without filling this in.
+    settingsAllow: (env.CONFIG_SETTINGS_ALLOW ?? '')
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => entry.length > 0),
   };
 }
