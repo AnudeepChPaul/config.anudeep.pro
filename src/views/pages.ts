@@ -675,6 +675,14 @@ export interface ProductSummary {
    * from a product that is staying.
    */
   readonly retiring?: boolean;
+  /**
+   * A retirement that is staged and not yet published.
+   *
+   * Marked differently from a published one on purpose: the flag is in a draft, so no consumer
+   * can see it and nothing about the product has actually changed. Saying "retiring" flatly
+   * would claim something that is not true yet.
+   */
+  readonly retiringDrafted?: boolean;
   /** What the reader sees: "iam (1002)". The uid decides which process may read this product. */
   readonly name: string;
   /** What the links and the form use. The label carries the uid; the address must not. */
@@ -1098,7 +1106,11 @@ export function renderProducts(options: {
               ? html`<a class="chip wait" href="/p/retiring" hx-get="/p/retiring" hx-target="#page"
                     hx-swap="innerHTML" hx-push-url="true"
                     title="marked retiring; consumers can see it">retiring</a>`
-              : html``
+              : product.retiringDrafted
+                ? html`<span class="chip wait"
+                      title="staged, not published: no consumer can see this yet"
+                      >retiring · unpublished</span>`
+                : html``
           }
           ${pending.length > 0 ? pendingDetail('Waiting to publish', pending) : html``}
         </div>

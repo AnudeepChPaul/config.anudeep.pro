@@ -398,6 +398,50 @@ withSops('adding a product', () => {
     await app.close();
   });
 
+  /**
+   * A retirement that is only staged.
+   *
+   * Marking a product retiring stages a draft, and until it is published the list said nothing
+   * about it: the confirmation cleared itself after five seconds and what remained was "2 drafts
+   * to publish", which does not say what they are. The act was invisible the moment you looked
+   * away from it.
+   *
+   * It cannot wear the same marker as a published retirement, because no consumer can see it
+   * yet — that is the difference the two markers have to carry.
+   */
+  it('shows a staged retirement on the list, before it is published', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).toMatch(/retiring/);
+    // Said differently from a published one: nothing has reached a consumer yet.
+    expect(page.body).toMatch(/unpublished|not published|drafted/i);
+    await app.close();
+  });
+
+  it('does not count a staged retirement among the products actually retiring', async () => {
+    const { app, headers } = await build({});
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    // The count is about what consumers can see, and they cannot see a draft.
+    expect(page.body).not.toMatch(/product in retiring state/);
+    await app.close();
+  });
+
   it('keeps a retiring product in the product list', async () => {
     const { app, headers } = await build({ retiring: ['iam'] });
 

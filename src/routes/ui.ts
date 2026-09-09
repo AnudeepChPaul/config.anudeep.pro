@@ -520,6 +520,22 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       const query = (request.query?.q ?? '').trim().toLowerCase();
       const environmentNames = await declaredEnvironments();
       const schemaSet = schemas();
+      /**
+       * Products whose RETIREMENT is staged rather than published.
+       *
+       * A draft carrying schema/<service>.yaml with the flag on has been marked but not
+       * published, so no consumer can see it. Read from the drafts rather than the schemas,
+       * because the schemas are what is committed — which is precisely what this is not yet.
+       */
+      const retiringDrafted = new Set<string>();
+      for (const draft of await drafts.all()) {
+        for (const [path, contents] of Object.entries(draft.files ?? {})) {
+          const match = /^schema\/(.+)\.yaml$/.exec(path);
+          if (!match) continue;
+          if (/^retiring:\s*true\s*$/m.test(contents)) retiringDrafted.add(String(match[1]));
+        }
+      }
+
       const products: ProductSummary[] = declared.map((service) => {
         const environments = environmentsOf(
           service.name,
@@ -553,7 +569,11 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           // Marked in the list as well as on its own page: a retiring product is still served
           // and still editable, and the one thing it must not be is indistinguishable from a
           // product that is staying.
-          ...(schemaSet.isRetiring(service.name) ? { retiring: true } : {}),
+          ...(schemaSet.isRetiring(service.name)
+            ? { retiring: true }
+            : retiringDrafted.has(service.name)
+              ? { retiringDrafted: true }
+              : {}),
           keys: keys.slice(0, 3).join(', ') + (keys.length > 3 ? ` +${keys.length - 3}` : ''),
           environments,
         };
