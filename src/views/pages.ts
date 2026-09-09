@@ -667,6 +667,14 @@ export interface ProductSummary {
    * anywhere. It is listed because its draft has to be visible and publishable from here.
    */
   readonly notDeclared?: boolean;
+  /**
+   * Marked retiring in its schema.
+   *
+   * Still listed, and still ordinary in every other way: it is served, it is editable, and its
+   * values may need one last change on the way out. What it must not be is indistinguishable
+   * from a product that is staying.
+   */
+  readonly retiring?: boolean;
   /** What the reader sees: "iam (1002)". The uid decides which process may read this product. */
   readonly name: string;
   /** What the links and the form use. The label carries the uid; the address must not. */
@@ -1081,6 +1089,16 @@ export function renderProducts(options: {
                 : html`<a href="/p/${product.service}" hx-get="/p/${product.service}" hx-target="#page"
                   hx-swap="innerHTML" hx-push-url="true"
                   class="pname">${product.name}</a>`
+          }
+          ${
+            // Still listed, still ordinary in every other way — but not indistinguishable from a
+            // product that is staying. The marker is the point of retiring: it is a state that
+            // exists to be seen, here and by a consumer through the read API.
+            product.retiring
+              ? html`<a class="chip wait" href="/p/retiring" hx-get="/p/retiring" hx-target="#page"
+                    hx-swap="innerHTML" hx-push-url="true"
+                    title="marked retiring; consumers can see it">retiring</a>`
+              : html``
           }
           ${pending.length > 0 ? pendingDetail('Waiting to publish', pending) : html``}
         </div>

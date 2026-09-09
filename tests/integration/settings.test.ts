@@ -363,6 +363,28 @@ withSops('adding a product', () => {
     await app.close();
   });
 
+  // A retiring product is still a product: it is served, editable, and its values may still
+  // need one last change on the way out. Dropping it from the list would hide the thing the
+  // marker exists to draw attention to.
+  it('keeps a retiring product in the product list', async () => {
+    const { app, headers } = await build({ retiring: ['iam'] });
+
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    expect(page.body).toContain('iam');
+    await app.close();
+  });
+
+  it('marks it as retiring in that list, rather than leaving it looking ordinary', async () => {
+    const { app, headers } = await build({ retiring: ['iam'] });
+
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+    const row = page.body.slice(page.body.indexOf('iam ('), page.body.indexOf('iam (') + 600);
+
+    expect(row).toMatch(/retiring/);
+    await app.close();
+  });
+
   it('lists them at /p/retiring, with both ways out', async () => {
     const { app, headers } = await build({ retiring: ['iam'] });
 

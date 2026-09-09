@@ -507,6 +507,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       // becomes a way to confirm one by guessing, and "no match" is as informative as a match.
       const query = (request.query?.q ?? '').trim().toLowerCase();
       const environmentNames = await declaredEnvironments();
+      const schemaSet = schemas();
       const products: ProductSummary[] = declared.map((service) => {
         const environments = environmentsOf(
           service.name,
@@ -536,7 +537,11 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           service: service.name,
           // A product with no schema cannot be edited at all: validate() refuses an unknown
           // service, so every save would fail at the last step, after the values were typed.
-          schemaMissing: !schemas().has(service.name),
+          schemaMissing: !schemaSet.has(service.name),
+          // Marked in the list as well as on its own page: a retiring product is still served
+          // and still editable, and the one thing it must not be is indistinguishable from a
+          // product that is staying.
+          ...(schemaSet.isRetiring(service.name) ? { retiring: true } : {}),
           keys: keys.slice(0, 3).join(', ') + (keys.length > 3 ? ` +${keys.length - 3}` : ''),
           environments,
         };
@@ -594,7 +599,7 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
             ...noticeQuery(request.query),
             settingsLink: maySeeSettings(request),
             build,
-            retiring: declared.filter((service) => schemas().isRetiring(service.name)).length,
+            retiring: declared.filter((service) => schemaSet.isRetiring(service.name)).length,
           }),
         ),
       );
