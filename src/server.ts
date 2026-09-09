@@ -124,6 +124,13 @@ async function main(): Promise<void> {
 
   const web = await buildWebApp({
     repository,
+    // This console writes to the repository it reads from, so it has to look again afterwards.
+    // Values come from git per request and appeared immediately; the grant table and the schemas
+    // live in RepositoryState and refreshed only on a webhook or the poll — so a published
+    // retirement, a new product, an archive, all changed nothing on screen for up to a minute.
+    onCommitted: async () => {
+      await state.reload();
+    },
     // The console lists what the registry declares, so both halves of the service — the read API
     // and the editor — agree on what exists.
     services: () => state.registry().services(),

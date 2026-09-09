@@ -61,6 +61,16 @@ export interface UiRouteOptions {
    * means "everyone" is a disclosure the first time someone enables the toggle and stops reading.
    */
   readonly settings?: { readonly enabled: boolean; readonly allow: readonly string[] };
+  /**
+   * Called after this console commits something.
+   *
+   * Values are read from the repository per request, so they appear the moment they are
+   * committed. The grant table and the schemas are not: they live in RepositoryState and were
+   * refreshed only by a webhook or a poll. So publishing a retirement updated the file and
+   * changed nothing on screen for up to a minute — which reads, correctly, as "it does not
+   * work". A console that writes has to refresh what it is looking at.
+   */
+  readonly onCommitted?: () => void | Promise<void>;
 }
 
 interface NamespaceParams {
@@ -280,6 +290,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
           .type('text/html; charset=utf-8')
           .send(String(renderRetiring({ products: [], fragment: isHtmx(request) })));
       }
+
+      await options.onCommitted?.();
 
       if (!isHtmx(request)) {
         return reply.code(303).header('location', '/?done=archived').send();
@@ -928,6 +940,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
         // A publish that did not reach the remote is NOT a transient confirmation: the commit is
         // durable and being served, but it is backed up nowhere, and a page that erases the only
         // report of that after five seconds is worse than one that never said it.
+        await options.onCommitted?.();
+
         // A publish that did not reach the remote is not a confirmation: the commit is durable
         // and being served, but it is backed up nowhere, and the notice's own tone keeps it on
         // the page instead of erasing the only report of it after five seconds.
@@ -1065,6 +1079,8 @@ export function registerUiRoutes(app: FastifyInstance, options: UiRouteOptions):
       // A code and a count. The wording is the console's, so a link cannot speak in its voice,
       // and a reload of the address this leaves behind cannot replay a stale confirmation as
       // though it had just happened.
+      if (result.ok) await options.onCommitted?.();
+
       const done = result.ok
         ? result.value.published
           ? 'published'

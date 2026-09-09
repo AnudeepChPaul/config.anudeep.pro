@@ -206,7 +206,7 @@ withSops('adding a product', () => {
   let key: AgeKeypair;
   let repo: TestRepo;
 
-  const build = async (over: { retiring?: readonly string[] } = {}) => {
+  const build = async (over: { retiring?: readonly string[]; onCommitted?: () => void } = {}) => {
     const git = new GitRepository(repo.dir);
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
     const drafts = new DraftStore(`${repo.dir}/.drafts.json`);
@@ -233,6 +233,7 @@ withSops('adding a product', () => {
       environmentOrder: async () => EnvironmentOrder.fromYaml('order: [dev, prod]\n'),
       environment: 'dev',
       auth: who.auth,
+      ...(over.onCommitted ? { onCommitted: over.onCommitted } : {}),
     });
     return { app, drafts, headers: who.headers };
   };
@@ -366,6 +367,37 @@ withSops('adding a product', () => {
   // A retiring product is still a product: it is served, editable, and its values may still
   // need one last change on the way out. Dropping it from the list would hide the thing the
   // marker exists to draw attention to.
+  /**
+   * Publishing has to refresh what the console is looking at.
+   *
+   * Values are read from git per request, so they appear immediately. The grant table and the
+   * schemas are not: they live in RepositoryState, refreshed by a webhook or a sixty-second
+   * poll. So publishing a retirement updated the file and changed nothing on screen — the marker
+   * arrived a minute later, or when the container restarted, which reads as "it does not work".
+   */
+  it('reloads what it serves after publishing, rather than waiting for a poll', async () => {
+    const reloads: number[] = [];
+    const { app, headers } = await build({ onCommitted: () => reloads.push(Date.now()) });
+
+    await app.inject({
+      method: 'POST',
+      url: '/p/iam/retire',
+      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+    expect(reloads.length, 'staging alone changes no file').toBe(0);
+
+    await app.inject({
+      method: 'POST',
+      url: '/publish',
+      payload: new URLSearchParams([['namespace', 'iam/dev']]).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    });
+
+    expect(reloads.length, 'publishing did').toBeGreaterThan(0);
+    await app.close();
+  });
+
   it('keeps a retiring product in the product list', async () => {
     const { app, headers } = await build({ retiring: ['iam'] });
 
