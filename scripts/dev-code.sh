@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SECRET="$(docker compose run --rm --entrypoint sh app -c \
-  'grep totpSecret /var/lib/config/repo/break-glass.yaml' 2>/dev/null \
+  'grep totpSecret /var/lib/config/break-glass.yaml' 2>/dev/null \
   | sed 's/.*"\(.*\)".*/\1/' | tr -d '\r')"
 
 cat > /tmp/config-totp.ts <<'TS'

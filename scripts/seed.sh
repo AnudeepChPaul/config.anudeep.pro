@@ -5,7 +5,41 @@
 set -e
 REPO="${CONFIG_REPO_DIR:-/var/lib/config/repo}"
 
-if [ -d "$REPO/.git" ]; then echo "already seeded at $REPO"; exit 0; fi
+# Where the repository comes from. A seeded history shares no ancestor with the remote, so a
+# seeded repository can never be pushed: clone whenever cloning can work.
+DECISION="$(sh "$(dirname "$0")/repo-provenance.sh" "$REPO")"
+case "$DECISION" in
+  keep)
+    echo "already seeded at $REPO"; exit 0 ;;
+  clone)
+    echo "cloning $CONFIG_GIT_REMOTE into $REPO"
+    mkdir -p "$(dirname "$REPO")"
+    # The service builds this itself at runtime; the clone happens before the service exists, so
+    # it is built here too. IdentitiesOnly stops ssh offering an agent key ahead of the deploy
+    # key and being refused for a repository that key can reach.
+    if [ -n "${CONFIG_GIT_SSH_KEY:-}" ]; then
+      GIT_SSH_COMMAND="ssh -i $CONFIG_GIT_SSH_KEY -o IdentitiesOnly=yes"
+      if [ -n "${CONFIG_GIT_KNOWN_HOSTS:-}" ]; then
+        GIT_SSH_COMMAND="$GIT_SSH_COMMAND -o UserKnownHostsFile=$CONFIG_GIT_KNOWN_HOSTS"
+      fi
+      export GIT_SSH_COMMAND
+    fi
+    if git clone "$CONFIG_GIT_REMOTE" "$REPO"; then
+      echo "cloned $REPO"
+      exit 0
+    fi
+    # The operator's decision: any failure falls back to seeding. Said loudly, because the
+    # resulting repository cannot be pushed and the reason must not be lost.
+    echo
+    echo "!! the clone failed, so a fresh sample history is being seeded instead."
+    echo "!! it will share no ancestor with $CONFIG_GIT_REMOTE and cannot be pushed."
+    echo "!! fix the error above and re-run 'make reset && make dev' to clone properly."
+    echo
+    rm -rf "$REPO"
+    ;;
+  *)
+    echo "seeding a sample repository: ${DECISION#seed }" ;;
+esac
 
 mkdir -p "$REPO/config/iam" "$REPO/config/api" "$REPO/schema"
 KEY_FILE="$(dirname "$REPO")/age.key"

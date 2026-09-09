@@ -1,9 +1,11 @@
+import { readFile as readFileFromDisk } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import pino from 'pino';
 import { buildReadApi, buildWebApp, buildWebhookApp } from './app.js';
 import { BreakGlass } from './auth/break-glass.js';
 import { OidcClient } from './auth/oidc.js';
 import { SessionCodec } from './auth/session.js';
+import { breakGlassReader } from './boot/break-glass-source.js';
 import { RepositoryState } from './boot/repository-state.js';
 import { loadConfig, type ServiceConfig } from './config.js';
 import { prepareDeployKey } from './git/deploy-key.js';
@@ -83,7 +85,13 @@ async function main(): Promise<void> {
   // that rotates a secret and revokes a grant together handed the new secret to exactly the uid
   // it was being taken from.
   const state = new RepositoryState({
-    readFile: (path) => repository.readFile(path),
+    // An absolute break-glass path is read from the volume rather than the tree, so the
+    // credential cannot be committed and therefore cannot be pushed. Everything else, and a
+    // relative path, still comes from the served commit.
+    readFile: breakGlassReader({
+      fromRepository: (path) => repository.readFile(path),
+      fromFilesystem: (path) => readFileFromDisk(path, 'utf8'),
+    }),
     loadSchemas: () => repository.readSchemas(),
     decrypt: (path, source) => decryptor.decrypt(path, source),
     breakGlassPath: config.breakGlassPath,

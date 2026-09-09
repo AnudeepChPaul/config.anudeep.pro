@@ -112,7 +112,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     // How reachability is decided. Break-glass opens only when this fails, so an unset value
     // must mean "reachable" — never "assume down and open the emergency door".
     iamHealthUrl: env.CONFIG_IAM_HEALTH_URL ?? null,
-    breakGlassPath: env.CONFIG_BREAK_GLASS_PATH ?? 'break-glass.yaml',
+    // Absolute, so it lives beside the repository rather than inside it: a committed credential
+    // is a pushable credential, and it reached a remote once already. A relative value still
+    // works and still means a path in the tree, for a volume seeded before this changed.
+    breakGlassPath: env.CONFIG_BREAK_GLASS_PATH ?? '/var/lib/config/break-glass.yaml',
     // Null closes the webhook route. It is the one thing here the internet can reach, so an
     // unset secret must lock it rather than open it.
     webhookSecret: env.CONFIG_WEBHOOK_SECRET ?? null,
