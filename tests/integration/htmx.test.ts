@@ -1,14 +1,16 @@
 import { rm } from 'node:fs/promises';
 import { buildWebApp } from '@config/src/app.js';
-import { GitRepository } from '@config/src/git/repository.js';
-import { SchemaSet } from '@config/src/schema/validator.js';
-import { DraftStore } from '@config/src/store/draft-store.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
-import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
-import { ConfigWriteService } from '@config/src/store/write-service.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type AgeKeypair, generateAgeKey, guarded, hasSops, TestRepo } from '../helpers.js';
+import {
+  type AgeKeypair,
+  generateAgeKey,
+  guarded,
+  hasSops,
+  liveOptions,
+  TestRepo,
+} from '../helpers.js';
 
 /**
  * The console became dynamic without becoming script-dependent.
@@ -37,7 +39,6 @@ keys:
 withSops('htmx as progressive enhancement', () => {
   let key: AgeKeypair;
   let repo: TestRepo;
-  let git: GitRepository;
   let app: Awaited<ReturnType<typeof buildWebApp>>;
 
   beforeEach(async () => {
@@ -52,21 +53,9 @@ withSops('htmx as progressive enhancement', () => {
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key.recipient}\n`,
     });
-    git = new GitRepository(repo.dir);
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
-    const drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     app = await buildWebApp({
-      repository: git,
-      loader,
-      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
-      drafts,
-      writeService: new ConfigWriteService({
-        repository: git,
-        loader,
-        encryptor: new SopsEncryptor(repo.dir),
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
-        drafts,
-      }),
+      ...(await liveOptions(repo.dir, { iam: SCHEMA }, loader)),
       environment: 'dev',
       auth: signedIn.auth,
     });
@@ -129,6 +118,14 @@ withSops('htmx as progressive enhancement', () => {
     });
   });
 
+  /**
+   * The etag the page was rendered from. Every value save is a compare-and-swap now: the write
+   * refuses a base it did not read, so a test that posts without one is testing the conflict
+   * path rather than the save path.
+   */
+  const etagFor = async (url: string) =>
+    (await get(url)).body.match(/name="etag" value="([^"]*)"/)?.[1] ?? '';
+
   describe('working without the script', () => {
     it('keeps every form a real form', async () => {
       // If htmx never loads, these still submit. That is the whole point of adding it as an
@@ -147,6 +144,7 @@ withSops('htmx as progressive enhancement', () => {
       const response = await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
+        ['etag', await etagFor('/p/iam?env=dev')],
       ]);
 
       expect(response.statusCode).toBe(303);
@@ -179,14 +177,17 @@ withSops('htmx as progressive enhancement', () => {
         [
           ['key.MFA_ENFORCEMENT', 'all'],
           ['intent', 'save'],
+          ['etag', await etagFor('/p/iam?env=dev')],
         ],
         { 'hx-request': 'true' },
       );
 
       expect(response.statusCode).toBe(200);
       expect(response.body).not.toContain('<!doctype html>');
-      // The staged change is visible in what came back.
-      expect(response.body).toContain('unpublished');
+      // The save is live, and what came back says so. It used to say "unpublished" here,
+      // which after the direct-write cutover would be the one thing the page must never
+      // imply about a change that has already taken effect (AC9).
+      expect(response.body).toContain('Live now in iam/dev');
     });
 
     it('tells the browser to update the address bar', async () => {
@@ -207,7 +208,9 @@ withSops('htmx as progressive enhancement', () => {
    * with a fragment, and the only way to be sure is to ask each of them.
    */
   describe('every response a swap can receive', () => {
-    const reachable = ['/', '/p/iam', '/p/iam?env=prod', '/drafts'];
+    // /drafts is gone with the draft model; /p/retiring and /features are the routes that
+    // joined the reachable set, and each has to answer a swap the same way.
+    const reachable = ['/', '/p/iam', '/p/iam?env=prod', '/p/retiring'];
 
     for (const url of reachable) {
       it(`answers ${url} without the page frame`, async () => {

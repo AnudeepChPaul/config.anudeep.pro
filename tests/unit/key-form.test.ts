@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { renderNewProduct, renderRetiring } from '@config/src/views/pages.js';
+import { renderNewProduct } from '@config/src/views/pages.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 /**
@@ -307,80 +307,10 @@ describe('the secret checkbox', () => {
   });
 });
 
-/**
- * Acting on a staged retirement.
- *
- * One action on the row rather than several: a staged retirement has exactly one thing worth
- * doing to it, and the question of whether to do it belongs beside the product, not in a browser
- * dialog answering from somewhere else.
+/*
+ * "Acting on a staged retirement" lived here: a retirement waited as a draft, and the row
+ * offered Retire, Revert and Stop, one of which published it. AC3 made retirement a direct
+ * schema write, so there is no staged state to act on -- marking a product retiring IS the
+ * change. The retiring list and its Cancel retirement / Archive actions are covered in
+ * every-page-state.test.ts and products-dom.test.ts.
  */
-describe('acting on a retirement', () => {
-  const staged = String(
-    renderRetiring({
-      products: [{ service: 'iam', name: 'iam (1002)', published: false }],
-      fragment: true,
-    }),
-  );
-
-  const load = (markup: string) => {
-    document.body.innerHTML = markup;
-    new Function(source)();
-  };
-
-  const row = () => document.querySelector('[data-retiring-row]') as HTMLElement;
-  const act = () => row().querySelector('[data-act]') as HTMLElement;
-  const ask = () => row().querySelector('[data-act-confirm]') as HTMLElement;
-
-  beforeEach(() => load(staged));
-
-  it('offers one action, not a publish sitting in the open', () => {
-    expect(act()).toBeTruthy();
-    expect(act().textContent).toMatch(/Act on it/);
-    expect(row().textContent).not.toMatch(/Publish this retirement/);
-  });
-
-  it('shows Retire, Revert and Stop once it is clicked', () => {
-    expect(ask().hidden).toBe(true);
-
-    act().click();
-
-    expect(ask().hidden).toBe(false);
-    expect(ask().textContent).toMatch(/Retire/);
-    expect(ask().textContent).toMatch(/Revert/);
-    expect(ask().textContent).toMatch(/Stop/);
-  });
-
-  // Three buttons, three different things: one publishes, one undoes, one closes.
-  it('sends Revert to the route that unmarks it', () => {
-    act().click();
-    const revert = [...ask().querySelectorAll('button')].find((button) =>
-      /Revert/.test(button.textContent ?? ''),
-    );
-
-    expect(revert?.getAttribute('hx-post')).toBe('/p/iam/retire');
-    expect(revert?.getAttribute('hx-vals')).toContain('false');
-  });
-
-  it('closes again on Stop, changing nothing', () => {
-    act().click();
-    (row().querySelector('[data-act-stop]') as HTMLElement).click();
-
-    expect(ask().hidden).toBe(true);
-    expect(act().hidden).toBe(false);
-  });
-
-  // Retire is the act: it publishes the staged retirement, which is what tells consumers.
-  it('publishes the retirement when Retire is chosen', () => {
-    act().click();
-    const retire = ask().querySelector('button');
-
-    expect(retire?.getAttribute('hx-post')).toBe('/publish');
-    expect(ask().querySelector('input[name="namespace"]')?.getAttribute('value')).toBe(
-      'iam/retiring',
-    );
-  });
-
-  it('raises no browser dialog', () => {
-    expect(act().getAttribute('hx-confirm')).toBeNull();
-  });
-});

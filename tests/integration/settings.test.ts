@@ -2,7 +2,6 @@ import { rm } from 'node:fs/promises';
 import { buildWebApp } from '@config/src/app.js';
 import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
-import { DraftStore } from '@config/src/store/draft-store.js';
 import { EnvironmentOrder } from '@config/src/store/environment-order.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
@@ -10,7 +9,15 @@ import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
 import { ConfigWriteService } from '@config/src/store/write-service.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { type AgeKeypair, generateAgeKey, guarded, hasSops, TestRepo } from '../helpers.js';
+import {
+  type AgeKeypair,
+  generateAgeKey,
+  guarded,
+  hasSops,
+  liveOptions,
+  TestRepo,
+  visible,
+} from '../helpers.js';
 
 /**
  * Who may see how this service is configured.
@@ -36,21 +43,9 @@ withSops('the settings page', () => {
   const build = async (over: Record<string, unknown> & { retiring?: readonly string[] } = {}) => {
     const retiringSchema = (name: string) =>
       (over.retiring ?? []).includes(name) ? `version: 1\nretiring: true\n${SCHEMA_KEYS}` : SCHEMA;
-    const git = new GitRepository(repo.dir);
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
-    const drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     return buildWebApp({
-      repository: git,
-      loader,
-      schemas: () => SchemaSet.fromFiles({ iam: retiringSchema('iam') }),
-      drafts,
-      writeService: new ConfigWriteService({
-        repository: git,
-        loader,
-        encryptor: new SopsEncryptor(repo.dir),
-        schemas: () => SchemaSet.fromFiles({ iam: retiringSchema('iam') }),
-        drafts,
-      }),
+      ...(await liveOptions(repo.dir, { iam: retiringSchema('iam') }, loader)),
       environment: 'dev',
       ...over,
     } as Parameters<typeof buildWebApp>[0]);
@@ -207,35 +202,22 @@ withSops('adding a product', () => {
   let repo: TestRepo;
 
   const build = async (over: { retiring?: readonly string[]; onCommitted?: () => void } = {}) => {
-    const git = new GitRepository(repo.dir);
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
-    const drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     const who = guarded();
     // The schema is where retiring lives, so a retiring fixture is a schema with the flag on.
-    const schemas = () =>
-      SchemaSet.fromFiles({
-        iam: (over.retiring ?? []).includes('iam')
-          ? `version: 1\nretiring: true\n${SCHEMA_KEYS}`
-          : SCHEMA,
-      });
+    const schema = (over.retiring ?? []).includes('iam')
+      ? `version: 1\nretiring: true\n${SCHEMA_KEYS}`
+      : SCHEMA;
+    const live = await liveOptions(repo.dir, { iam: schema }, loader);
     const app = await buildWebApp({
-      repository: git,
-      loader,
-      schemas,
-      drafts,
-      writeService: new ConfigWriteService({
-        repository: git,
-        loader,
-        encryptor: new SopsEncryptor(repo.dir),
-        schemas,
-        drafts,
-      }),
-      environmentOrder: async () => EnvironmentOrder.fromYaml('order: [dev, prod]\n'),
+      ...live,
       environment: 'dev',
       auth: who.auth,
       ...(over.onCommitted ? { onCommitted: over.onCommitted } : {}),
     });
-    return { app, drafts, headers: who.headers };
+    // The database IS the registry now, so a test asserts what a write left there rather than
+    // what it left staged.
+    return { app, db: live.db, headers: who.headers };
   };
 
   beforeEach(async () => {
@@ -256,16 +238,17 @@ withSops('adding a product', () => {
   });
 
   const post = async (fields: Array<[string, string]>) => {
-    const { app, drafts, headers } = await build();
+    const { app, db, headers } = await build();
     const response = await app.inject({
       method: 'POST',
       url: '/p/new',
       payload: new URLSearchParams(fields).toString(),
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
     });
-    const staged = await drafts.all();
+    const registry = (await db.read('services.yaml')) ?? '';
+    const schema = (await db.read('schema.yaml')) ?? '';
     await app.close();
-    return { response, staged };
+    return { response, registry, schema };
   };
 
   // `over` REPLACES a field rather than appending one: a body carrying a field twice is a
@@ -290,11 +273,12 @@ withSops('adding a product', () => {
   // A static segment beats a parameter in Fastify, so /p/new is the form and never a product.
   // A product called 'new' would therefore have a page nothing could reach.
   it("refuses a product called 'new', whose page could never be opened", async () => {
-    const { response, staged } = await post(audit([['name', 'new']]));
+    const { response, registry } = await post(audit([['name', 'new']]));
 
     expect(response.statusCode).toBe(422);
     expect(response.body).toMatch(/reserved/);
-    expect(staged.length).toBe(0);
+    // Refused means nothing was written, not written-and-awaiting-a-publish.
+    expect(registry).not.toMatch(/name: new\b/);
   });
 
   /**
@@ -305,7 +289,15 @@ withSops('adding a product', () => {
    * page said "1 unpublished draft" and "nothing unpublished" in the same line, and offered no
    * way to publish the thing it had just been asked to create.
    */
-  it('lists a product that only a draft declares, and offers to publish it', async () => {
+  /**
+   * A product is on the list the moment it is created.
+   *
+   * This used to be the awkward case: the list is built from services.yaml, and a product being
+   * created was not in services.yaml yet -- its entry was inside the draft. So it had no row to
+   * be counted against, and the page said "1 unpublished draft" and "nothing unpublished" in the
+   * same line. Creating writes services.yaml now, so the product is simply there.
+   */
+  it('lists a product as soon as it is created, with nothing left to publish', async () => {
     const { app, headers } = await build();
     await app.inject({
       method: 'POST',
@@ -317,9 +309,8 @@ withSops('adding a product', () => {
     const page = await app.inject({ method: 'GET', url: '/', headers });
 
     expect(page.body).toContain('audit');
-    expect(page.body).toMatch(/Publish selected drafts/);
-    // And it says which it is: nothing about it is committed yet.
-    expect(page.body).toMatch(/not published yet/i);
+    // AC9: nothing may suggest the product is not yet in effect.
+    expect(visible(page.body)).not.toMatch(/not published|publish|draft/i);
     await app.close();
   });
 
@@ -375,126 +366,121 @@ withSops('adding a product', () => {
    * poll. So publishing a retirement updated the file and changed nothing on screen — the marker
    * arrived a minute later, or when the container restarted, which reads as "it does not work".
    */
-  it('reloads what it serves after publishing, rather than waiting for a poll', async () => {
+  it('reloads what it serves as soon as a write lands, rather than waiting for a poll', async () => {
+    // AC2/AC10: the write is live, so the cache is woken by the write itself. There is no
+    // publish step left to wake it later.
     const reloads: number[] = [];
     const { app, headers } = await build({ onCommitted: () => reloads.push(Date.now()) });
 
+    // Asking the question changes nothing, so nothing is reloaded for it.
     await app.inject({
       method: 'POST',
       url: '/p/iam/retire',
       payload: new URLSearchParams([['retiring', 'true']]).toString(),
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
     });
-    expect(reloads.length, 'staging alone changes no file').toBe(0);
+    expect(reloads.length, 'the confirmation alone changes no file').toBe(0);
 
-    // A retirement is filed under its own namespace, away from the environments.
-    await app.inject({
-      method: 'POST',
-      url: '/publish',
-      payload: new URLSearchParams([['namespace', 'iam/retiring']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
+    await retire(app, headers);
 
-    expect(reloads.length, 'publishing did').toBeGreaterThan(0);
+    expect(reloads.length, 'the write did').toBeGreaterThan(0);
     await app.close();
   });
-
   /**
-   * A retirement that is only staged.
+   * Retirement, once it staged a draft.
    *
-   * Marking a product retiring stages a draft, and until it is published the list said nothing
-   * about it: the confirmation cleared itself after five seconds and what remained was "2 drafts
-   * to publish", which does not say what they are. The act was invisible the moment you looked
-   * away from it.
+   * Marking a product retiring used to stage a draft, and until it was published the list said
+   * nothing about it: the confirmation cleared itself after five seconds and what remained was
+   * "2 drafts to publish", which does not say what they are. The act was invisible the moment
+   * you looked away from it. A whole vocabulary grew around that gap -- a staged retirement wore
+   * a different marker from a published one, because no consumer could see it yet.
    *
-   * It cannot wear the same marker as a published retirement, because no consumer can see it
-   * yet — that is the difference the two markers have to carry.
+   * AC3 removed the gap: retirement is a schema write, so marking a product retiring IS the
+   * change and every consumer sees it at once. The two markers collapse into one, and what is
+   * left to assert is that the write happened, that the list says so, and that archiving still
+   * refuses a product that is not retiring.
    */
-  // A retirement is not an environment update, so it must not be counted as work waiting on the
-  // products screen, and the publish action there must not offer to ship it.
-  it('keeps a staged retirement out of the products screen publish', async () => {
-    const { app, headers } = await build({});
-
-    await app.inject({
+  /**
+   * Answer a confirmation the way the browser does.
+   *
+   * A destructive write asks first and renders a form carrying hidden fields -- among them the
+   * base it read, so the write refuses if anything changed while the question was on screen.
+   * Forging `confirm=yes` alone skips that field and gets a 409, so the helper posts the form
+   * back rather than inventing it.
+   */
+  const confirmed = async (
+    app: Awaited<ReturnType<typeof buildWebApp>>,
+    headers: Record<string, string>,
+    url: string,
+    fields: Array<[string, string]> = [],
+  ) => {
+    const asked = await app.inject({
       method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
+      url,
+      payload: new URLSearchParams(fields).toString(),
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
     });
-    const page = await app.inject({ method: 'GET', url: '/', headers });
-
-    expect(page.body).not.toMatch(/Publish selected drafts/);
-    expect(page.body).not.toMatch(/draft to publish/);
-    await app.close();
-  });
-
-  // "3 unpublished drafts ... nothing unpublished" is two numbers for the same thing
-  // disagreeing in public — the retirement is unpublished, it is simply not an environment
-  // update. The line has to say which it is rather than deny it exists.
-  // The count beside Products is environment work waiting. A retirement is unpublished, but it
-  // is not that, and counting it there is the same mistake as offering to publish it.
-  it('does not count a retirement among the unpublished drafts', async () => {
-    const { app, headers } = await build({});
-
-    await app.inject({
+    const hidden: Array<[string, string]> = [
+      ...asked.body.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"/g),
+    ].map((match) => [match[1] as string, match[2] as string]);
+    // A write that needed no confirmation has already happened; posting again must not say
+    // something different from the first attempt, so the original fields travel with the answer.
+    const answered = new Set(hidden.map(([field]) => field));
+    return app.inject({
       method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
-    const page = await app.inject({ method: 'GET', url: '/', headers });
-
-    expect(page.body).not.toMatch(/unpublished draft/);
-    await app.close();
-  });
-
-  it('still counts a real environment draft there', async () => {
-    const { app, headers } = await build({});
-
-    await app.inject({
-      method: 'POST',
-      url: '/p/iam/dev',
+      url,
       payload: new URLSearchParams([
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
+        ...fields.filter(([field]) => !answered.has(field)),
+        ...hidden,
+        ['confirm', 'yes'],
       ]).toString(),
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
     });
-    const page = await app.inject({ method: 'GET', url: '/', headers });
+  };
 
-    expect(page.body).toMatch(/1 unpublished draft/);
+  // Retiring asks first -- consumers see the mark immediately, so the console names that before
+  // it writes.
+  const retire = async (
+    app: Awaited<ReturnType<typeof buildWebApp>>,
+    headers: Record<string, string>,
+    retiring = 'true',
+  ) => confirmed(app, headers, '/p/iam/retire', [['retiring', retiring]]);
+
+  it('marks a product retiring by writing the schema, not by staging anything', async () => {
+    const { app, db, headers } = await build({});
+
+    await retire(app, headers);
+
+    expect(await db.read('schema.yaml')).toMatch(/retiring: true/);
     await app.close();
   });
 
-  it('shows a staged retirement on the list, before it is published', async () => {
+  it('says nothing about publishing a retirement, because there is nothing to publish', async () => {
     const { app, headers } = await build({});
 
-    await app.inject({
-      method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
+    await retire(app, headers);
+    const page = await app.inject({ method: 'GET', url: '/', headers });
+
+    // AC9: no wording may imply a change that has taken effect is still waiting.
+    expect(visible(page.body)).not.toMatch(/publish/i);
+    expect(visible(page.body)).not.toMatch(/draft/i);
+    await app.close();
+  });
+
+  it('shows it as retiring on the list at once', async () => {
+    const { app, headers } = await build({});
+
+    await retire(app, headers);
     const page = await app.inject({ method: 'GET', url: '/', headers });
 
     expect(page.body).toMatch(/retiring/);
-    // Said differently from a published one: nothing has reached a consumer yet.
-    expect(page.body).toMatch(/unpublished|not published|drafted/i);
     await app.close();
   });
 
-  // The count answers "what have I got on the way out", which is an operator's question, and a
-  // product marked an hour ago is on the way out whether or not the draft has been published.
-  // The consumer-facing distinction is kept where it belongs: on the row, and on /p/retiring.
-  it('counts a staged retirement too, so marking one is visible at once', async () => {
+  it('counts it in the retiring link, so marking one is visible at once', async () => {
     const { app, headers } = await build({});
 
-    await app.inject({
-      method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
+    await retire(app, headers);
     const page = await app.inject({ method: 'GET', url: '/', headers });
 
     expect(page.body).toMatch(/1 product retiring/);
@@ -504,37 +490,27 @@ withSops('adding a product', () => {
   it('counts a product once, however many ways it is marked', async () => {
     const { app, headers } = await build({ retiring: ['iam'] });
 
-    await app.inject({
-      method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
+    await retire(app, headers);
     const page = await app.inject({ method: 'GET', url: '/', headers });
 
-    expect(page.body).toMatch(/1 product retiring/);
-    expect(page.body).not.toMatch(/2 products retiring/);
+    expect(page.body.match(/product(s)? retiring/g)?.length ?? 0).toBe(1);
     await app.close();
   });
 
-  // `version` is the document's revision counter, not a key anybody sets. It reached the list
-  // because the summary was built from what the FILE holds, and the file holds it beside the
-  // values — so every product read as though it had a variable called version.
   it("does not list version among a product's keys", async () => {
-    // A published file carries its revision counter beside the values, which is what the
-    // fixture has to have for this to mean anything.
-    await repo.commit({ 'config/iam/dev.yaml': 'MFA_ENFORCEMENT: optional\nversion: 2\n' });
+    // `version` is the document's own field, not a key someone set.
     const { app, headers } = await build({});
 
-    const page = await app.inject({ method: 'GET', url: '/', headers });
-    const row = page.body.slice(page.body.indexOf('iam ('), page.body.indexOf('iam (') + 500);
+    const page = await app.inject({ method: 'GET', url: '/p/iam?env=dev', headers });
 
-    expect(row).toMatch(/MFA_ENFORCEMENT/);
-    expect(row).not.toMatch(/\bversion\b/);
+    expect(page.body).toContain('MFA_ENFORCEMENT');
+    expect(page.body).not.toMatch(/<label[^>]*>\s*version/i);
     await app.close();
   });
 
   it('keeps a retiring product in the product list', async () => {
+    // Retiring is not archived: it is still served, and hiding it would make the thing you are
+    // trying to wind down the one thing you cannot see.
     const { app, headers } = await build({ retiring: ['iam'] });
 
     const page = await app.inject({ method: 'GET', url: '/', headers });
@@ -547,98 +523,8 @@ withSops('adding a product', () => {
     const { app, headers } = await build({ retiring: ['iam'] });
 
     const page = await app.inject({ method: 'GET', url: '/', headers });
-    const row = page.body.slice(page.body.indexOf('iam ('), page.body.indexOf('iam (') + 600);
 
-    expect(row).toMatch(/retiring/);
-    await app.close();
-  });
-
-  // The count links here, so anything it counts has to be here — a link that leads to a page
-  // saying "nothing is retiring" is worse than no link.
-  it('lists a staged retirement too, and says it is not published', async () => {
-    const { app, headers } = await build({});
-
-    await app.inject({
-      method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
-    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
-
-    // Not a bare toContain: 'iam' appears in the page frame regardless. This asks whether a ROW
-    // for it is rendered.
-    expect(page.body).toMatch(/data-retiring-row/);
-    expect(page.body).toMatch(/iam \(1002\)/);
-    expect(page.body).toMatch(/unpublished|not published/i);
-    expect(page.body).not.toMatch(/Nothing is retiring/);
-    await app.close();
-  });
-
-  // Archiving stops a namespace being served, and a staged retirement has told no consumer
-  // anything. Offering it here would skip the entire interval the two steps exist to create.
-  // The page said "Consumers can see this" whatever it was listing. For a staged retirement
-  // that is simply untrue, and it is the one fact the whole two-step design turns on.
-  it('does not claim a consumer can see a retirement that is only staged', async () => {
-    const { app, headers } = await build({});
-
-    await app.inject({
-      method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
-    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
-
-    expect(page.body).not.toMatch(/Consumers can see this/);
-    await app.close();
-  });
-
-  it('says so when one IS published, because then they can', async () => {
-    const { app, headers } = await build({ retiring: ['iam'] });
-
-    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
-
-    expect(page.body).toMatch(/consumers can see/i);
-    await app.close();
-  });
-
-  // If the products screen must not publish it, this page has to — otherwise a marked product
-  // can never reach its consumers at all.
-  it('offers one action on a staged retirement, which publishes it', async () => {
-    const { app, headers } = await build({});
-
-    await app.inject({
-      method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
-    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
-
-    // One action on the row; the publish is behind it, with a line saying what it does.
-    expect(page.body).toMatch(/Act on it/);
-    expect(page.body).toMatch(/Retire/);
-    // The line names the two acts, so the choice needs no interpreting. Stop is not named:
-    // it changes nothing, so there is nothing to explain about it.
-    expect(page.body).toMatch(/Retire to publish, Revert to undo/);
-    expect(page.body).toMatch(/Revert/);
-    expect(page.body).toContain('iam/retiring');
-    await app.close();
-  });
-
-  it('does not offer to archive one whose retirement is only staged', async () => {
-    const { app, headers } = await build({});
-
-    await app.inject({
-      method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
-    const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
-
-    expect(page.body).not.toMatch(/Archive the Product/);
+    expect(page.body).toMatch(/retiring/);
     await app.close();
   });
 
@@ -647,62 +533,42 @@ withSops('adding a product', () => {
 
     const page = await app.inject({ method: 'GET', url: '/p/retiring', headers });
 
-    expect(page.statusCode).toBe(200);
     expect(page.body).toContain('iam');
-    // Published: archiving is what is left to do to it.
-    expect(page.body).toMatch(/Archive the Product/);
+    expect(page.body).toMatch(/Archive/);
+    expect(page.body).toMatch(/Cancel retirement/);
     await app.close();
   });
 
-  it('marks a product retiring by staging a draft, not by writing', async () => {
-    const { app, drafts, headers } = await build({});
+  it('takes a retirement back off again', async () => {
+    const { app, db, headers } = await build({ retiring: ['iam'] });
 
-    const response = await app.inject({
-      method: 'POST',
-      url: '/p/iam/retire',
-      payload: new URLSearchParams([['retiring', 'true']]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
+    await retire(app, headers, 'false');
 
-    expect([200, 204, 303]).toContain(response.statusCode);
-    const staged = await drafts.all();
-    expect(staged.length).toBe(1);
-    expect(String(staged[0]?.files?.['schema/iam.yaml'])).toMatch(/retiring: true/);
+    expect(await db.read('schema.yaml')).not.toMatch(/retiring: true/);
     await app.close();
   });
 
-  /**
-   * Archiving.
-   *
-   * The one write in this console that does not pass through a draft: it commits immediately.
-   * That is the operator's decision, and it is why the act is reachable only from the retiring
-   * list and asks in the row before it goes.
-   */
   describe('archiving a retiring product', () => {
+    // The database is the live tree now; git holds a backup of it. So these read what the
+    // archive left in `db/`, which is where a consumer is served from.
     const archive = async () => {
-      const { app, headers } = await build({ retiring: ['iam'] });
-      const response = await app.inject({
-        method: 'POST',
-        url: '/p/iam/archive',
-        payload: '',
-        headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-      });
+      const { app, db, headers } = await build({ retiring: ['iam'] });
+      const response = await confirmed(app, headers, '/p/iam/archive');
       await app.close();
-      return response;
+      return { response, db };
     };
 
     it('takes the product out of the live tree', async () => {
-      await archive();
-      const git = new GitRepository(repo.dir);
+      const { db } = await archive();
 
-      await expect(git.readFile('schema/iam.yaml')).rejects.toThrow();
-      await expect(git.readFile('config/iam/dev.yaml')).rejects.toThrow();
-      expect(await git.readFile('services.yaml')).not.toMatch(/name: iam/);
+      expect(await db.read('schema.yaml')).not.toMatch(/MFA_ENFORCEMENT/);
+      expect(await db.read('config/iam/dev.yaml')).toBeNull();
+      expect(await db.read('services.yaml')).not.toMatch(/name: iam/);
     });
 
     it('writes one archive holding the grant, the schema and every environment', async () => {
-      await archive();
-      const archived = parseYaml(await new GitRepository(repo.dir).readFile('archived/iam.yaml'));
+      const { db } = await archive();
+      const archived = parseYaml((await db.read('archived/iam.yaml')) ?? '');
 
       expect(archived.service).toMatchObject({ name: 'iam', uid: 1002 });
       expect(String(archived.schema)).toMatch(/MFA_ENFORCEMENT/);
@@ -716,7 +582,6 @@ withSops('adding a product', () => {
     // block to damage — so this test passed a mutation that stripped the envelope, which is the
     // one thing it exists to catch.
     it('keeps each environment byte-identical, envelope and all', async () => {
-      const git = new GitRepository(repo.dir);
       const encrypted = await new SopsEncryptor(repo.dir).encrypt(
         'iam/dev',
         'MFA_ENFORCEMENT: optional\n',
@@ -724,26 +589,20 @@ withSops('adding a product', () => {
       await repo.commit({ 'config/iam/dev.yaml': encrypted });
       expect(encrypted, 'the fixture is actually encrypted').toMatch(/^sops:/m);
 
-      const before = await git.readFile('config/iam/dev.yaml');
-      await archive();
-      const archived = parseYaml(await git.readFile('archived/iam.yaml'));
+      const { db } = await archive();
+      const archived = parseYaml((await db.read('archived/iam.yaml')) ?? '');
 
-      expect(archived.environments.dev).toBe(before);
+      expect(archived.environments.dev).toBe(encrypted);
       // Not merely equal-ish: the envelope has to survive intact or the file cannot be decrypted.
       expect(String(archived.environments.dev)).toMatch(/^sops:/m);
     });
 
     it('refuses to archive a product that is not retiring', async () => {
-      const { app, headers } = await build({});
-      const response = await app.inject({
-        method: 'POST',
-        url: '/p/iam/archive',
-        payload: '',
-        headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-      });
+      const { app, db, headers } = await build({});
+      const response = await confirmed(app, headers, '/p/iam/archive');
 
       expect(response.statusCode).toBe(422);
-      expect(await new GitRepository(repo.dir).readFile('schema/iam.yaml')).toBeTruthy();
+      expect(await db.read('schema.yaml')).toMatch(/MFA_ENFORCEMENT/);
       await app.close();
     });
   });
@@ -758,70 +617,47 @@ withSops('adding a product', () => {
     await app.close();
   });
 
-  /**
-   * Publishing a newly created product by name.
-   *
-   * The products screen posts a product NAME, and the route resolves it to the environments
-   * worth publishing. It asked which of them had pending CHANGES — and a product whose keys
-   * declare no defaults has none, so the answer was "nothing", and the publish went quietly
-   * nowhere with a 303 saying nothing was selected.
-   *
-   * The question is whether a draft is staged there, which is what publish publishes.
+  /*
+   * "Publishes a new product selected by name" lived here. It existed because the products
+   * screen posted a NAME and the publish route had to resolve it to the environments worth
+   * publishing -- and a product whose keys declare no defaults had none, so the publish went
+   * quietly nowhere. There is no publish route to get wrong now: creating the product writes
+   * every file it needs, which is what the next test asserts.
    */
-  it('publishes a new product selected by name, defaults or not', async () => {
-    const { app, drafts, headers } = await build();
 
-    await app.inject({
+  it('writes every file the product needs, in one transaction', async () => {
+    // AC1: the schema entry and each environment file are written before services.yaml, so a
+    // crash mid-write leaves a product that is invisible rather than one that is visible and
+    // broken. What the test can see afterwards is that all of it landed.
+    const { app, db, headers } = await build();
+    const response = await app.inject({
       method: 'POST',
       url: '/p/new',
-      payload: new URLSearchParams([
-        ['name', 'audit'],
-        ['uid', '1004'],
-        ['environment', 'dev'],
-        ['key.0.name', 'TOKEN'],
-        ['key.0.type', 'string'],
-        ['key.0.secret', '1'],
-      ]).toString(),
-      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    });
-    expect((await drafts.all()).length, 'staged').toBe(1);
-
-    const published = await app.inject({
-      method: 'POST',
-      url: '/publish',
-      payload: new URLSearchParams([['namespace', 'audit']]).toString(),
+      payload: new URLSearchParams(audit()).toString(),
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
     });
 
-    expect(String(published.headers.location)).not.toMatch(/nothing-selected/);
-    expect(await drafts.all(), 'the draft was published, not left staged').toEqual([]);
-    expect(await new GitRepository(repo.dir).readFile('schema/audit.yaml')).toMatch(/TOKEN/);
+    expect([200, 204, 303]).toContain(response.statusCode);
+    expect(await db.read('services.yaml')).toMatch(/audit/);
+    expect(await db.read('schema.yaml')).toMatch(/RETENTION_DAYS/);
+    expect(await db.read('config/audit/dev.yaml')).not.toBeNull();
+    expect(await db.read('config/audit/prod.yaml')).not.toBeNull();
     await app.close();
   });
 
-  it('stages one draft holding every file the product needs', async () => {
-    const { response, staged } = await post(audit());
-
-    expect([204, 303]).toContain(response.statusCode);
-    expect(staged.length).toBe(1);
-    const paths = Object.keys(staged[0]?.files ?? {});
-    expect(paths).toContain('services.yaml');
-    expect(paths).toContain('schema/audit.yaml');
-  });
-
   it('refuses a uid another service claims, and says which', async () => {
-    const { response, staged } = await post(audit([['uid', '1002']]));
+    const { response, registry } = await post(audit([['uid', '1002']]));
 
     expect(response.statusCode).toBe(422);
     expect(response.body).toMatch(/iam/);
-    expect(staged.length).toBe(0);
+    expect(registry).not.toMatch(/audit/);
   });
 
   it('refuses a product with no environment chosen', async () => {
-    const { response, staged } = await post(audit().filter(([field]) => field !== 'environment'));
+    const { response, registry } = await post(audit().filter(([field]) => field !== 'environment'));
 
     expect(response.statusCode).toBe(422);
-    expect(staged.length).toBe(0);
+    expect(registry).not.toMatch(/audit/);
   });
 
   it('refuses a uid that is not a whole number', async () => {
@@ -832,10 +668,10 @@ withSops('adding a product', () => {
 
   // The schema rules are the builder's, and they have to hold through the route too.
   it('refuses a default outside the bounds the same row declares', async () => {
-    const { response, staged } = await post(audit([['key.0.default', '900']]));
+    const { response, registry } = await post(audit([['key.0.default', '900']]));
 
     expect(response.statusCode).toBe(422);
-    expect(staged.length).toBe(0);
+    expect(registry).not.toMatch(/audit/);
   });
 
   it('gives the form back with what was typed still in it', async () => {
@@ -846,7 +682,7 @@ withSops('adding a product', () => {
   });
 
   it('takes a bool default from the tick rather than from typed text', async () => {
-    const { staged } = await post(
+    const { schema } = await post(
       audit([
         ['key.1.name', 'KILL_SWITCH'],
         ['key.1.type', 'bool'],
@@ -854,27 +690,25 @@ withSops('adding a product', () => {
       ]),
     );
 
-    const schema = String(staged[0]?.files?.['schema/audit.yaml']);
     expect(schema).toMatch(/KILL_SWITCH:[\s\S]*?default: true/);
   });
 
   // An unticked checkbox is absent from the body, which is what "no default" means for every
   // other type too.
   it('declares a bool with no default when the box is not ticked', async () => {
-    const { staged } = await post(
+    const { schema } = await post(
       audit([
         ['key.1.name', 'KILL_SWITCH'],
         ['key.1.type', 'bool'],
       ]),
     );
 
-    const schema = String(staged[0]?.files?.['schema/audit.yaml']);
     expect(schema).toMatch(/KILL_SWITCH/);
     expect(schema).not.toMatch(/KILL_SWITCH:[\s\S]*?default:/);
   });
 
   it('declares a secret without a value', async () => {
-    const { staged } = await post(
+    const { schema } = await post(
       audit([
         ['key.1.name', 'TOKEN'],
         ['key.1.type', 'string'],
@@ -882,8 +716,6 @@ withSops('adding a product', () => {
       ]),
     );
 
-    const schema = String(staged[0]?.files?.['schema/audit.yaml']);
     expect(schema).toMatch(/secret: true/);
-    expect(staged[0]?.document).not.toMatch(/^TOKEN:/m);
   });
 });

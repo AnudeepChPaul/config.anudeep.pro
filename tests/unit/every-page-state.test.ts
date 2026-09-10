@@ -1,7 +1,9 @@
 import {
   type KeyRow,
-  renderDrafts,
+  renderConfirmation,
+  renderFeatures,
   renderLogin,
+  renderNewProduct,
   renderProduct,
   renderProducts,
   renderSettings,
@@ -17,17 +19,13 @@ import { describe, expect, it } from 'vitest';
  * the old amber and blue, and "Not now" was styled as a hint rather than as the action it is.
  *
  * A rule is only enforced where it is looked at, so this looks everywhere.
+ *
+ * The draft states are gone with the direct-write cutover; the states that replaced them --
+ * a confirmation, the features screen, a product whose environment file does not exist yet --
+ * are listed here in their place, so the list still covers every screen the console can draw.
  */
 const definition = (over: Record<string, unknown> = {}) =>
   ({ type: 'string', secret: false, ...over }) as unknown as KeyRow['definition'];
-
-const env = (name: string, drafts: number, pending: KeyRow[] = []) => ({
-  name,
-  namespace: `iam/${name}`,
-  drafts,
-  pending: pending as never,
-});
-const pending = [{ key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false }] as never;
 
 const rows: KeyRow[] = [
   { key: 'FP_COMPONENTS', definition: definition({ type: 'string[]' }), value: ['ua', 'lang'] },
@@ -36,39 +34,39 @@ const rows: KeyRow[] = [
     key: 'MFA_ENFORCEMENT',
     definition: definition({ type: 'enum', values: ['optional', 'admins', 'all'] }),
     value: 'all',
-    publishedValue: 'optional',
-    pending: true,
   },
   { key: 'SESSION_TTL', definition: definition({ type: 'int', min: 60, max: 86400 }), value: 900 },
   { key: 'SMTP_PASSWORD', definition: definition({ secret: true }), value: 'x' },
 ];
 
-const commit = 'a02ecef1234567890abcdef1234567890abcdef12';
+const product = (over: Partial<Parameters<typeof renderProduct>[0]> = {}) =>
+  String(
+    renderProduct({
+      service: 'iam',
+      environment: 'dev',
+      environments: ['dev', 'prod'],
+      etag: 'e',
+      rows,
+      version: 3,
+      next: 'prod',
+      retiring: false,
+      missing: false,
+      ...over,
+    }),
+  );
 
 /** Every state the console can render, named so a failure says which one. */
 const everyState = (): Array<[string, string]> => [
-  ['products, empty', String(renderProducts({ products: [], commit, draftCount: 0 }))],
+  ['products, empty', String(renderProducts({ products: [], pendingBackup: 0 }))],
   [
-    'products, drafts and a missing schema',
+    'products, a retiring one and changes awaiting backup',
     String(
       renderProducts({
         products: [
-          {
-            name: 'iam (1002)',
-            service: 'iam',
-            keys: 'A, B +3',
-            environments: [env('dev', 2, pending), env('prod', 0)],
-          },
-          {
-            name: 'audit (1004)',
-            service: 'audit',
-            schemaMissing: true,
-            keys: '',
-            environments: [env('prod', 0)],
-          },
+          { name: 'iam', environments: ['dev', 'prod'], retiring: false, keys: ['A', 'B'] },
+          { name: 'audit', environments: ['prod'], retiring: true, keys: [] },
         ],
-        commit,
-        draftCount: 2,
+        pendingBackup: 2,
       }),
     ),
   ],
@@ -76,135 +74,68 @@ const everyState = (): Array<[string, string]> => [
     'products, searching',
     String(
       renderProducts({
-        products: [
-          {
-            name: 'iam (1002)',
-            service: 'iam',
-            matched: ['SESSION_TTL'],
-            keys: '',
-            environments: [env('dev', 0)],
-          },
-        ],
-        commit,
+        products: [{ name: 'iam', environments: ['dev'], retiring: false, keys: ['SESSION_TTL'] }],
+        pendingBackup: 0,
         query: 'TTL',
       }),
     ),
   ],
   [
-    'product, clean',
-    String(
-      renderProduct({
-        service: 'iam',
-        environments: [env('dev', 0), env('prod', 0)],
-        active: 'dev',
-        rows,
-        commit,
-        revision: 3,
-      }),
-    ),
+    'products, retiring only',
+    String(renderProducts({ products: [], pendingBackup: 0, retiringOnly: true })),
   ],
+  ['product, clean', product()],
+  ['product, retiring', product({ retiring: true })],
   [
-    'product, drafted',
-    String(
-      renderProduct({
-        service: 'iam',
-        environments: [env('dev', 2, pending), env('prod', 0)],
-        active: 'dev',
-        rows,
-        commit,
-        drafted: ['MFA_ENFORCEMENT'],
-        revision: 3,
-      }),
-    ),
+    'product, last environment so nothing to promote to',
+    product({ environment: 'prod', next: null }),
   ],
-  [
-    'product, refused save',
-    String(
-      renderProduct({
-        service: 'iam',
-        environments: [env('dev', 0)],
-        active: 'dev',
-        rows,
-        commit,
-        error: 'the change does not match the schema',
-      }),
-    ),
-  ],
-  [
-    'product, environment with no file',
-    String(
-      renderProduct({
-        service: 'api',
-        environments: [{ name: 'dev', namespace: 'api/dev', drafts: 0, pending: [] }],
-        active: 'dev',
-        rows: [{ key: 'RATE_LIMIT', definition: definition({ type: 'int' }), value: 100 }],
-        commit,
-        missingFile: true,
-      }),
-    ),
-  ],
-  [
-    'product, promote offer',
-    String(
-      renderProduct({
-        service: 'iam',
-        environments: [env('dev', 0), env('prod', 0)],
-        active: 'dev',
-        rows,
-        commit,
-        offer: {
-          nextEnvironment: 'prod',
-          movable: [{ key: 'MFA_ENFORCEMENT', value: 'all', target: 'optional' }],
-          blocked: [{ key: 'SMTP_PASSWORD', reason: 'secret — set it directly in prod' }],
-        },
-      }),
-    ),
-  ],
-  // A page reporting an outcome is a state like any other, and it was missing here: the rule
-  // that every negative action is danger-coloured could not see Dismiss, because nothing in
-  // this list rendered one.
+  ['product, environment with no file', product({ service: 'api', missing: true, rows: [] })],
   [
     'products, reporting a success',
     String(
       renderProducts({
         products: [],
-        commit,
-        notice: { tone: 'done', text: 'Published 3 changes.' },
+        pendingBackup: 0,
+        notice: { tone: 'done', text: 'Backed up 3 changes.' },
       }),
     ),
   ],
   [
     'product, reporting a failure',
+    product({ notice: { tone: 'problem', text: 'Back-up failed. Nothing was pushed.' } }),
+  ],
+  [
+    'a confirmation, naming the blast radius',
     String(
-      renderProduct({
-        service: 'iam',
-        environments: [env('dev', 0), env('prod', 0)],
-        active: 'dev',
-        rows,
-        commit,
-        revision: 3,
-        notice: { tone: 'problem', text: 'Publishing failed. Nothing was published.' },
+      renderConfirmation({
+        title: 'Delete keys',
+        message: 'SESSION_TTL will be removed from dev and prod.',
+        action: '/p/iam/delete-keys',
+        fields: { select: ['SESSION_TTL'] },
+        back: '/p/iam?env=dev',
       }),
     ),
   ],
+  [
+    'features, one flag',
+    String(
+      renderFeatures({
+        flags: { NEW_CHECKOUT: { dev: true, prod: false } },
+        environment: 'dev',
+        environments: ['dev', 'prod'],
+      }),
+    ),
+  ],
+  [
+    'features, none declared',
+    String(renderFeatures({ flags: {}, environment: 'dev', environments: ['dev'] })),
+  ],
+  ['a new product, nothing typed yet', String(renderNewProduct({ environments: ['dev', 'prod'] }))],
   [
     'settings',
     String(
       renderSettings({ env: { CONFIG_GIT_REMOTE: 'git@github.com:a/b.git' }, fragment: true }),
-    ),
-  ],
-  ['drafts, empty', String(renderDrafts({ drafts: [] }))],
-  [
-    'drafts, some',
-    String(
-      renderDrafts({
-        drafts: [
-          {
-            namespace: 'iam/dev',
-            saves: [{ keys: ['A'], actor: 'me@anudeep.pro', at: Date.now() - 3_600_000 }],
-          },
-        ],
-      }),
     ),
   ],
   [

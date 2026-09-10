@@ -32,11 +32,13 @@ interface CacheFile {
   environment: string;
   commit: string;
   config: Record<string, unknown>;
+  flags?: Record<string, boolean>;
 }
 
 interface ServedConfig {
   commit: string;
   config: Record<string, unknown>;
+  flags: Record<string, boolean>;
 }
 
 const DEFAULT_TIMEOUT_MS = 2_000;
@@ -45,6 +47,7 @@ export class ConfigClient<T extends Record<string, unknown>> {
   private defaults: T = {} as T;
   private resolved: T = {} as T;
   private currentCommit: string | null = null;
+  private flags: Record<string, boolean> = {};
   private readonly handlers: Array<() => void> = [];
   private watchAbort: AbortController | null = null;
 
@@ -65,6 +68,7 @@ export class ConfigClient<T extends Record<string, unknown>> {
     const cached = await this.readCache();
     if (cached) {
       this.resolved = { ...defaults, ...cached.config };
+      this.flags = { ...cached.flags };
       this.currentCommit = cached.commit;
     }
 
@@ -81,6 +85,10 @@ export class ConfigClient<T extends Record<string, unknown>> {
   /** The commit the current values came from, or null while running on defaults alone. */
   commit(): string | null {
     return this.currentCommit;
+  }
+
+  flag(name: string, fallback = false): boolean {
+    return this.flags[name] ?? fallback;
   }
 
   /** Registered handlers run when a refresh brings a *different* commit. */
@@ -162,6 +170,7 @@ export class ConfigClient<T extends Record<string, unknown>> {
    */
   private async apply(served: ServedConfig): Promise<void> {
     this.resolved = { ...this.defaults, ...served.config };
+    this.flags = { ...served.flags };
     const changed = served.commit !== this.currentCommit;
     this.currentCommit = served.commit;
     await this.writeCache(served).catch((error: Error) => this.options.onError?.(error));
@@ -201,7 +210,11 @@ export class ConfigClient<T extends Record<string, unknown>> {
             if (response.statusCode !== 200) return resolve(null);
             try {
               const parsed = JSON.parse(body) as ServedConfig;
-              resolve({ commit: parsed.commit, config: parsed.config ?? {} });
+              resolve({
+                commit: parsed.commit,
+                config: parsed.config ?? {},
+                flags: parsed.flags ?? {},
+              });
             } catch (error) {
               reject(error as Error);
             }
@@ -242,7 +255,7 @@ export class ConfigClient<T extends Record<string, unknown>> {
       return null;
     }
 
-    return { commit: parsed.commit, config: parsed.config };
+    return { commit: parsed.commit, config: parsed.config, flags: parsed.flags ?? {} };
   }
 
   private async writeCache(served: ServedConfig): Promise<void> {
@@ -254,6 +267,7 @@ export class ConfigClient<T extends Record<string, unknown>> {
       environment: this.options.environment,
       commit: served.commit,
       config: served.config,
+      flags: served.flags,
     };
     // 0600: these values were decrypted by the server, so on this side they are plaintext and
     // must not be readable by other uids on the host.

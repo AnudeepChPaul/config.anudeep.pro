@@ -1,5 +1,6 @@
 import { readFile as readFileFromDisk } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { discardLegacyWork } from '@config/src/boot/discard-legacy-work.js';
 import pino from 'pino';
 import { buildReadApi, buildWebApp, buildWebhookApp } from './app.js';
 import { BreakGlass } from './auth/break-glass.js';
@@ -8,18 +9,26 @@ import { SessionCodec } from './auth/session.js';
 import { breakGlassReader } from './boot/break-glass-source.js';
 import { RepositoryState } from './boot/repository-state.js';
 import { loadConfig, type ServiceConfig } from './config.js';
+import { FlagSet, FlagValidator } from './flags/flag-document.js';
+import { FlagWriteService } from './flags/flag-write-service.js';
 import { prepareDeployKey } from './git/deploy-key.js';
 import { GitRepository } from './git/repository.js';
 import { GitSyncer } from './git/syncer.js';
 import { AccessGuard } from './identity/access-guard.js';
 import { PeerCredentialResolver, platformPeerCredentialReader } from './identity/peercred.js';
+import { SchemaDryRun } from './schema/schema-dry-run.js';
+import { SchemaWriteService } from './schema/schema-write-service.js';
 import { ConfigCache } from './store/cache.js';
-import { DraftStore } from './store/draft-store.js';
+import { DBEngine } from './store/data-layer.js';
+import { DBRepositoryView } from './store/db-repository-view.js';
 import { EnvironmentOrder } from './store/environment-order.js';
 import { ConfigLoader } from './store/loader.js';
 import { SnapshotStore } from './store/snapshot.js';
 import { SopsDecryptor } from './store/sops.js';
 import { SopsEncryptor } from './store/sops-encryptor.js';
+import { gitSyncPort, SyncEngine } from './store/sync-engine.js';
+import { SyncScheduler } from './store/sync-scheduler.js';
+import { WriteJournal } from './store/write-journal.js';
 import { ConfigWriteService } from './store/write-service.js';
 
 /**
@@ -58,22 +67,80 @@ async function main(): Promise<void> {
   const decryptor = new SopsDecryptor(config.ageKey);
   const loader = new ConfigLoader(decryptor);
   const cache = new ConfigCache();
+  const journal = new WriteJournal(`${config.dbPath}/.journal`);
+  await journal.recover();
+  let scheduler: SyncScheduler | undefined;
+  const db = new DBEngine(config.dbPath, {
+    onWrite: async (event) => {
+      await journal.append({
+        actor: event.actor ?? 'unknown',
+        path: event.path,
+        keys: event.keys,
+        revision: event.revision,
+        timestamp: new Date().toISOString(),
+      });
+      scheduler?.notifyWrite();
+    },
+  });
+  await db.bootstrapFrom(config.repoDir);
+  const syncEngine = new SyncEngine(
+    config.dbPath,
+    config.repoDir,
+    journal,
+    gitSyncPort(repository),
+    (commit) => cache.markSynced(commit),
+    async () => (await db.snapshot()).files,
+  );
+  scheduler = new SyncScheduler(syncEngine, config.syncIntervalMs, 1_000, (error) => {
+    log.error({ err: error }, 'database synchronization failed');
+  });
+  scheduler.start();
+  const readEnvironmentOrder = async () =>
+    EnvironmentOrder.fromYaml((await db.read('environments.yaml')) ?? '');
+  let flagEnvironments = (await readEnvironmentOrder()).all();
+  const flagValidator = new FlagValidator({
+    has: (environment) => flagEnvironments.includes(environment),
+  });
+  const flagWriteService = new FlagWriteService(db, flagValidator, () => scheduler?.notifyWrite());
+  const flagsByEnvironment = async (): Promise<
+    ReadonlyMap<string, Readonly<Record<string, boolean>>>
+  > => {
+    flagEnvironments = (await readEnvironmentOrder()).all();
+    const source = await db.read('flags.yaml');
+    if (!source) return new Map();
+    const result = flagValidator.validateFile(source);
+    if (!result.ok) {
+      log.warn({ errors: result.error }, 'invalid flags.yaml; serving flags as disabled');
+      return new Map();
+    }
+    const set = new FlagSet(result.value);
+    return new Map(
+      flagEnvironments.map((environment) => [environment, set.resolveFor(environment)]),
+    );
+  };
   const snapshots = new SnapshotStore(config.snapshotPath);
-  // Unpublished edits. Beside the snapshot rather than in the repo: a draft is not a commit.
-  const drafts = new DraftStore(config.draftsPath);
+  if (await discardLegacyWork(config.draftsPath))
+    log.warn('discarded legacy pending work at cutover; it cannot be recovered');
+  const dbSources = async () => {
+    return new DBRepositoryView(db).readSources();
+  };
 
   // The repo first; the snapshot only if it cannot be read. A snapshot that loaded over good
   // data would serve yesterday's config after a successful start.
   try {
-    const sources = await repository.readSources();
-    cache.reload(await loader.resolve(sources));
+    const sources = await dbSources();
+    cache.reload(await loader.resolve(sources), { flagsByEnvironment: await flagsByEnvironment() });
+    cache.markSynced(await repository.headCommit());
     await snapshots.save(sources);
     log.info({ commit: cache.commit() }, 'loaded configuration from the repository');
   } catch (error) {
     log.error({ err: error }, 'could not read the repository; falling back to the last snapshot');
     const snapshot = await snapshots.load();
     if (snapshot) {
-      cache.reload(await loader.resolve(snapshot));
+      cache.reload(await loader.resolve(snapshot), {
+        flagsByEnvironment: await flagsByEnvironment(),
+      });
+      cache.markSynced(await repository.headCommit().catch(() => ''));
       log.warn({ commit: cache.commit() }, 'serving the last known good configuration');
     } else {
       log.warn('no configuration available; services will use their compiled-in defaults');
@@ -89,16 +156,44 @@ async function main(): Promise<void> {
     // An absolute break-glass path is read from the volume rather than the tree, so the
     // credential cannot be committed and therefore cannot be pushed. Everything else, and a
     // relative path, still comes from the served commit.
-    readFile: breakGlassReader({
-      fromRepository: (path) => repository.readFile(path),
-      fromFilesystem: (path) => readFileFromDisk(path, 'utf8'),
-    }),
-    loadSchemas: () => repository.readSchemas(),
+    readFile: async (path) => {
+      if (path === config.breakGlassPath) {
+        return breakGlassReader({
+          fromRepository: (candidate) => repository.readFile(candidate),
+          fromFilesystem: (candidate) => readFileFromDisk(candidate, 'utf8'),
+        })(path);
+      }
+      const source = await db.read(path);
+      if (source === null) {
+        const missing = new Error(`${path} is absent`) as NodeJS.ErrnoException;
+        missing.code = 'ENOENT';
+        throw missing;
+      }
+      return source;
+    },
+    loadSchemas: async () => {
+      const files: Record<string, string> = {};
+      for (const [path, source] of await db.readAll('schema')) {
+        if (path.startsWith('schema/') && path.endsWith('.yaml')) {
+          files[path.slice('schema/'.length, -'.yaml'.length)] = source;
+        }
+      }
+      return files;
+    },
+    loadSchemaDocument: async () => {
+      const source = await db.read('schema.yaml');
+      if (source !== null) return source;
+      const missing = new Error('schema.yaml is absent') as NodeJS.ErrnoException;
+      missing.code = 'ENOENT';
+      throw missing;
+    },
     decrypt: (path, source) => decryptor.decrypt(path, source),
     breakGlassPath: config.breakGlassPath,
     onCache: async () => {
-      const sources = await repository.readSources();
-      cache.reload(await loader.resolve(sources));
+      const sources = await dbSources();
+      cache.reload(await loader.resolve(sources), {
+        flagsByEnvironment: await flagsByEnvironment(),
+      });
       await snapshots.save(sources);
     },
     onError: (what, error) =>
@@ -136,7 +231,7 @@ async function main(): Promise<void> {
   log.info({ socket: config.socketPath }, 'read API listening');
 
   const web = await buildWebApp({
-    repository,
+    db,
     // This console writes to the repository it reads from, so it has to look again afterwards.
     // Values come from git per request and appeared immediately; the grant table and the schemas
     // live in RepositoryState and refreshed only on a webhook or the poll — so a published
@@ -146,30 +241,20 @@ async function main(): Promise<void> {
     },
     // The console lists what the registry declares, so both halves of the service — the read API
     // and the editor — agree on what exists.
-    services: () => state.registry().services(),
-    repoWebUrl: config.repoWebUrl,
     // Off unless the deployment says otherwise, and then only for a break-glass session or a
     // named address: this page is a map of how the service is configured.
     settings: { enabled: config.enableSettings, allow: config.settingsAllow },
     loader,
-    schemas: () => state.schemas(),
-    drafts,
     // Read per request, so declaring an order takes effect without a restart. Absent means
     // promotion is not offered at all rather than inferred from environment names.
-    environmentOrder: async () => {
-      try {
-        return EnvironmentOrder.fromYaml(await repository.readFile('environments.yaml'));
-      } catch {
-        return EnvironmentOrder.none();
-      }
-    },
-    writeService: new ConfigWriteService({
-      repository,
+    operations: new ConfigWriteService({
+      db,
       loader,
-      encryptor: new SopsEncryptor(config.repoDir),
-      schemas: () => state.schemas(),
-      drafts,
+      encryptor: new SopsEncryptor(config.dbPath),
     }),
+    schemaWriteService: new SchemaWriteService(db, new SchemaDryRun(loader)),
+    flagWriteService,
+    syncScheduler: scheduler,
     environment: config.environment,
     auth: config.sessionSecret
       ? {
@@ -247,6 +332,7 @@ async function main(): Promise<void> {
   }, config.iamCheckIntervalMs);
 
   const shutdown = async () => {
+    scheduler?.stop();
     clearInterval(retry);
     clearInterval(reload);
     clearInterval(iamCheck);

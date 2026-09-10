@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 describe('the retiring link', () => {
   const link = (retiring: number) => {
-    const html = String(renderProducts({ products: [], commit: 'a'.repeat(40), retiring }));
+    const html = String(renderProducts({ products: [], pendingBackup: 0, retiring }));
     return html.match(/<a[^>]*p\/retiring[^>]*>[^<]*<\/a>/)?.[0] ?? '';
   };
 

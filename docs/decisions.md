@@ -1,5 +1,20 @@
 # Decisions
 
+## Product-write migration: recoverable transactions precede direct flows
+
+The approved product-write strategy selects one final cutover, with tests at internal slice
+boundaries. Slice 1 adds a redo journal and ordered file replacement because separate atomic
+renames cannot themselves make a multi-file operation atomic. Supported readers use the
+publication lock or consistent snapshots; restart completes a durable intent before serving.
+
+Payload staging can proceed independently for different products. Publication shares a short
+lock because all writes advance one database revision; this also fixes lost revision increments
+from simultaneous writes. Intents live under the private journal, separate from attribution,
+and are excluded from sync. Product creation makes the registry visible last.
+
+Draft removal and the reversal of tick/publish semantics are approved but have not landed in
+this foundation slice. Their historical decisions below still describe the remaining legacy UI.
+
 What was chosen, what else was considered, and what it cost. Recorded because the reasoning is
 the part that does not survive in the code.
 
@@ -97,3 +112,18 @@ mounted a *directory* where the key belonged and every push failed with "Permiss
 **Why:** requiring a field before writing it leaves one deploy that cannot read its own registry.
 **Consequence:** accept, migrate, require — used for `version` on `services.yaml` and the schemas.
 Requiring it broke 267 tests at once, which is the honest blast radius of a required field.
+
+## Git is a backup medium, not the database
+
+The authoritative registry state is stored under `db/`. Git remains a synchronized backup and
+audit medium. Database revisions wake consumers immediately; synchronization is manual, idle
+triggered, and periodic. This reverses the earlier decision that Git itself was the registry.
+
+## Feature flags are global booleans
+
+`flags.yaml` contains globally unique flag names with boolean values per declared environment.
+There is no targeting, rollout, context, or draft path. An absent environment value resolves to
+false, which is the safe failure direction.
+# Direct-write safety checkpoint — 2026-09-10
+
+Direct writers capture their base before expensive encryption and use explicit expected ETags, including null for absent files. Semantic no-op saves preserve ciphertext to avoid spurious versions from randomized encryption. This checkpoint does not reverse the remaining legacy console behavior; draft-removal decision reversals must be finalized with that cutover.

@@ -21,6 +21,8 @@ export interface RepositoryStateOptions {
   readonly readFile: (path: string) => Promise<string>;
   /** Loads and parses every schema. Called on each reload. */
   readonly loadSchemas: () => Promise<Record<string, string>>;
+  /** Optional global schema source; preferred over legacy per-service files. */
+  readonly loadSchemaDocument?: () => Promise<string>;
   /** Decrypts the break-glass record. Absent leaves the record unreadable, which locks it. */
   readonly decrypt?: (path: string, source: string) => Promise<string>;
   readonly breakGlassPath?: string;
@@ -87,7 +89,16 @@ export class RepositoryState {
 
   private async reloadSchemas(): Promise<void> {
     try {
-      this.currentSchemas = SchemaSet.fromFiles(await this.options.loadSchemas());
+      if (this.options.loadSchemaDocument) {
+        try {
+          this.currentSchemas = SchemaSet.fromDocument(await this.options.loadSchemaDocument());
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          this.currentSchemas = SchemaSet.fromFiles(await this.options.loadSchemas());
+        }
+      } else {
+        this.currentSchemas = SchemaSet.fromFiles(await this.options.loadSchemas());
+      }
     } catch (error) {
       this.options.onError?.('schemas', error as Error);
     }

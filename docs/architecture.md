@@ -1,15 +1,17 @@
 # Architecture
 
-`config.anudeep.pro` is a configuration registry backed by a git repository. Configuration is
-edited through a console, published as commits, and served to processes on the same host over a
-Unix socket.
+`config.anudeep.pro` is a configuration registry backed by an on-host file database. Configuration
+is edited through a console, served to processes on the same host over a Unix socket, and
+synchronized to Git as an auditable backup.
 
-## Why a git repository
+## Why a file database with a Git mirror
 
-Every value that reaches a service is a commit: reviewable, attributable, and revertible without
-a database. Publishing is therefore not a write to a store — it is a commit, and rolling back is
-`git revert`. This decision shapes everything else here, including the fact that a draft is *not*
-in git and is therefore not durable.
+The database is the immediate source of truth: each validated write is atomic, receives a
+monotonic revision, and wakes the in-memory cache without waiting for network access. Git is the
+durable off-host mirror and audit medium. `SyncEngine` copies database files into the Git working
+tree, commits attribution from `WriteJournal`, and retries pushes after an outage. A Git rollback
+is imported through the normal synchronization/bootstrap path rather than being read directly by
+the serving path.
 
 ## Components
 
@@ -22,19 +24,24 @@ flowchart TD
             Webhook["Webhook (HTTP 8201)<br/>routes/webhook.ts"]
             State["RepositoryState<br/>registry, schemas, break-glass"]
             Cache["ConfigCache<br/>resolved values"]
-            Write["ConfigWriteService<br/>stage, publish, archive"]
+            DB["DBEngine<br/>atomic files, revisions, ETags"]
+            Flags["FlagValidator / FlagWriteService"]
+            Sync["SyncEngine / SyncScheduler"]
         end
         Consumer["A consuming service<br/>ConfigClient"]
     end
-    Repo[("git clone<br/>/var/lib/config/repo")]
+    Repo[("Git working tree<br/>/var/lib/config/repo")]
+    DBFiles[("database files<br/>/var/lib/config/db")]
     GitHub[("GitHub<br/>origin/main")]
 
-    Console --> Write --> Repo
-    Repo --> State --> Cache
+    Console --> DB
+    DB --> Flags
+    DB --> State --> Cache
     Cache --> ReadAPI --> Consumer
-    Repo <-->|"pull, push"| GitHub
-    GitHub -->|"push event"| Webhook --> State
-    Console --> State
+    DB --> Sync --> Repo
+    Repo <-->|"push / pull"| GitHub
+    GitHub -->|"push event"| Webhook --> Sync
+    DB --> DBFiles
 ```
 
 ## Responsibilities
@@ -82,3 +89,34 @@ before the cache is consulted so an ungranted caller cannot learn that a namespa
 - **The registry declares the topology.** `services.yaml` decides which products exist and which
   uid may read what; `environments.yaml` decides which environments exist. Nothing is inferred
   from which files happen to be present.
+
+## File-based data engine
+
+### Product-write migration: transaction foundation (slice 1)
+
+`DBEngine.writeMany()` is the common mutation boundary for single-file writes, deletes, and
+batches. `TransactionJournal` owns private redo intents and staged file contents under
+`db/.journal/transactions/<uuid>/`. `FileWriter` flushes file contents and directory entries before
+acknowledging replacement. The existing attribution `WriteJournal` remains a separate concern;
+transaction payloads never enter Git or the served configuration.
+
+Per-path locks cover validation, comparison, and staging. A publication lock protects ordered
+replacement, the revision, attribution callbacks, and intent completion. Unrelated products can
+stage concurrently; publication and consistent snapshot reads briefly share that lock. This is
+an in-process, single-owner database, not coordination between multiple writer processes.
+
+The production sync engine consumes `DBEngine.snapshot()` so a backup cannot mix files from
+the middle of a transaction. The repository view also reads file contents and revision together.
+Product flow migration and removal of drafts remain subsequent slices.
+
+The database engine stores authoritative files under `CONFIG_DB_PATH` and exposes atomic reads,
+writes, deletes, revisions, and SHA-256 entity tags. `FileWriter` performs temp-file replacement;
+`DBEngine` performs path-scoped serialization and compare-and-swap checks. Git remains a mirror,
+updated by `SyncEngine` on demand, after idle writes, and on the configured interval.
+
+`flags.yaml` is plaintext and validated by `FlagValidator`; configuration files remain encrypted
+by SOPS. `ConfigCache` serves decrypted configuration and resolved per-environment flags from
+memory, so the Unix socket read path does not depend on Git or disk availability.
+# Direct-write safety checkpoint — 2026-09-10
+
+Direct value writes now compare the ciphertext read before decryption with the file at commit. Product creation uses a coherent DB snapshot and checks every participating ETag; retirement checks the schema ETag. These safeguards do not yet complete the console cutover.

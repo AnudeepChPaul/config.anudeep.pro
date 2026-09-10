@@ -81,3 +81,41 @@ environment come back with their ciphertext intact, because archiving never decr
 The age key is the one thing git cannot give back. It exists only where you keep it, and losing
 it makes every encrypted value unreadable — that happened once in this project's history and cost
 a re-key of the whole registry.
+
+## File-based data engine
+
+### Transaction recovery
+
+The product-write transaction foundation adds private recovery state at
+`<CONFIG_DB_PATH>/.journal/transactions/<uuid>/`. `intent.json` names the target hashes, ordered
+paths and revision; numbered `.stage` files contain the already-encrypted target documents.
+Boot recovery runs before the sync scheduler or listeners start. Stages without a committed
+intent are discarded; committed intents are replayed to completion.
+
+If a write reports `database recovery required`, restart the process with the same database
+volume. Do not manually delete the intent or retry writes against a partial database. Missing
+or corrupt staged payloads stop recovery; preserve the volume and inspect the named transaction
+before restoring from a known-good backup. Recovery rolls forward and offers no value undo.
+
+Before rolling back the application version, stop writes and let the current version finish
+recovery; confirm the transactions directory is empty and take a backup. Older versions cannot
+recover these intents. The live file formats do not change. No deploy or deletion of pending
+drafts is performed by this foundation slice.
+
+The Features page renders environment tabs in the order declared by `environments.yaml`
+(`order: [dev, staging, prod]`, for example). The first declared environment is selected by
+default; `/features?env=staging` opens a specific one. Inline additions and switches apply to
+the selected environment. Unknown environments are refused, and no Add action is offered when
+the file declares no environments. Flag validation and cache resolution use this same file.
+
+`CONFIG_DB_PATH` defaults to `/var/lib/config/db`. On first boot it is populated from the local
+repository, excluding `.git`. `CONFIG_SYNC_INTERVAL_MS` controls automatic synchronization and
+defaults to 600000 milliseconds. Manual synchronization is available through the authenticated
+console's sync operation.
+
+If synchronization fails, the database remains authoritative and served locally. Inspect the
+journal under `<CONFIG_DB_PATH>/.journal`; restart recovery merges an orphaned sending journal
+back into pending work. Do not delete journal files during an incident.
+# Direct-write safety checkpoint — 2026-09-10
+
+Implementation checkpoint (not a deployment-ready cutover): value saves and product creation now refuse stale bases, including changes made while encryption runs. On conflict, reload and explicitly review/reapply the edit; do not retry an unconditional overwrite. No existing data or pending work was deleted at this checkpoint. Preserve db/ and take a current backup before rolling back code.

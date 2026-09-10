@@ -151,7 +151,7 @@ linuxOnly('read API over a Unix socket', () => {
       const { status, body } = await get(socketPath, '/config/iam/prod');
 
       expect(status).toBe(200);
-      expect(JSON.parse(body)).toEqual({
+      expect(JSON.parse(body)).toMatchObject({
         service: 'iam',
         environment: 'prod',
         commit: SHA,
@@ -160,6 +160,11 @@ linuxOnly('read API over a Unix socket', () => {
         retiring: false,
         config: { MFA_ENFORCEMENT: 'all' },
       });
+      // `flags` and `syncedCommit` joined the response with the data engine. Asserted as a
+      // superset rather than an exact shape, because a consumer that breaks on an added field
+      // is a consumer this API cannot ever extend -- and `flags` is asserted on its own where
+      // flag resolution is the subject.
+      expect(JSON.parse(body)).toHaveProperty('flags');
     });
 
     it('reports the commit it is serving, so a client can tell whether anything moved', async () => {

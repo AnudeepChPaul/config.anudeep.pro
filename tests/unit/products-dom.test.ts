@@ -8,25 +8,22 @@ import { beforeEach, describe, expect, it } from 'vitest';
  * A string assertion sees `<form method="get">` in the markup and passes. A parser sees that the
  * tag was inside another form and dropped it — which is how a Search button came to submit a
  * publish. Anything about which control belongs to which form has to be asserted here.
+ *
+ * Publishing is gone with the direct-write cutover, but the hazard is not: the header still
+ * carries a POST form beside the search box — Back up — so the same nesting mistake would now
+ * make Search commit and push instead.
  */
 const product = (over: Partial<ProductSummary> = {}): ProductSummary => ({
-  name: 'iam (1002)',
-  service: 'iam',
-  keys: 'MFA_ENFORCEMENT, SESSION_TTL',
-  environments: [
-    {
-      name: 'dev',
-      namespace: 'iam/dev',
-      drafts: 1,
-      pending: [{ key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false }],
-    },
-  ],
+  name: 'iam',
+  keys: ['MFA_ENFORCEMENT', 'SESSION_TTL'],
+  environments: ['dev'],
+  retiring: false,
   ...over,
 });
 
 const load = (over: Parameters<typeof renderProducts>[0] | null = null) => {
   document.body.innerHTML = String(
-    renderProducts(over ?? { products: [product()], commit: 'a'.repeat(40) }),
+    renderProducts(over ?? { products: [product()], pendingBackup: 0 }),
   );
 };
 
@@ -51,33 +48,38 @@ describe('the search box lives in the page header', () => {
 });
 
 describe('the search box is its own form', () => {
-  it('does not submit a publish', () => {
+  it('does not submit a write', () => {
     // The defect: nested inside the publish form, the parser dropped the search form and every
-    // Search click POSTed /publish — committing and pushing whatever was ticked.
+    // Search click POSTed /publish — committing and pushing whatever was ticked. The form it
+    // sits beside is /sync now, and the consequence of the same mistake is the same.
     expect(formOf('input[name="q"]')?.getAttribute('action')).toBe('/');
     expect(formOf('input[name="q"]')?.getAttribute('method')).toBe('get');
   });
 
-  it('is a different form from the publish one', () => {
+  it('is a different form from the back-up one', () => {
     const search = formOf('input[name="q"]');
-    const publish = formOf('input[name="namespace"]');
+    const backup = [...document.querySelectorAll('form')].find(
+      (form) => form.getAttribute('action') === '/sync',
+    );
 
     expect(search).not.toBeNull();
-    expect(publish).not.toBeNull();
-    expect(search).not.toBe(publish);
-    expect(publish?.getAttribute('action')).toBe('/publish');
+    expect(backup).not.toBeUndefined();
+    expect(search).not.toBe(backup);
+    expect(backup?.getAttribute('method')).toBe('post');
   });
 
-  it('carries the search button, not the publish button', () => {
+  it('carries the search button, not the back-up button', () => {
     const buttons = [...document.querySelectorAll('button')];
     const searchButton = buttons.find((button) => button.textContent?.includes('Search'));
 
     expect(searchButton?.form?.getAttribute('action')).toBe('/');
   });
 
-  it('keeps the product checkboxes with the publish form', () => {
-    // They are what a publish acts on; in the wrong form they are simply not submitted.
-    expect(formOf('input[name="namespace"]')?.getAttribute('action')).toBe('/publish');
+  it('keeps the back-up button with the back-up form', () => {
+    const buttons = [...document.querySelectorAll('button')];
+    const backupButton = buttons.find((button) => button.textContent?.includes('Back up'));
+
+    expect(backupButton?.form?.getAttribute('action')).toBe('/sync');
   });
 });
 
@@ -86,7 +88,7 @@ describe('the search row is one row of controls', () => {
   // different colours, different treatments, sitting side by side. They are both actions on the
   // same row, so they are the same kind of thing and have to look like it.
   it('gives Search and Clear the same treatment', () => {
-    load({ products: [product()], commit: 'a'.repeat(40), query: 'MFA' });
+    load({ products: [product()], pendingBackup: 0, query: 'MFA' });
     const row = document.querySelector('.search') as HTMLElement;
     const controls = [...row.querySelectorAll('button, a')];
 
@@ -109,16 +111,8 @@ describe('the search row is one row of controls', () => {
 describe('a search result links where it says', () => {
   it('names an environment the service declares, not always dev', () => {
     load({
-      products: [
-        product({
-          matched: ['SESSION_TTL'],
-          environments: [
-            { name: 'stage', namespace: 'iam/stage', drafts: 0, pending: [] },
-            { name: 'prod', namespace: 'iam/prod', drafts: 0, pending: [] },
-          ],
-        }),
-      ],
-      commit: 'a'.repeat(40),
+      products: [product({ environments: ['stage', 'prod'] })],
+      pendingBackup: 0,
       query: 'SESSION',
     });
 

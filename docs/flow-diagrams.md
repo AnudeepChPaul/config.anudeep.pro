@@ -1,5 +1,28 @@
 # Flows
 
+## Recoverable database transaction (product-write slice 1)
+
+```mermaid
+flowchart TD
+    Request[Ordered file mutations] --> Locks[Acquire participating path locks]
+    Locks --> Validate{All validators and ETags pass?}
+    Validate -->|No| Refuse[Return errors or conflict; no file changes]
+    Validate -->|Yes| Stages[Durably stage all changed payloads]
+    Stages --> Publish[Acquire publication lock]
+    Publish --> Intent[Persist intent and target revision]
+    Intent --> Replace[Install or remove in caller order]
+    Replace --> Revision[Persist one revision]
+    Revision --> Audit[Emit attribution and complete intent]
+    Audit --> Return[Release locks and return success]
+    Stages -->|Interrupted before intent| Orphans[Boot removes private orphan stages]
+    Replace -->|Interrupted after intent| Recover[Boot verifies payload hashes and replays intent]
+    Recover --> Revision
+    Recover -->|Missing or corrupt payload| Halt[Refuse startup; preserve recovery evidence]
+```
+
+Database snapshot reads wait for publication and return one complete revision. Sync copies that
+snapshot before committing or pushing, so network time does not hold the database lock.
+
 Success, failure, retry, fallback and rollback for every path that writes or serves.
 
 ## Serving a value
@@ -100,3 +123,22 @@ flowchart TD
 | An archive | `git revert` the archive commit: the entry, the schema and every environment come back, ciphertext intact |
 | A draft | Drop it; nothing reached git |
 | The service itself | Deploy the previous image; the repository is the state, and it is unchanged by a rollback |
+
+## Database write and synchronization
+
+```mermaid
+flowchart TD
+    Post[Console write] --> Validate[Validate and encrypt]
+    Validate --> DB[Write db atomically]
+    DB --> Rev[Increment revision]
+    Rev --> Wake[Wake cache watchers]
+    DB --> Journal[Append journal entry]
+    Journal --> Timer[Manual, idle, or interval sync]
+    Timer --> Mirror[Mirror db to config.bare]
+    Mirror --> Commit[Commit changed files]
+    Commit --> Push[Push remote]
+    Push --> Retry[Retry when unavailable]
+```
+# Direct-write safety checkpoint — 2026-09-10
+
+Direct-save flow refinement: read ciphertext and ETag → decrypt → validate → compare semantic values → encrypt changed values with incremented version → verify each secret field → compare-and-swap. A concurrent write returns conflict without installing the candidate. A no-op verifies its base without re-encryption.

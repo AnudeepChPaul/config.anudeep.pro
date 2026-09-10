@@ -20,29 +20,12 @@ import { describe, expect, it } from 'vitest';
 const definition = (over: Record<string, unknown> = {}) =>
   ({ type: 'bool', secret: false, ...over }) as unknown as KeyRow['definition'];
 
-const productsPage = (pending: number) =>
+const productsPage = (pendingBackup: number) =>
   String(
     renderProducts({
-      commit: 'a'.repeat(40),
+      pendingBackup,
       products: [
-        {
-          name: 'iam (1002)',
-          service: 'iam',
-          keys: '4 keys',
-          environments: [
-            {
-              name: 'dev',
-              namespace: 'iam/dev',
-              drafts: pending,
-              pending: Array.from({ length: pending }, (_, i) => ({
-                key: `K${i}`,
-                from: 'a',
-                to: 'b',
-                secret: false,
-              })),
-            },
-          ],
-        },
+        { name: 'iam', environments: ['dev'], retiring: false, keys: ['A', 'B', 'C', 'D'] },
       ],
     }),
   );
@@ -51,10 +34,14 @@ const productPage = (rows: KeyRow[]) =>
   String(
     renderProduct({
       service: 'iam',
-      environments: [{ name: 'dev', namespace: 'iam/dev', pending: [] }],
-      active: 'dev',
+      environment: 'dev',
+      environments: ['dev'],
+      etag: 'e',
       rows,
-      commit: 'a'.repeat(40),
+      version: 1,
+      next: null,
+      retiring: false,
+      missing: false,
     }),
   );
 
@@ -65,20 +52,20 @@ describe('the hover panel is not clipped by its container', () => {
   const listOverflow = (page: string) => page.match(/\.rows\s*\{[^}]*\}/)?.[0] ?? '';
 
   it('does not hide overflow on the row list', () => {
-    const page = String(renderProducts({ products: [], commit: 'a'.repeat(40) }));
+    const page = String(renderProducts({ products: [], pendingBackup: 0 }));
 
     expect(listOverflow(page)).not.toMatch(/overflow:\s*hidden/);
   });
 
   it('still rounds the card, on the first and last rows instead', () => {
-    const page = String(renderProducts({ products: [], commit: 'a'.repeat(40) }));
+    const page = String(renderProducts({ products: [], pendingBackup: 0 }));
 
     expect(page).toContain('.rows > *:first-child');
     expect(page).toContain('.rows > *:last-child');
   });
 
   it('gives the panel a stacking order so a later row does not cover it', () => {
-    const page = String(renderProducts({ products: [], commit: 'a'.repeat(40) }));
+    const page = String(renderProducts({ products: [], pendingBackup: 0 }));
 
     expect(page).toMatch(/\.detail\s*\{[^}]*z-index/);
   });
@@ -94,8 +81,6 @@ describe('the switch reflects the checkbox', () => {
         key: 'KILL_PASSWORD_LOGIN',
         definition: definition(),
         value: false,
-        publishedValue: false,
-        pending: false,
       },
     ]);
 
@@ -133,8 +118,6 @@ describe('the switch reflects the checkbox', () => {
         key: 'KILL_PASSWORD_LOGIN',
         definition: definition(),
         value: true,
-        publishedValue: true,
-        pending: false,
       },
     ]);
 
@@ -228,19 +211,19 @@ describe('a write in flight says so', () => {
   });
 
   it('gives every write action a resting and a running label', () => {
+    // The product page carries three write actions in one form -- Save, Promote and Delete
+    // keys -- so it is the page where a missing label would show.
     const busy = String(
       renderProduct({
         service: 'iam',
-        environments: [
-          {
-            name: 'dev',
-            namespace: 'iam/dev',
-            pending: [{ key: 'A', from: '1', to: '2', secret: false }],
-          },
-        ],
-        active: 'dev',
+        environment: 'dev',
+        environments: ['dev', 'prod'],
+        etag: 'e',
         rows: [],
-        commit: 'a'.repeat(40),
+        version: 1,
+        next: 'prod',
+        retiring: false,
+        missing: false,
       }),
     );
 
@@ -251,50 +234,13 @@ describe('a write in flight says so', () => {
   });
 });
 
-describe('every publish action reads the same way', () => {
-  // One idiom across the console: a link-styled question in the environment's own colour, and
-  // absent rather than greyed when there is nothing behind it.
-  it('renders the products publish as a link, phrased as a question', () => {
-    // The search button comes first on the page now, so this names the publish one rather than
-    // taking whichever button happens to be first.
-    const button =
-      productsPage(2)
-        .match(/<button[\s\S]*?<\/button>/g)
-        ?.find((markup) => markup.includes('Publish')) ?? '';
-
-    expect(button).toContain('linkbtn');
-    expect(button).toContain('go');
-    expect(button).toMatch(/\?/);
-  });
-
-  it('offers no products publish at all when nothing is waiting', () => {
-    // The search button remains: it changes nothing, so it is not a publish action.
-    expect(productsPage(0)).not.toContain('value="publish"');
-    expect(productsPage(0)).not.toContain('Publish selected');
-  });
-
-  it('renders the whole-product publish as a link, and not at all when idle', () => {
-    const busy = String(
-      renderProduct({
-        service: 'iam',
-        environments: [
-          {
-            name: 'dev',
-            namespace: 'iam/dev',
-            drafts: 1,
-            pending: [{ key: 'A', from: '1', to: '2', secret: false }],
-          },
-        ],
-        active: 'dev',
-        rows: [],
-        commit: 'a'.repeat(40),
-      }),
-    );
-
-    expect(busy).toMatch(/<button[^>]*class="linkbtn go"[\s\S]*?Publish all 1 draft in iam\?/);
-    expect(productPage([])).not.toContain('Publish all');
-  });
-});
+/*
+ * The publish idiom that lived here is gone: the direct-write cutover removed publishing, so
+ * there is no link-styled question to assert the shape of. The rule it protected — a write
+ * action is link-styled, phrased as a question, and absent rather than greyed when there is
+ * nothing behind it — now applies to Delete keys and Archive, and is asserted where those are
+ * rendered. AC9 forbids any wording implying a saved change is not yet in effect.
+ */
 
 describe('a hidden element is actually hidden', () => {
   // `hidden` is a UA style of `display: none`, and ANY author rule setting display beats it —
@@ -381,8 +327,6 @@ describe('nothing styles itself inline', () => {
         key: 'MFA_ENFORCEMENT',
         definition: definition({ type: 'string' }),
         value: 'all',
-        publishedValue: 'optional',
-        pending: true,
       },
     ]),
   ];

@@ -108,6 +108,11 @@ export function registerInternalRoutes(app: FastifyInstance, options: InternalRo
       const since = request.query?.since;
       if (since && since === cache.commit()) {
         await waitForChange(cache, since, options.waitTimeoutMs ?? DEFAULT_WAIT_MS);
+        const stillAuthorized = guard.authorize(request.raw.socket, namespace);
+        if (!stillAuthorized.ok) {
+          const { status, ...problem } = stillAuthorized.error;
+          return reply.code(status).send(problem);
+        }
         if (cache.commit() === since) {
           // Nothing moved. The caller reconnects; a held-open request that never ends would be
           // indistinguishable from a hung service.
@@ -153,6 +158,8 @@ export function registerInternalRoutes(app: FastifyInstance, options: InternalRo
         commit: cache.commit(),
         retiring: isRetiring(service),
         config,
+        flags: cache.flagsFor(environment),
+        syncedCommit: cache.syncedCommit(),
       });
     },
   );

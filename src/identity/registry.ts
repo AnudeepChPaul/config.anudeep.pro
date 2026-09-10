@@ -39,7 +39,7 @@ const FileSchema = z.object({
     .refine((value) => (KNOWN_VERSIONS as readonly number[]).includes(value), {
       message: `version must be one of ${KNOWN_VERSIONS.join(', ')}`,
     }),
-  services: z.array(ServiceSchema).min(1),
+  services: z.array(ServiceSchema),
 });
 
 export class ServiceRegistryError extends Error {}

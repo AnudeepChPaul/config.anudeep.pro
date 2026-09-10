@@ -1,4 +1,4 @@
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { err, ok, type Result } from '../identity/types.js';
 import { isMetadataKey } from '../store/metadata.js';
 import type { RawConfig } from '../store/types.js';
@@ -96,6 +96,52 @@ export class SchemaSet {
       if (parseRetiring(service, source)) retiring.add(service);
     }
     return new SchemaSet(services, versions, retiring);
+  }
+
+  /** Reads the global schema document introduced by the file-based data engine. */
+  static fromDocument(source: string): SchemaSet {
+    let parsed: unknown;
+    try {
+      parsed = parseYaml(source);
+    } catch (cause) {
+      throw new SchemaError('schema.yaml is not valid YAML', { cause });
+    }
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed) ||
+      (parsed as Record<string, unknown>).version !== 1 ||
+      typeof (parsed as Record<string, unknown>).services !== 'object' ||
+      (parsed as Record<string, unknown>).services === null
+    ) {
+      throw new SchemaError('schema.yaml must contain version: 1 and a services mapping');
+    }
+
+    const services = (parsed as { services: Record<string, unknown> }).services;
+    const files: Record<string, string> = {};
+    for (const [service, value] of Object.entries(services)) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new SchemaError(`schema.yaml service '${service}' must be a mapping`);
+      }
+      const definition = value as Record<string, unknown>;
+      files[service] = stringifyYaml({ version: 1, keys: definition.keys });
+    }
+    const result = SchemaSet.fromFiles(files);
+    const retiring = new Set(
+      Object.entries(services)
+        .filter(
+          ([, value]) =>
+            typeof value === 'object' &&
+            value !== null &&
+            (value as Record<string, unknown>).retiring === true,
+        )
+        .map(([service]) => service),
+    );
+    return new SchemaSet(
+      result.services,
+      new Map([...result.services.keys()].map((service) => [service, 1])),
+      retiring,
+    );
   }
 
   /**

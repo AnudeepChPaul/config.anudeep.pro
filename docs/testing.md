@@ -55,3 +55,29 @@ because every interesting bug in this project lived exactly there.
 - **The webhook path** is covered for signature handling, not against GitHub itself.
 - **Archiving** is covered by integration tests; the only end-to-end archive against a real remote
   was performed by the operator.
+
+## Data engine coverage
+
+The product-write foundation adds `tests/unit/atomic-writes.test.ts` for ordered publication,
+whole-request validation and ETags, expected absence, delete mutations, reader isolation,
+parallel staging, unique revisions, corrupt payload refusal, and restart recovery.
+`tests/integration/transaction-recovery.test.ts` launches a real writer process and kills it with
+SIGKILL after schema, environment, registry, and revision writes. A fresh engine must recover
+the complete tree at revision 1, retain attribution, and clean its private journal.
+These tests verify process-crash recovery; actual hardware power-loss testing is not performed.
+
+Run this slice's focused checks with:
+
+```sh
+pnpm exec vitest run tests/unit/atomic-writes.test.ts tests/unit/data-layer.test.ts tests/unit/db-topology-write-service.test.ts tests/unit/sync-engine.test.ts tests/integration/transaction-recovery.test.ts
+pnpm typecheck
+pnpm build
+```
+
+Unit tests cover atomic file writes, revisions, ETags, path-scoped conflicts, journal recovery,
+flag validation and resolution, schema composition, synchronization, scheduling, and client
+fallbacks. Integration coverage against a real Git mirror and a running database-backed server is
+still required before general availability.
+# Direct-write safety checkpoint — 2026-09-10
+
+Additional regressions in tests/unit/db-config-write-service.test.ts cover document version increments, semantic no-op encryption avoidance, mixed encrypted/plaintext secret refusal, concurrent modification during encryption, and dependency-error redaction. tests/unit/db-topology-write-service.test.ts covers atomic refusal when the global schema changes during product encryption. The version, mixed-secret, and topology-conflict tests were observed failing before their fixes. Focused verification: pnpm exec vitest run tests/unit/db-config-write-service.test.ts tests/unit/db-topology-write-service.test.ts — 11 passed; pnpm typecheck passed. Full cutover/end-to-end verification remains outstanding.

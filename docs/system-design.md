@@ -131,4 +131,54 @@ shape, which twice caught something it was not meant to.
 
 Not applicable in the usual sense. One host, one repository, a handful of products, and a read
 path that answers from memory over a Unix socket. The registry is small by design; nothing here
-is expected to scale horizontally.
+ is expected to scale horizontally.
+
+## Data engine and flags
+
+### Ordered, recoverable file transactions
+
+`writeMany(requests)` accepts ordered `{path, content, expectedEtag?, validate?, actor?, keys?}`
+mutations. `content: null` deletes a file; `expectedEtag: null` requires that it does not exist.
+Omitting the ETag retains unconditional-write compatibility. All validators run before staging;
+all participating ETags are compared while their path locks are held. Duplicate paths, traversal,
+engine-private paths, and symlinked database paths are refused.
+
+The caller supplies the safe visibility order: schema and environments before registry on create;
+registry before environments and schema on archive; environment values before schema on key
+deletion. The current product creator now publishes its registry entry last.
+
+Each changed payload is staged at mode `0600`. Only after every stage is durable does the engine
+persist an intent with ordered paths, SHA-256 target hashes, attribution, and one target revision.
+It publishes in order, writes that revision once, emits attribution, and removes the intent.
+Unchanged files generate neither a new revision nor attribution events.
+
+Recovery verifies all remaining payloads before replay, skips replacements whose targets already
+match, and restores the recorded revision without incrementing it again. Attribution callbacks
+are at-least-once on recovery; their stable `transactionId` and path identify a replay. They must
+not recursively read the engine while its publication lock is held. A publication failure
+requires restart recovery: subsequent database reads and writes fail instead of exposing a
+partial transaction. Existing cache contents can remain available to consumers.
+
+`snapshot(prefix)` returns `{revision, files}` under the publication lock. Independent `read()`
+calls are individually consistent but do not form a multi-read transaction. Snapshot results
+exclude `.journal`, `.revision`, and `.git`. The schema and flag flows retain their existing
+contracts during this foundation slice.
+
+```mermaid
+flowchart TD
+    UI[Authenticated console] --> DB[DBEngine]
+    DB --> Files[(db files)]
+    DB --> Cache[ConfigCache]
+    Files --> Flags[FlagValidator and FlagSet]
+    Files --> Sync[SyncEngine]
+    Sync --> Git[(config.bare)]
+    Git --> Remote[Git remote]
+    Cache --> Socket[Unix socket read API]
+```
+
+The database revision is the opaque `commit` response token. `syncedCommit` is reserved for Git
+provenance. Flag values absent for an environment resolve to `false`; unknown flag lookups in the
+client also resolve to `false` unless a caller supplies a fallback.
+# Direct-write safety checkpoint — 2026-09-10
+
+A changed direct value save increments its document version once. A semantic no-op keeps the existing ciphertext and revision, with a compare-and-swap check. Each schema-secret field must independently contain an encrypted SOPS value; a different encrypted field is not proof. Encryption/decryption errors returned to callers omit dependency messages.

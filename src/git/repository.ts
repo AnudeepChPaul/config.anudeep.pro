@@ -362,6 +362,19 @@ export class GitRepository {
     return this.headCommit();
   }
 
+  /** Stages the complete working tree and commits it when the mirror changed anything. */
+  async commitWorkingTree(message: string): Promise<Sha | null> {
+    await this.git('add', '-A');
+    const staged = await this.git('diff', '--cached', '--name-only');
+    if (!staged.trim()) return null;
+    await this.commitStaged(message, []);
+    return this.headCommit();
+  }
+
+  async hasWorkingTreeChanges(): Promise<boolean> {
+    return Boolean((await this.git('status', '--porcelain')).trim());
+  }
+
   /**
    * Puts the named paths back to HEAD, in the index and in the working tree.
    *
