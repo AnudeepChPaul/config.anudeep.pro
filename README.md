@@ -40,9 +40,10 @@ and re-reads the repository.
 ## The local secrets
 
 `make dev` writes `.env` (gitignored) with a session signing key, the age key it generated, and
-the dead-port health URL. All three are development-only. On a real host the age key and the
-session secret come from the environment, and the break-glass record is committed to the
-configuration repository SOPS-encrypted.
+the dead-port health URL. IAM availability is checked once at startup and refreshed every 10
+seconds; the default health endpoint is `http://127.0.0.1:8000/healthz`. All three are
+development-only. On a real host the age key and the session secret come from the environment,
+and the break-glass record is committed to the configuration repository SOPS-encrypted.
 
 ## Where the design lives
 

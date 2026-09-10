@@ -30,6 +30,7 @@ services:
       # How reachability is decided. Unset means "iam is up", which keeps break-glass shut;
       # point it at a dead port locally to exercise the emergency path.
       CONFIG_IAM_HEALTH_URL: ${CONFIG_IAM_HEALTH_URL:-}
+      CONFIG_IAM_CHECK_INTERVAL_MS: ${CONFIG_IAM_CHECK_INTERVAL_MS:-10000}
       # Where publishes are pushed. Unset, the registry is local-only: every publish commits and
       # is served, and the console says so — "not yet pushed to GitHub" — rather than pretending.
       CONFIG_GIT_REMOTE: ${CONFIG_GIT_REMOTE:-}

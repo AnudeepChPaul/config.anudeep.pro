@@ -26,7 +26,8 @@ container.
 | `CONFIG_GIT_SSH_KEY` | Deploy key path, write-scoped to one repository | ssh uses whatever the host offers |
 | `CONFIG_AGE_KEY` | The **secret** half (`AGE-SECRET-KEY-1…`) of the recipient in `.sops.yaml` | Refuses to start |
 | `CONFIG_SESSION_SECRET` | Signs the session cookie; at least 32 characters | Refuses to start |
-| `CONFIG_IAM_HEALTH_URL` | How reachability is decided | Assumed reachable, which keeps break-glass shut |
+| `CONFIG_IAM_HEALTH_URL` | IAM health endpoint checked for login availability | `http://127.0.0.1:8000/healthz` |
+| `CONFIG_IAM_CHECK_INTERVAL_MS` | How often IAM availability is refreshed after startup | 10s |
 | `CONFIG_ENABLE_SETTINGS` | Whether `/settings` exists at all | It does not exist (404) |
 | `CONFIG_SETTINGS_ALLOW` | Addresses admitted beside a break-glass session | Nobody, never everybody |
 | `CONFIG_BREAK_GLASS_PATH` | Absolute reads from the volume; relative from the tree | `/var/lib/config/break-glass.yaml` |

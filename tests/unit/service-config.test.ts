@@ -70,6 +70,26 @@ describe('the git remote', () => {
   });
 });
 
+describe('IAM availability monitoring', () => {
+  it('checks the local IAM health endpoint by default every 10 seconds', () => {
+    const config = loadConfig({ ...secrets() });
+
+    expect(config.iamHealthUrl).toBe('http://127.0.0.1:8000/healthz');
+    expect(config.iamCheckIntervalMs).toBe(10_000);
+  });
+
+  it('allows the health endpoint and interval to be overridden', () => {
+    const config = loadConfig({
+      ...secrets(),
+      CONFIG_IAM_HEALTH_URL: 'http://iam:8000/ready',
+      CONFIG_IAM_CHECK_INTERVAL_MS: '5000',
+    });
+
+    expect(config.iamHealthUrl).toBe('http://iam:8000/ready');
+    expect(config.iamCheckIntervalMs).toBe(5_000);
+  });
+});
+
 /**
  * No single value may switch off authentication.
  *

@@ -34,6 +34,7 @@ import { ConfigWriteService } from './store/write-service.js';
 async function main(): Promise<void> {
   const config = loadConfig();
   const log = pino({ level: config.logLevel });
+  let iamReachable = true;
 
   // Beside the repository and the age key, which is already the private state directory of
   // this service: a 0600 copy of the deploy key, because ssh refuses one the mount leaves
@@ -105,6 +106,18 @@ async function main(): Promise<void> {
   });
   await state.reload();
 
+  // Probe once during startup so the first login page reflects IAM immediately, then keep the
+  // result fresh in the background. Login requests read this cached value instead of each one
+  // opening its own connection to IAM.
+  const refreshIamReachability = async (): Promise<void> => {
+    const reachable = await isIamReachable(config);
+    if (reachable !== iamReachable) {
+      log.info({ reachable, url: config.iamHealthUrl }, 'IAM login availability changed');
+    }
+    iamReachable = reachable;
+  };
+  await refreshIamReachability();
+
   const readApi = await buildReadApi({
     cache,
     // Asked per request, like the grant table: a product marked retiring must be reported as
@@ -165,10 +178,10 @@ async function main(): Promise<void> {
             // Read through the state, so rotating or deleting the record takes effect on the
             // next reload rather than on the next restart.
             record: state.breakGlassRecord(),
-            isIamReachable: () => isIamReachable(config),
+            isIamReachable: async () => iamReachable,
             alert: (entry) => log.warn({ ...entry, event: 'break_glass' }),
           }),
-          isIamReachable: () => isIamReachable(config),
+          isIamReachable: async () => iamReachable,
           ...(config.iam ? { oidc: new OidcClient(config.iam) } : {}),
         }
       : undefined,
@@ -227,9 +240,16 @@ async function main(): Promise<void> {
     })();
   }, config.pollIntervalMs);
 
+  const iamCheck = setInterval(() => {
+    void refreshIamReachability().catch((error) => {
+      log.warn({ err: error }, 'IAM availability check failed');
+    });
+  }, config.iamCheckIntervalMs);
+
   const shutdown = async () => {
     clearInterval(retry);
     clearInterval(reload);
+    clearInterval(iamCheck);
     await readApi.close();
     await web.close();
     await webhooks.close();

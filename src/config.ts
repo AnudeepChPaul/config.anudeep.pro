@@ -42,6 +42,7 @@ export interface ServiceConfig {
     redirectUri: string;
   } | null;
   readonly iamHealthUrl: string | null;
+  readonly iamCheckIntervalMs: number;
   readonly breakGlassPath: string;
   readonly webhookSecret: string | null;
   readonly webhookPort: number;
@@ -113,9 +114,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
             redirectUri: env.CONFIG_IAM_REDIRECT_URI ?? 'https://config.anudeep.pro/login/callback',
           }
         : null,
-    // How reachability is decided. Break-glass opens only when this fails, so an unset value
-    // must mean "reachable" — never "assume down and open the emergency door".
-    iamHealthUrl: env.CONFIG_IAM_HEALTH_URL ?? null,
+    // Break-glass opens only when this fails; default to the local IAM health endpoint rather
+    // than assuming IAM is reachable and leaving the monitor disconnected.
+    // IAM runs on port 8000 by default. Keep the URL configurable for containers or hosts
+    // where the health endpoint is exposed elsewhere.
+    iamHealthUrl: env.CONFIG_IAM_HEALTH_URL?.trim() || 'http://127.0.0.1:8000/healthz',
+    iamCheckIntervalMs: Number(env.CONFIG_IAM_CHECK_INTERVAL_MS ?? 10_000),
     // Absolute, so it lives beside the repository rather than inside it: a committed credential
     // is a pushable credential, and it reached a remote once already. A relative value still
     // works and still means a path in the tree, for a volume seeded before this changed.
