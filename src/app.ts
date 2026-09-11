@@ -31,7 +31,7 @@ import { registerWebhookRoutes, type WebhookOptions } from './routes/webhook.js'
 /** How long to wait for a connect attempt before calling a socket abandoned. */
 const LIVENESS_TIMEOUT_MS = 1_000;
 
-export class SocketInUseError extends Error {}
+export class SocketInUseError extends Error { }
 
 /**
  * Whether anything is actually accepting connections on `path`.
@@ -161,7 +161,7 @@ export interface WebAppOptions extends UiRouteOptions {
   readonly logSink?: LogDbSink;
 }
 
-export class UnprotectedUiError extends Error {}
+export class UnprotectedUiError extends Error { }
 
 /**
  * The CRUD UI, over HTTP.
@@ -243,5 +243,12 @@ function registerAssetRoutes(app: FastifyInstance): void {
       .type('application/javascript; charset=utf-8')
       .header('cache-control', 'no-cache')
       .send(readFileSync(new URL('./views/assets/keys.js', import.meta.url).pathname, 'utf8')),
+  );
+
+  app.get('/assets/base.css', async (_request, reply) =>
+    reply
+      .type('text/css; charset=utf-8')
+      .header('cache-control', 'no-cache')
+      .send(readFileSync(new URL('./views/assets/base.css', import.meta.url).pathname, 'utf8')),
   );
 }
