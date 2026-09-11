@@ -4,7 +4,7 @@ import type { DBEngine, WriteEvent } from '@config/src/store/data-layer.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
-import type { ConfigWriteService } from '@config/src/store/write-service.js';
+import { ConfigWriteService } from '@config/src/store/write-service.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type AgeKeypair, generateAgeKey, hasSops, liveOptions, TestRepo } from '../helpers.js';
 
@@ -195,6 +195,23 @@ withSops('ConfigWriteService', () => {
       expect(result.ok).toBe(false);
       expect(!result.ok && result.error.code).toBe('secret_not_encrypted');
       expect(await stored()).toBe(before);
+    });
+
+    it('cannot encrypt from the database directory, which does not hold .sops.yaml', async () => {
+      // The console pointed SopsEncryptor at CONFIG_DB_PATH. Rules live in the clone; the
+      // database is values. That save returned "secret values were not encrypted: SMTP_PASSWORD".
+      const broken = new ConfigWriteService({
+        db,
+        loader: new ConfigLoader(new SopsDecryptor(key.secret)),
+        encryptor: new SopsEncryptor(join(repo.dir, '.test-db')),
+      });
+      const result = await broken.writeValues(
+        { service: 'iam', environment: 'prod', changes: { SMTP_PASSWORD: 'hunter2' } },
+        ACTOR,
+      );
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error.code).toBe('secret_not_encrypted');
+      expect(!result.ok && result.error.detail).toMatch(/SMTP_PASSWORD/);
     });
 
     it('leaves no plaintext anywhere in the working tree', async () => {

@@ -246,7 +246,7 @@ withSops('adding a product', () => {
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
     });
     const registry = (await db.read('services.yaml')) ?? '';
-    const schema = (await db.read('schema.yaml')) ?? '';
+    const schema = (await db.read('schema/audit.yaml')) ?? '';
     await app.close();
     return { response, registry, schema };
   };
@@ -451,7 +451,7 @@ withSops('adding a product', () => {
 
     await retire(app, headers);
 
-    expect(await db.read('schema.yaml')).toMatch(/retiring: true/);
+    expect(await db.read('schema/iam.yaml')).toMatch(/retiring: true/);
     await app.close();
   });
 
@@ -544,7 +544,7 @@ withSops('adding a product', () => {
 
     await retire(app, headers, 'false');
 
-    expect(await db.read('schema.yaml')).not.toMatch(/retiring: true/);
+    expect(await db.read('schema/iam.yaml')).not.toMatch(/retiring: true/);
     await app.close();
   });
 
@@ -561,7 +561,7 @@ withSops('adding a product', () => {
     it('takes the product out of the live tree', async () => {
       const { db } = await archive();
 
-      expect(await db.read('schema.yaml')).not.toMatch(/MFA_ENFORCEMENT/);
+      expect(await db.read('schema/iam.yaml')).toBeNull();
       expect(await db.read('config/iam/dev.yaml')).toBeNull();
       expect(await db.read('services.yaml')).not.toMatch(/name: iam/);
     });
@@ -602,7 +602,7 @@ withSops('adding a product', () => {
       const response = await confirmed(app, headers, '/p/iam/archive');
 
       expect(response.statusCode).toBe(422);
-      expect(await db.read('schema.yaml')).toMatch(/MFA_ENFORCEMENT/);
+      expect(await db.read('schema/iam.yaml')).toMatch(/MFA_ENFORCEMENT/);
       await app.close();
     });
   });
@@ -639,7 +639,7 @@ withSops('adding a product', () => {
 
     expect([200, 204, 303]).toContain(response.statusCode);
     expect(await db.read('services.yaml')).toMatch(/audit/);
-    expect(await db.read('schema.yaml')).toMatch(/RETENTION_DAYS/);
+    expect(await db.read('schema/audit.yaml')).toMatch(/RETENTION_DAYS/);
     expect(await db.read('config/audit/dev.yaml')).not.toBeNull();
     expect(await db.read('config/audit/prod.yaml')).not.toBeNull();
     await app.close();

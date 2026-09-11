@@ -1,4 +1,5 @@
 import type { FlagValidationError, FlagValidator } from '@config/src/flags/flag-document.js';
+import { emit, logged } from '@config/src/logging.js';
 import type { DBEngine, WriteResult } from '@config/src/store/data-layer.js';
 import { parse, stringify } from 'yaml';
 
@@ -17,12 +18,21 @@ export class FlagWriteService {
   ) {}
 
   async get(name: string, environment: string): Promise<boolean> {
-    const document = await this.readDocument();
-    return document[name]?.[environment] === true;
+    return logged(
+      undefined,
+      'config.flag.get',
+      { logger: 'flags.write', name, environment },
+      async () => {
+        const document = await this.readDocument();
+        return document[name]?.[environment] === true;
+      },
+    );
   }
 
   async all(): Promise<Readonly<Record<string, Readonly<Record<string, boolean>>>>> {
-    return this.readDocument();
+    return logged(undefined, 'config.flag.all', { logger: 'flags.write' }, () =>
+      this.readDocument(),
+    );
   }
 
   async set(
@@ -32,42 +42,54 @@ export class FlagWriteService {
     expectedEtag?: string,
     actor?: string,
   ): Promise<FlagWriteResult> {
-    const current = await this.db.read('flags.yaml');
-    const parsed = current ? parse(current) : { version: 1, flags: {} };
-    const document =
-      isRecord(parsed) && isRecord(parsed.flags) ? parsed : { version: 1, flags: {} };
-    const flags = document.flags as Record<string, unknown>;
-    const values = isRecord(flags[name]) ? { ...(flags[name] as Record<string, unknown>) } : {};
-    values[environment] = value;
-    flags[name] = values;
-    const content = stringify(document);
-    const validation = this.validator.validateFile(content);
-    if (!validation.ok) return { kind: 'invalid', errors: validation.error };
+    return logged(
+      undefined,
+      'config.flag.set',
+      { logger: 'flags.write', name, environment },
+      async () => {
+        const current = await this.db.read('flags.yaml');
+        const parsed = current ? parse(current) : { version: 1, flags: {} };
+        const document =
+          isRecord(parsed) && isRecord(parsed.flags) ? parsed : { version: 1, flags: {} };
+        const flags = document.flags as Record<string, unknown>;
+        const values = isRecord(flags[name]) ? { ...(flags[name] as Record<string, unknown>) } : {};
+        values[environment] = value;
+        flags[name] = values;
+        const content = stringify(document);
+        const validation = this.validator.validateFile(content);
+        if (!validation.ok) return { kind: 'invalid', errors: validation.error };
 
-    const result = await this.db.write({
-      path: 'flags.yaml',
-      content,
-      expectedEtag,
-      actor,
-      keys: [name],
-      validate: (source) => {
-        const checked = this.validator.validateFile(source);
-        return checked.ok ? [] : checked.error;
+        const result = await this.db.write({
+          path: 'flags.yaml',
+          content,
+          expectedEtag,
+          actor,
+          keys: [name],
+          validate: (source) => {
+            const checked = this.validator.validateFile(source);
+            return checked.ok ? [] : checked.error;
+          },
+        });
+        const output = toResult(result);
+        if (output.kind === 'written') this.onWrite?.();
+        return output;
       },
-    });
-    const output = toResult(result);
-    if (output.kind === 'written') this.onWrite?.();
-    return output;
+    );
   }
 
   private async readDocument(): Promise<Record<string, Record<string, boolean>>> {
-    const source = await this.db.read('flags.yaml');
-    if (!source) return {};
-    const checked = this.validator.validateFile(source);
-    if (!checked.ok) return {};
-    const output: Record<string, Record<string, boolean>> = {};
-    for (const [name, values] of checked.value.flags) output[name] = Object.fromEntries(values);
-    return output;
+    return logged(undefined, 'config.flag.read', { logger: 'flags.write' }, async () => {
+      const source = await this.db.read('flags.yaml');
+      if (!source) return {};
+      const checked = this.validator.validateFile(source);
+      if (!checked.ok) {
+        emit(undefined, 'warn', { logger: 'flags.write' }, 'config.flag.invalid');
+        return {};
+      }
+      const output: Record<string, Record<string, boolean>> = {};
+      for (const [name, values] of checked.value.flags) output[name] = Object.fromEntries(values);
+      return output;
+    });
   }
 }
 

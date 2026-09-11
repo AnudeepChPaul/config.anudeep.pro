@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { logCaught, logged } from '@config/src/logging.js';
 import { parse as parseYaml } from 'yaml';
 
 /**
@@ -50,9 +51,8 @@ export function isEncrypted(source: string): boolean {
   try {
     const parsed = parseYaml(source) as Record<string, unknown> | null;
     return typeof parsed === 'object' && parsed !== null && 'sops' in parsed;
-  } catch {
-    // Malformed YAML is not this module's error to report — the loader parses next and will
-    // name the file properly.
+  } catch (error) {
+    logCaught(error, 'config.sops.yaml.failed', { logger: 'store.sops' });
     return false;
   }
 }
@@ -84,6 +84,7 @@ export class SopsDecryptor {
    * is not secret.
    */
   async decrypt(path: string, source: string): Promise<string> {
+    return logged(undefined, 'config.sops.decrypt', { logger: 'store.sops', path }, async () => {
     if (!isEncrypted(source)) return source;
 
     if (!this.ageKey) {
@@ -105,6 +106,7 @@ export class SopsDecryptor {
     }
 
     return stdout;
+    });
   }
 
   /**

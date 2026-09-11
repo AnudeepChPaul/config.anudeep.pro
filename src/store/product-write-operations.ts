@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { Actor } from '@config/src/git/commit-trailers.js';
 import { err, ok, type Result } from '@config/src/identity/types.js';
+import { logCaught, logged, type MethodLog } from '@config/src/logging.js';
 import { SchemaSet, type ValidationError } from '@config/src/schema/validator.js';
 import { type DBEngine, etagFor, type MutationRequest } from '@config/src/store/data-layer.js';
 import { EnvironmentOrder } from '@config/src/store/environment-order.js';
@@ -24,12 +25,9 @@ export interface ProductWriteOptions {
   readonly loader: ConfigLoader;
   readonly encryptor: SopsEncryptor;
   readonly onCommitted?: () => Promise<void> | void;
+  readonly log?: Partial<MethodLog>;
 }
 type Outcome = Result<ProductWriteResult, ProductWriteError>;
-type SchemaDocument = {
-  version: number;
-  services: Record<string, { keys: Record<string, unknown>; retiring?: boolean }>;
-};
 type RegistryDocument = {
   version: number;
   services: { name: string; uid: number; namespaces: string[] }[];
@@ -42,6 +40,7 @@ class Refusal extends Error {
 const refuse = (detail: string, code: ProductWriteError['code'] = 'invalid'): never => {
   throw new Refusal({ code, detail });
 };
+const isEmptySecret = (value: unknown) => value === '' || value === undefined || value === null;
 const identifier = (value: string) => /^[a-z][a-z0-9-]*$/.test(value);
 export const productBase = (files: ReadonlyMap<string, string>, service: string): string =>
   etagFor(
@@ -49,7 +48,9 @@ export const productBase = (files: ReadonlyMap<string, string>, service: string)
       [...files]
         .filter(
           ([path]) =>
-            ['schema.yaml', 'services.yaml', 'environments.yaml'].includes(path) ||
+            path === `schema/${service}.yaml` ||
+            path === 'services.yaml' ||
+            path === 'environments.yaml' ||
             path.startsWith(`config/${service}/`),
         )
         .sort(([a], [b]) => a.localeCompare(b)),
@@ -100,15 +101,11 @@ export class ProductWriteOperations {
       for (const key of Object.keys(request.defaults))
         if (isMetadataKey(key) || productSchema.isSecret(request.service, key))
           refuse('defaults cannot contain secrets or metadata');
-      const definition = parse(request.schema);
-      delete definition.version;
-      session.schema.services[request.service] = definition;
-      const candidate = SchemaSet.fromDocument(stringify(session.schema));
-      session.put('schema.yaml', stringify(session.schema), [request.service]);
+      session.put(`schema/${request.service}.yaml`, request.schema, [request.service]);
       for (const env of request.environments)
         session.put(
           `config/${request.service}/${env}.yaml`,
-          await session.encode(env, { ...request.defaults, version: 1 }, candidate),
+          await session.encode(env, { ...request.defaults, version: 1 }, productSchema),
           Object.keys(request.defaults),
         );
       session.registry.services.push({
@@ -125,22 +122,33 @@ export class ProductWriteOperations {
     actor: Actor,
     action: (session: ProductMutation) => Promise<void>,
   ): Promise<Outcome> {
-    if (!identifier(service)) return err({ code: 'invalid', detail: 'invalid product name' });
-    try {
-      const snapshot = await this.options.db.snapshot();
-      const session = new ProductMutation(service, actor, snapshot.files, this.options);
-      await action(session);
-      const result = await session.commit();
-      if (result.ok) await this.options.onCommitted?.();
-      return result;
-    } catch (error) {
-      if (error instanceof Refusal) return err(error.failure);
-      // Dependency errors can include plaintext. Never return them to the console or audit log.
-      return err({
-        code: 'failed',
-        detail: `could not update ${service}; no successful write was acknowledged`,
-      });
-    }
+    return logged(
+      this.options.log,
+      'config.write',
+      { logger: 'store.product-write', service },
+      async () => {
+        if (!identifier(service)) return err({ code: 'invalid', detail: 'invalid product name' });
+        try {
+          const snapshot = await this.options.db.snapshot();
+          const session = new ProductMutation(service, actor, snapshot.files, this.options);
+          await action(session);
+          const result = await session.commit();
+          if (result.ok) await this.options.onCommitted?.();
+          return result;
+        } catch (error) {
+          if (error instanceof Refusal) return err(error.failure);
+          logCaught(error, 'config.write.unexpected', {
+            logger: 'store.product-write',
+            service,
+          });
+          // Dependency errors can include plaintext. Never return them to the console or audit log.
+          return err({
+            code: 'failed',
+            detail: `could not update ${service}; no successful write was acknowledged`,
+          });
+        }
+      },
+    );
   }
 
   writeValues(
@@ -161,10 +169,10 @@ export class ProductWriteOperations {
   setRetiring(service: string, retiring: boolean, actor: Actor): Promise<Outcome> {
     return this.run(service, actor, async (session) => {
       session.requireProduct();
-      const definition = session.schema.services[service]!;
-      if (retiring) definition.retiring = true;
-      else delete definition.retiring;
-      session.put('schema.yaml', stringify(session.schema), ['retiring']);
+      const document = session.productSchema();
+      if (retiring) document.retiring = true;
+      else delete document.retiring;
+      session.put(`schema/${service}.yaml`, stringify(document), ['retiring']);
     });
   }
 
@@ -201,8 +209,12 @@ export class ProductWriteOperations {
         refuse('Product changed; review the deletion scope again.', 'conflict');
       session.requireProduct();
       const keys = session.select(selected);
-      for (const key of keys) delete session.schema.services[service]!.keys[key];
-      const candidate = SchemaSet.fromDocument(stringify(session.schema));
+      const document = session.productSchema();
+      const declared = (document.keys ?? {}) as Record<string, unknown>;
+      for (const key of keys) delete declared[key];
+      document.keys = declared;
+      const nextSource = stringify(document);
+      const candidate = SchemaSet.fromFiles({ [service]: nextSource });
       for (const [path] of session.environments()) {
         const environment = path.slice(`config/${service}/`.length, -5);
         const current = await session.document(environment);
@@ -216,7 +228,7 @@ export class ProductWriteOperations {
           session.put(path, await session.encode(environment, next, candidate), keys);
         }
       }
-      session.put('schema.yaml', stringify(session.schema), keys);
+      session.put(`schema/${service}.yaml`, nextSource, keys);
     });
   }
 
@@ -238,7 +250,7 @@ export class ProductWriteOperations {
         version: 1,
         archived: { at: new Date().toISOString(), by: actor.email },
         service: identity,
-        schema: stringify({ version: 1, ...session.schema.services[service] }),
+        schema: session.files.get(`schema/${service}.yaml`) ?? '',
         environments,
       });
       session.registry.services = session.registry.services.filter(
@@ -247,30 +259,33 @@ export class ProductWriteOperations {
       session.put('services.yaml', stringify(session.registry), [service]);
       session.put(archivePath, archive, [service]);
       for (const [path] of session.environments()) session.put(path, null, [service]);
-      delete session.schema.services[service];
-      session.put('schema.yaml', stringify(session.schema), [service]);
+      session.put(`schema/${service}.yaml`, null, [service]);
     });
   }
 }
 
 /** Testable document, encryption, validation and compare-and-swap boundary for one operation. */
 class ProductMutation {
-  readonly schema: SchemaDocument;
   readonly schemas: SchemaSet;
   readonly registry: RegistryDocument;
   readonly order: EnvironmentOrder;
   private readonly writes: MutationRequest[] = [];
-  private readonly reads = new Set(['schema.yaml', 'services.yaml', 'environments.yaml']);
+  private readonly reads: Set<string>;
   constructor(
     readonly service: string,
     private readonly actor: Actor,
     readonly files: ReadonlyMap<string, string>,
     private readonly options: ProductWriteOptions,
   ) {
-    this.schema = parse(files.get('schema.yaml') ?? 'version: 1\nservices: {}\n');
-    this.schemas = SchemaSet.fromDocument(stringify(this.schema));
+    this.schemas = SchemaSet.fromTree(files);
     this.registry = parse(files.get('services.yaml') ?? 'version: 1\nservices: []\n');
     this.order = EnvironmentOrder.fromYaml(files.get('environments.yaml') ?? '');
+    this.reads = new Set([`schema/${service}.yaml`, 'services.yaml', 'environments.yaml']);
+  }
+  productSchema(): Record<string, unknown> {
+    const source = this.files.get(`schema/${this.service}.yaml`);
+    if (source === undefined) return refuse('unknown product');
+    return parse(source) as Record<string, unknown>;
   }
   requireProduct() {
     const identity = this.registry.services.find((entry) => entry.name === this.service);
@@ -327,7 +342,14 @@ class ProductMutation {
       });
     if (this.files.has(path) && isDeepStrictEqual(configOnly(current), next)) return;
     next.version = bumpedVersion(current);
-    this.put(path, await this.encode(environment, next, this.schemas), Object.keys(changes));
+    const changedKeys = Object.keys(changes).filter(
+      (key) => !isDeepStrictEqual(configOnly(current)[key], next[key]),
+    );
+    this.put(
+      path,
+      await this.encode(environment, next, this.schemas),
+      changedKeys.length ? changedKeys : Object.keys(changes),
+    );
   }
   async encode(environment: string, value: Record<string, unknown>, schemas: SchemaSet) {
     if (!Number.isSafeInteger(value.version)) refuse('document version exhausted');
@@ -345,12 +367,15 @@ class ProductMutation {
     const encrypted = parse(source);
     if (!encrypted || typeof encrypted !== 'object' || Array.isArray(encrypted))
       refuse('encryptor returned an invalid document');
-    for (const key of Object.keys(configOnly(value)))
-      if (
-        schemas.isSecret(this.service, key) &&
-        !(typeof encrypted[key] === 'string' && encrypted[key].startsWith('ENC[AES256_GCM,'))
-      )
+    for (const key of Object.keys(configOnly(value))) {
+      if (!schemas.isSecret(this.service, key)) continue;
+      const held = (encrypted as Record<string, unknown>)[key];
+      // An empty secret is not ciphertext. sops leaves it as "" or drops the key; iam's live
+      // files already store SMTP_PASSWORD that way. Refusing here blocked every other save.
+      if (isEmptySecret(value[key]) && isEmptySecret(held)) continue;
+      if (!(typeof held === 'string' && held.startsWith('ENC[AES256_GCM,')))
         refuse(`secret values were not encrypted: ${key}`, 'secret_not_encrypted');
+    }
     return source;
   }
   put(path: string, content: string | null, keys: readonly string[]) {

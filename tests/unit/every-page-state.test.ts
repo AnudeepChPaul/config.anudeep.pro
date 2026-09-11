@@ -57,16 +57,16 @@ const product = (over: Partial<Parameters<typeof renderProduct>[0]> = {}) =>
 
 /** Every state the console can render, named so a failure says which one. */
 const everyState = (): Array<[string, string]> => [
-  ['products, empty', String(renderProducts({ products: [], pendingBackup: 0 }))],
+  ['products, empty', String(renderProducts({ products: [] }))],
   [
-    'products, a retiring one and changes awaiting backup',
+    'products, a retiring one and pending sync',
     String(
       renderProducts({
         products: [
           { name: 'iam', environments: ['dev', 'prod'], retiring: false, keys: ['A', 'B'] },
           { name: 'audit', environments: ['prod'], retiring: true, keys: [] },
         ],
-        pendingBackup: 2,
+        showSyncNow: true,
       }),
     ),
   ],
@@ -75,14 +75,13 @@ const everyState = (): Array<[string, string]> => [
     String(
       renderProducts({
         products: [{ name: 'iam', environments: ['dev'], retiring: false, keys: ['SESSION_TTL'] }],
-        pendingBackup: 0,
         query: 'TTL',
       }),
     ),
   ],
   [
     'products, retiring only',
-    String(renderProducts({ products: [], pendingBackup: 0, retiringOnly: true })),
+    String(renderProducts({ products: [], retiringOnly: true })),
   ],
   ['product, clean', product()],
   ['product, retiring', product({ retiring: true })],
@@ -96,7 +95,6 @@ const everyState = (): Array<[string, string]> => [
     String(
       renderProducts({
         products: [],
-        pendingBackup: 0,
         notice: { tone: 'done', text: 'Backed up 3 changes.' },
       }),
     ),
@@ -163,6 +161,12 @@ describe('the rules hold in every state, not just the ones anyone looked at', ()
     }
   });
 
+  it('names no layout inline either — alignment belongs in the stylesheet', () => {
+    for (const [name, html] of everyState()) {
+      expect(bodyOf(html).match(/style="/g) ?? [], name).toEqual([]);
+    }
+  });
+
   it('styles no action as a hint', () => {
     // A hint is a size smaller and muted. An action that looks like one sits on a different
     // baseline from the action beside it, which is what made Search and Clear look misaligned.
@@ -178,10 +182,15 @@ describe('the rules hold in every state, not just the ones anyone looked at', ()
   // if every one of them wears it, in every state that renders one.
   it('marks every negative action as negative', () => {
     for (const [name, html] of everyState()) {
+      const body = bodyOf(html);
       const negatives =
-        bodyOf(html).match(/<(?:a|button)[^>]*>[\s\S]{0,120}?(?:Not now|Clear|Drop|Dismiss)\b/g) ??
+        body.match(/<(?:a|button)[^>]*>[\s\S]{0,120}?(?:Not now|Clear|Drop|Dismiss|Archive|Retire)\b/g) ??
         [];
       for (const control of negatives) {
+        expect(control, `${name}: ${control}`).toMatch(/class="linkbtn no"/);
+      }
+      const deleteButtons = body.match(/<button[^>]*>[\s\S]{0,200}?Delete keys/g) ?? [];
+      for (const control of deleteButtons) {
         expect(control, `${name}: ${control}`).toMatch(/class="linkbtn no"/);
       }
     }

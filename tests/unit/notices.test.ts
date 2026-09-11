@@ -4,30 +4,75 @@ import { describe, expect, it } from 'vitest';
 /**
  * The wording of a notice belongs to the server.
  *
- * It used to travel as free text in the URL — `/?notice=Published%202%20change(s)` — which meant
- * anyone could send a link that rendered arbitrary words inside the console. Escaped, so not a
- * script, but a message in the product's own voice saying whatever the sender chose: "Published
- * successfully", or a support number to call. It also replayed on every reload, so a stale
- * confirmation reappeared long after the thing it confirmed.
- *
  * A code names an outcome the server already knows how to describe. Anything unrecognised
- * renders nothing at all, which is the only safe reading of input from a link.
+ * renders nothing at all. Draft and publish codes are gone with the draft model: a saved
+ * change is live, and git sync is a back-up — never "not yet in effect".
  */
 describe('turning an outcome code into a notice', () => {
-  it('describes a publish, with the count it was given', () => {
-    const notice = noticeFor('published', { n: 3 });
+  it('describes a live save', () => {
+    const notice = noticeFor('saved');
     expect(notice?.tone).toBe('done');
-    expect(notice?.text).toContain('3');
+    expect(notice?.text).toMatch(/live now/i);
+    expect(notice?.text).not.toMatch(/draft|publish/i);
   });
 
-  it('says when a publish committed but did not reach the remote', () => {
-    expect(noticeFor('published-unpushed', { n: 1 })?.text).toMatch(/not yet pushed|GitHub/i);
+  it('describes a promotion that is already live', () => {
+    const notice = noticeFor('promoted', { n: 2 });
+    expect(notice?.tone).toBe('done');
+    expect(notice?.text).toContain('2');
+    expect(notice?.text).not.toMatch(/draft|publish|staged|not yet/i);
   });
 
-  // A failure is not a confirmation: it must not be swept away on a timer.
-  it('marks a failure as a problem, so nothing clears it on a timer', () => {
-    expect(noticeFor('publish-failed')?.tone).toBe('problem');
+  it('describes a key deletion', () => {
+    const notice = noticeFor('deleted', { n: 2 });
+    expect(notice?.tone).toBe('done');
+    expect(notice?.text).toContain('2');
+    expect(notice?.text).not.toMatch(/draft|publish/i);
+  });
+
+  it('describes a successful back-up', () => {
+    expect(noticeFor('backed-up', { n: 3 })?.text).toMatch(/back/i);
+    expect(noticeFor('backed-up', { n: 3 })?.text).not.toMatch(/publish/i);
+  });
+
+  it('marks back-up and delete failures as problems', () => {
+    expect(noticeFor('backup-failed')?.tone).toBe('problem');
+    expect(noticeFor('backup-deferred')?.tone).toBe('problem');
+    expect(noticeFor('backup-deferred')?.text).not.toMatch(/unchanged/i);
+    expect(noticeFor('backup-no-remote')?.tone).toBe('problem');
+    expect(noticeFor('delete-failed')?.tone).toBe('problem');
+  });
+
+  it('describes creating an environment as live, not drafted', () => {
+    const notice = noticeFor('created');
+    expect(notice?.tone).toBe('done');
+    expect(notice?.text).toMatch(/live|defaults/i);
+    expect(notice?.text).not.toMatch(/draft|publish|not yet/i);
+  });
+
+  it('describes retirement as already visible to consumers', () => {
+    expect(noticeFor('retiring')?.text).not.toMatch(/draft|publish|until/i);
+    expect(noticeFor('retirement-cancelled')?.text).not.toMatch(/draft|publish/i);
+  });
+
+  it('says when nothing was selected for Promote or Delete', () => {
     expect(noticeFor('nothing-selected')?.tone).toBe('problem');
+    expect(noticeFor('nothing-selected')?.text).not.toMatch(/unpublished|draft/i);
+  });
+
+  it('does not know the removed draft and publish codes', () => {
+    for (const gone of [
+      'published',
+      'published-unpushed',
+      'publish-failed',
+      'publish-stale',
+      'drafted',
+      'dropped',
+      'nothing-staged',
+      'drop-failed',
+    ]) {
+      expect(noticeFor(gone), gone).toBeNull();
+    }
   });
 
   it('renders nothing for a code it does not know', () => {
@@ -40,35 +85,23 @@ describe('turning an outcome code into a notice', () => {
     expect(noticeFor('')).toBeNull();
   });
 
-  // The count comes from a query string, so it is whatever someone typed.
   it('refuses a count that is not a plain number', () => {
-    expect(noticeFor('published', { n: Number.NaN })?.text).not.toContain('NaN');
-    expect(noticeFor('published', { n: -4 })?.text).not.toContain('-4');
-  });
-
-  it('describes a dropped draft', () => {
-    expect(noticeFor('dropped')?.tone).toBe('done');
+    expect(noticeFor('promoted', { n: Number.NaN })?.text).not.toContain('NaN');
+    expect(noticeFor('promoted', { n: -4 })?.text).not.toContain('-4');
   });
 });
 
-/**
- * The property the codes exist for.
- *
- * A link is untrusted input. Before this, `/?notice=<anything>` rendered that text inside the
- * console in its own voice — escaped, so never a script, but a sentence a reader has every
- * reason to believe. Nothing a URL carries can produce wording now: the code either names an
- * outcome this module knows, or nothing is shown.
- */
 describe('what a link cannot do', () => {
   it('cannot put words on the page, however they are dressed up', () => {
     for (const attempt of [
       'Published successfully',
+      'Live now in evil/prod',
       'call+1-800-555-0100',
       '<script>alert(1)</script>',
-      'published; drop table',
-      'PUBLISHED',
-      'published ',
-      ' published',
+      'saved; drop table',
+      'SAVED',
+      'saved ',
+      ' saved',
       '__proto__',
       'constructor',
       'toString',
@@ -78,8 +111,8 @@ describe('what a link cannot do', () => {
   });
 
   it('answers only to exact codes it defines', () => {
-    expect(noticeFor('published')).not.toBeNull();
-    expect(noticeFor('publishe')).toBeNull();
-    expect(noticeFor('publishedx')).toBeNull();
+    expect(noticeFor('saved')).not.toBeNull();
+    expect(noticeFor('save')).toBeNull();
+    expect(noticeFor('savedx')).toBeNull();
   });
 });

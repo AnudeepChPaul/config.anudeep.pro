@@ -1,5 +1,11 @@
 import type { KeyDraft } from '@config/src/schema/builder.js';
 export function keyBodies(body: Record<string, string | string[]>): Array<Record<string, string>> {
+  return allKeyBodies(body).filter((row) => (row.name ?? '').trim().length > 0);
+}
+
+/** Every posted key row, including blanks. The add-variable control has to round-trip empty
+ *  rows or a second click would drop the line the operator is still filling in. */
+export function allKeyBodies(body: Record<string, string | string[]>): Array<Record<string, string>> {
   const rows = new Map<number, Record<string, string>>();
   for (const [field, value] of Object.entries(body)) {
     const match = /^key\.(\d+)\.(\w+)$/.exec(field);
@@ -11,8 +17,7 @@ export function keyBodies(body: Record<string, string | string[]>): Array<Record
   }
   return [...rows.entries()]
     .sort(([a], [b]) => a - b)
-    .map(([, row]) => row)
-    .filter((row) => (row.name ?? '').trim().length > 0);
+    .map(([, row]) => row);
 }
 
 /** Those rows as definitions the builder can check. Everything arrives as text and is parsed here. */

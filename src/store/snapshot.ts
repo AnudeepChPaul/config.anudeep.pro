@@ -1,5 +1,6 @@
 import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { logCaught, logged } from '@config/src/logging.js';
 import type { Namespace } from '../identity/types.js';
 import type { ConfigSources } from './types.js';
 
@@ -38,6 +39,7 @@ export class SnapshotStore {
 
   /** Writes to a temp name and renames, so a crash leaves the old snapshot or the new one. */
   async save(sources: ConfigSources): Promise<void> {
+    return logged(undefined, 'config.snapshot.save', { logger: 'store.snapshot' }, async () => {
     const file: SnapshotFile = {
       commit: sources.commit,
       sources: Object.fromEntries(sources.sources),
@@ -48,9 +50,12 @@ export class SnapshotStore {
     try {
       await rename(temp, this.path);
     } catch (cause) {
-      await unlink(temp).catch(() => {});
+      await unlink(temp).catch((error: unknown) => {
+        logCaught(error, 'config.snapshot.cleanup.failed', { logger: 'store.snapshot' });
+      });
       throw cause;
     }
+    });
   }
 
   /**
@@ -60,15 +65,18 @@ export class SnapshotStore {
    * last-known-good" — because none of them is a reason to keep the service down.
    */
   async load(): Promise<ConfigSources | null> {
+    return logged(undefined, 'config.snapshot.load', { logger: 'store.snapshot' }, async () => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(await readFile(this.path, 'utf8'));
-    } catch {
+    } catch (error) {
+      logCaught(error, 'config.snapshot.load.failed', { logger: 'store.snapshot' });
       return null;
     }
 
     if (!isSnapshotFile(parsed)) return null;
 
     return { commit: parsed.commit, sources: new Map(Object.entries(parsed.sources)) };
+    });
   }
 }

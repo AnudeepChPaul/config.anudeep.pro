@@ -22,7 +22,6 @@ const products = (over: Record<string, unknown> = {}) =>
   String(
     renderProducts({
       products: [],
-      pendingBackup: 0,
       fragment: true,
       ...over,
     } as Parameters<typeof renderProducts>[0]),

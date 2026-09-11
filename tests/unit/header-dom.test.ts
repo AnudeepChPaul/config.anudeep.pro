@@ -39,7 +39,7 @@ const rows: KeyRow[] = [
 ];
 
 const pages = () => ({
-  products: String(renderProducts({ products: [product()], pendingBackup: 0 })),
+  products: String(renderProducts({ products: [product()] })),
   product: String(
     renderProduct({
       service: 'iam',
@@ -103,11 +103,11 @@ describe('every page has the same header', () => {
   });
 
   it('makes the heading itself the trail', () => {
-    // Inside a product the heading reads "Products › iam", where Products is the link back.
+    // Inside a product the heading reads "Products › Iam", where Products is the link back.
     document.body.innerHTML = pages().product;
     const h1 = document.querySelector('.pagehead h1') as HTMLElement;
 
-    expect([...h1.children].map((child) => child.textContent)).toEqual(['Products', '›', 'iam']);
+    expect([...h1.children].map((child) => child.textContent)).toEqual(['Products', '›', 'Iam']);
     expect(h1.querySelector('a')?.getAttribute('href')).toBe('/');
   });
 
@@ -117,6 +117,32 @@ describe('every page has the same header', () => {
 
     expect(h1.textContent?.trim()).toBe('Products');
     expect(h1.querySelector('a')).toBeNull();
+  });
+
+  it('puts each key in a list row, not a spaced field', () => {
+    document.body.innerHTML = pages().product;
+    const key = document.querySelector('[data-key="MFA_ENFORCEMENT"]')?.closest('.keyrow') as HTMLElement;
+    expect(key.classList.contains('row')).toBe(true);
+    expect(key.classList.contains('field')).toBe(false);
+  });
+
+  it('lists keys for a missing environment as chips in the same row language', () => {
+    document.body.innerHTML = String(
+      renderProduct({
+        service: 'iam',
+        environment: 'dev',
+        environments: ['dev'],
+        etag: null,
+        rows,
+        version: 0,
+        next: null,
+        retiring: false,
+        missing: true,
+      }),
+    );
+    expect(document.querySelector('ul.hint')).toBeNull();
+    expect(document.querySelector('.row-keys .chip-item')?.textContent).toBe('MFA_ENFORCEMENT');
+    expect(document.querySelector('.actionline button')?.textContent).toMatch(/Create from schema/);
   });
 
   it('names where you are on the third page too', () => {

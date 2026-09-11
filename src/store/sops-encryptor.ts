@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { logCaught, logged } from '@config/src/logging.js';
 import type { Namespace } from '../identity/types.js';
 
 /**
@@ -32,10 +33,12 @@ export class SopsEncryptor {
    * someone had generated an age key.
    */
   async encrypt(namespace: Namespace, plaintext: string): Promise<string> {
+    return logged(undefined, 'config.sops.encrypt', { logger: 'store.sops', namespace }, async () => {
     const configPath = join(this.repoDir, '.sops.yaml');
     try {
       await access(configPath);
-    } catch {
+    } catch (error) {
+      logCaught(error, 'config.sops.config.missing', { logger: 'store.sops' });
       return plaintext;
     }
 
@@ -72,6 +75,7 @@ export class SopsEncryptor {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+    });
   }
 }
 

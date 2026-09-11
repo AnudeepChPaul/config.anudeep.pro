@@ -1,4 +1,5 @@
 import { err, ok, type Result } from '@config/src/identity/types.js';
+import { logCaught } from '@config/src/logging.js';
 import { parse as parseYaml } from 'yaml';
 
 export interface FlagDocument {
@@ -25,7 +26,8 @@ export class FlagValidator {
     let parsed: unknown;
     try {
       parsed = parseYaml(source);
-    } catch {
+    } catch (error) {
+      logCaught(error, 'config.flag.yaml.failed', { logger: 'flags.document' });
       return err([{ key: '*', message: 'flags.yaml is not valid YAML' }]);
     }
 

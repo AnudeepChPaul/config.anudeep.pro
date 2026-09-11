@@ -1,5 +1,6 @@
 import { chmod, copyFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { logCaught, logged } from '@config/src/logging.js';
 
 /**
  * Makes the deploy key usable by ssh.
@@ -19,18 +20,21 @@ export async function prepareDeployKey(
   path: string | null | undefined,
   privateDir: string,
 ): Promise<string | null> {
-  if (!path) return null;
+  return logged(undefined, 'config.git.deploy-key', { logger: 'git.deploy-key' }, async () => {
+    if (!path) return null;
 
-  try {
-    const mode = (await stat(path)).mode & 0o777;
-    // Already private: copying a key around for no reason is not an improvement.
-    if ((mode & 0o077) === 0) return path;
+    try {
+      const mode = (await stat(path)).mode & 0o777;
+      // Already private: copying a key around for no reason is not an improvement.
+      if ((mode & 0o077) === 0) return path;
 
-    const target = join(privateDir, 'deploy_key');
-    await copyFile(path, target);
-    await chmod(target, 0o600);
-    return target;
-  } catch {
-    return null;
-  }
+      const target = join(privateDir, 'deploy_key');
+      await copyFile(path, target);
+      await chmod(target, 0o600);
+      return target;
+    } catch (error) {
+      logCaught(error, 'config.git.deploy-key.failed', { logger: 'git.deploy-key' });
+      return null;
+    }
+  });
 }

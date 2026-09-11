@@ -1,5 +1,5 @@
 import { html, type SafeHtml } from '@config/src/views/html.js';
-import { layout, pageHeader, trail } from '@config/src/views/page-frame.js';
+import { layout, layoutChrome, pageHeader, trail } from '@config/src/views/page-frame.js';
 import { settingsRows } from '@config/src/views/settings.js';
 
 export { renderFeatureAddRow, renderFeatures } from '@config/src/views/feature-pages.js';
@@ -11,6 +11,7 @@ export {
   renderConfirmation,
   renderLiveProduct as renderProduct,
   renderLiveProducts as renderProducts,
+  renderSyncPreview,
 } from '@config/src/views/live-pages.js';
 export { renderNewProduct } from '@config/src/views/new-product-page.js';
 export type { PageNotice } from '@config/src/views/page-frame.js';
@@ -42,7 +43,7 @@ export function renderLogin(options: {
 
   const primary = options.iamReachable
     ? html`<div class="card">
-        <p class="sub" style="margin: 0 0 1rem;">Sign in with iam to continue.</p>
+        <p class="sub">Sign in with iam to continue.</p>
         ${
           options.iamConfigured === false
             ? html`<span class="hint">iam sign-in is not configured on this instance.</span>`
@@ -50,7 +51,7 @@ export function renderLogin(options: {
         }
       </div>`
     : html`<div class="card">
-        <p class="sub" style="margin: 0;">iam is unreachable, so break-glass sign-in is available.</p>
+        <p class="sub">iam is unreachable, so break-glass sign-in is available.</p>
       </div>`;
 
   return layout(
@@ -69,6 +70,8 @@ export function renderSettings(options: {
   /** What is running: version, commit and container id, for the footer. */
   build?: string;
   fragment?: boolean;
+  autoSync?: boolean;
+  currentPath?: string;
 }): SafeHtml {
   const rows = settingsRows(options.env).map(
     (row) => html`<div class="keyrow settings-row">
@@ -87,5 +90,7 @@ export function renderSettings(options: {
       <div class="rows">${rows}</div>
     `;
 
-  return options.fragment ? body : layout('Settings', body, true, options.build);
+  return options.fragment
+    ? body
+    : layout('Settings', body, true, options.build, layoutChrome(options));
 }

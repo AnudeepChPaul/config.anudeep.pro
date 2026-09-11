@@ -1,6 +1,7 @@
 import { cp, mkdir, readdir, rm } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { GitRepository } from '@config/src/git/repository.js';
+import { logCaught, logged, type MethodLog } from '@config/src/logging.js';
 import { FileWriter } from '@config/src/store/file-writer.js';
 import type { JournalEntry, WriteJournal } from '@config/src/store/write-journal.js';
 
@@ -42,11 +43,14 @@ export class SyncEngine {
     private readonly git: SyncGitPort,
     private readonly onSynced?: (commit: string) => void,
     private readonly readSnapshot?: () => Promise<ReadonlyMap<string, string>>,
+    private readonly log?: MethodLog,
   ) {}
 
   async syncNow(_trigger: SyncTrigger = 'manual'): Promise<SyncResult> {
     if (this.running) return this.running;
-    this.running = this.performSync();
+    this.running = logged(this.log, 'config.sync', { logger: 'store.sync' }, () =>
+      this.performSync(),
+    );
     try {
       return await this.running;
     } finally {
@@ -131,7 +135,12 @@ async function mirrorSnapshot(
 
 async function collectFiles(root: string, prefix = ''): Promise<string[]> {
   const result: string[] = [];
-  for (const entry of await readdir(join(root, prefix), { withFileTypes: true }).catch(() => [])) {
+  for (const entry of await readdir(join(root, prefix), { withFileTypes: true }).catch(
+    (error: unknown) => {
+      logCaught(error, 'config.sync.readdir.failed', { logger: 'store.sync' });
+      return [];
+    },
+  )) {
     if (entry.name === '.git' || entry.name === '.journal' || entry.name === '.revision') continue;
     const path = join(prefix, entry.name);
     if (entry.isDirectory()) result.push(...(await collectFiles(root, path)));

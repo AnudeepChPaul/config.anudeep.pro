@@ -1,6 +1,7 @@
 import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { dirname, join } from 'node:path';
+import { logCaught, logged } from '@config/src/logging.js';
 
 /**
  * The client every consuming service imports.
@@ -62,19 +63,24 @@ export class ConfigClient<T extends Record<string, unknown>> {
    * boot of every service behind it.
    */
   async load(defaults: T): Promise<T> {
-    this.defaults = defaults;
-    this.resolved = { ...defaults };
+    return logged(undefined, 'config.client.load', { logger: 'client.config' }, async () => {
+      this.defaults = defaults;
+      this.resolved = { ...defaults };
 
-    const cached = await this.readCache();
-    if (cached) {
-      this.resolved = { ...defaults, ...cached.config };
-      this.flags = { ...cached.flags };
-      this.currentCommit = cached.commit;
-    }
+      const cached = await this.readCache();
+      if (cached) {
+        this.resolved = { ...defaults, ...cached.config };
+        this.flags = { ...cached.flags };
+        this.currentCommit = cached.commit;
+      }
 
-    void this.refresh().catch(() => {});
+      void this.refresh().catch((error: unknown) => {
+        logCaught(error, 'config.client.refresh.failed', { logger: 'client.config' });
+        this.options.onError?.(error as Error);
+      });
 
-    return this.resolved;
+      return this.resolved;
+    });
   }
 
   /** The live configuration. Call this rather than holding what `load` returned. */
@@ -104,19 +110,22 @@ export class ConfigClient<T extends Record<string, unknown>> {
    * whatever was set during the last incident.
    */
   async refresh(): Promise<boolean> {
-    let served: ServedConfig | null = null;
-    try {
-      served = await this.fetch();
-    } catch (error) {
-      this.options.onError?.(error as Error);
-      return false;
-    }
+    return logged(undefined, 'config.client.refresh', { logger: 'client.config' }, async () => {
+      let served: ServedConfig | null = null;
+      try {
+        served = await this.fetch();
+      } catch (error) {
+        logCaught(error, 'config.client.fetch.failed', { logger: 'client.config' });
+        this.options.onError?.(error as Error);
+        return false;
+      }
 
-    if (!served) return false;
+      if (!served) return false;
 
-    const changed = served.commit !== this.currentCommit;
-    await this.apply(served);
-    return changed;
+      const changed = served.commit !== this.currentCommit;
+      await this.apply(served);
+      return changed;
+    });
   }
 
   /**
@@ -142,6 +151,7 @@ export class ConfigClient<T extends Record<string, unknown>> {
           if (abort.signal.aborted) return;
           if (served) await this.apply(served);
         } catch (error) {
+          logCaught(error, 'config.client.watch.failed', { logger: 'client.config' });
           this.options.onError?.(error as Error);
           // An outage must not end the watch, or every service needs restarting after config
           // is redeployed — the opposite of what this is for.
@@ -173,7 +183,10 @@ export class ConfigClient<T extends Record<string, unknown>> {
     this.flags = { ...served.flags };
     const changed = served.commit !== this.currentCommit;
     this.currentCommit = served.commit;
-    await this.writeCache(served).catch((error: Error) => this.options.onError?.(error));
+    await this.writeCache(served).catch((error: Error) => {
+      logCaught(error, 'config.client.cache.write.failed', { logger: 'client.config' });
+      this.options.onError?.(error);
+    });
     if (changed) this.notify();
   }
 
@@ -183,6 +196,7 @@ export class ConfigClient<T extends Record<string, unknown>> {
         handler();
       } catch (error) {
         // One consumer's rebuild failing must not stop the others from being told.
+        logCaught(error, 'config.client.handler.failed', { logger: 'client.config' });
         this.options.onError?.(error as Error);
       }
     }
@@ -216,6 +230,7 @@ export class ConfigClient<T extends Record<string, unknown>> {
                 flags: parsed.flags ?? {},
               });
             } catch (error) {
+              logCaught(error, 'config.client.response.failed', { logger: 'client.config' });
               reject(error as Error);
             }
           });
@@ -234,8 +249,8 @@ export class ConfigClient<T extends Record<string, unknown>> {
     let parsed: CacheFile;
     try {
       parsed = JSON.parse(await readFile(this.options.cachePath, 'utf8')) as CacheFile;
-    } catch {
-      // Absent or truncated. Neither is a reason to refuse to start.
+    } catch (error) {
+      logCaught(error, 'config.client.cache.read.failed', { logger: 'client.config' });
       return null;
     }
 
@@ -276,7 +291,10 @@ export class ConfigClient<T extends Record<string, unknown>> {
     try {
       await rename(temp, path);
     } catch (cause) {
-      await unlink(temp).catch(() => {});
+      logCaught(cause, 'config.client.cache.rename.failed', { logger: 'client.config' });
+      await unlink(temp).catch((error: unknown) => {
+        logCaught(error, 'config.client.cache.cleanup.failed', { logger: 'client.config' });
+      });
       throw cause;
     }
   }

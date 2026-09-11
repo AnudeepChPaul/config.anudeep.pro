@@ -20,10 +20,9 @@ import { describe, expect, it } from 'vitest';
 const definition = (over: Record<string, unknown> = {}) =>
   ({ type: 'bool', secret: false, ...over }) as unknown as KeyRow['definition'];
 
-const productsPage = (pendingBackup: number) =>
+const productsPage = () =>
   String(
     renderProducts({
-      pendingBackup,
       products: [
         { name: 'iam', environments: ['dev'], retiring: false, keys: ['A', 'B', 'C', 'D'] },
       ],
@@ -52,20 +51,20 @@ describe('the hover panel is not clipped by its container', () => {
   const listOverflow = (page: string) => page.match(/\.rows\s*\{[^}]*\}/)?.[0] ?? '';
 
   it('does not hide overflow on the row list', () => {
-    const page = String(renderProducts({ products: [], pendingBackup: 0 }));
+    const page = String(renderProducts({ products: [] }));
 
     expect(listOverflow(page)).not.toMatch(/overflow:\s*hidden/);
   });
 
   it('still rounds the card, on the first and last rows instead', () => {
-    const page = String(renderProducts({ products: [], pendingBackup: 0 }));
+    const page = String(renderProducts({ products: [] }));
 
     expect(page).toContain('.rows > *:first-child');
     expect(page).toContain('.rows > *:last-child');
   });
 
   it('gives the panel a stacking order so a later row does not cover it', () => {
-    const page = String(renderProducts({ products: [], pendingBackup: 0 }));
+    const page = String(renderProducts({ products: [] }));
 
     expect(page).toMatch(/\.detail\s*\{[^}]*z-index/);
   });
@@ -169,6 +168,76 @@ describe('every link button matches the toolbar', () => {
 
     expect(base).toMatch(/font-size:\s*var\(--type-sm\)/);
     expect(css).toMatch(/\.actions \{[^}]*font-size:\s*var\(--type-sm\)/);
+  });
+});
+
+describe('the action line keeps reading order', () => {
+  it('does not reverse the flex direction, which would put Delete before Save', () => {
+    const rules = [...productPage([]).matchAll(/\.actionline \{[^}]*\}/g)].map((match) => match[0]);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/row-reverse/);
+  });
+
+  it('can sit the confirmation actions on the right', () => {
+    expect(productPage([])).toMatch(/\.actionline\.end \{[^}]*justify-content:\s*flex-end/);
+  });
+
+  it('spaces the sync action list above Confirm', () => {
+    expect(productPage([])).toMatch(/\.sync-actions \{[^}]*margin-bottom:\s*1\.5rem/);
+  });
+
+  it('keeps a retiring row\'s actions on the right', () => {
+    expect(productPage([])).toMatch(/\.row-end \{[^}]*margin-left:\s*auto/);
+    expect(productPage([])).toMatch(/\.row-end \{[^}]*justify-content:\s*flex-end/);
+  });
+});
+
+describe('the product toolbar sits on the right', () => {
+  it('pushes the write actions to the right edge of the slot', () => {
+    const css = productPage([]);
+    expect(css).toMatch(/\.actionslot \.idle > button:first-of-type\s*\{[^}]*margin-left:\s*auto/);
+  });
+
+  it('draws the idle line in the small type, so saved diffs fit beside the facts', () => {
+    expect(productPage([])).toMatch(/\.actionline \.idle \{[^}]*font-size:\s*var\(--type-xs\)/);
+  });
+});
+
+describe('the footer sits in the same column as the page', () => {
+  it('uses the same max-width as main, so the build line is not a different measure', () => {
+    const page = productPage([]);
+    const main = page.match(/\n\s*main \{[^}]*\}/)?.[0] ?? '';
+    const foot = page.match(/\.pagefoot \{[^}]*\}/)?.[0] ?? '';
+    const width = main.match(/max-width:\s*[^;]+/)?.[0];
+    expect(width).toBeTruthy();
+    expect(foot).toContain(width ?? 'missing');
+  });
+});
+
+describe('a key name lines up with its tick', () => {
+  it('cancels the global label margin inside the key line', () => {
+    // `label { margin-bottom: .25rem }` is for stacked fields. On a key row it dropped the
+    // name below the checkbox, so the tick looked attached to the row above.
+    expect(productPage([])).toMatch(/\.keyline label\s*\{[^}]*margin-bottom:\s*0/);
+  });
+});
+
+describe('sign-in copy is a styled subtitle, not an undefined class', () => {
+  it('defines .sub so the login lede is muted rather than body-coloured', () => {
+    expect(productPage([])).toMatch(/\.sub\s*\{[^}]*color:\s*var\(--muted\)/);
+  });
+});
+
+describe('a feature row is the same kind of row as a product', () => {
+  it('does not restate padding, which made flags a different height from products', () => {
+    const rule = productPage([]).match(/\.feature-row\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).not.toMatch(/padding:/);
+  });
+});
+
+describe('header actions sit on the title baseline', () => {
+  it('makes forms in the title actions flex items, not blocks that drop the button', () => {
+    expect(productPage([])).toMatch(/\.actions-right form\s*\{[^}]*display:\s*flex/);
   });
 });
 
@@ -321,7 +390,7 @@ describe('nothing styles itself inline', () => {
   // Every page that HAS this markup: the product list's names, and a page whose hover panels
   // carry changed values.
   const busyPages = () => [
-    productsPage(2),
+    productsPage(),
     productPage([
       {
         key: 'MFA_ENFORCEMENT',
@@ -434,6 +503,11 @@ describe('an action is never painted as a state', () => {
     expect(rule('.found')).not.toMatch(/var\(--unpublished\)/);
     expect(rule('.found')).toMatch(/var\(--accent\)/);
   });
+
+  it('keeps the search marker inside the rounded row', () => {
+    expect(rule('.found')).not.toMatch(/margin-left:\s*-/);
+    expect(rule('.found')).toMatch(/box-shadow:\s*inset/);
+  });
 });
 
 describe('a link action is the same size whichever element it is', () => {
@@ -537,6 +611,10 @@ describe('the settings table', () => {
 
   it('insets its rows from the border rather than letting them touch it', () => {
     expect(rule('.settings-row')).toMatch(/padding:/);
+  });
+
+  it('centres the name and the value on one baseline', () => {
+    expect(rule('.settings-row')).toMatch(/align-items:\s*center/);
   });
 
   // The rule is worthless unless something wears the class.

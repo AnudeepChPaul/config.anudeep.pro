@@ -1,3 +1,4 @@
+import { logged } from '@config/src/logging.js';
 import { SchemaMetaValidator } from '@config/src/schema/meta-schema.js';
 import type { SchemaDryRun } from '@config/src/schema/schema-dry-run.js';
 import type { DBEngine } from '@config/src/store/data-layer.js';
@@ -18,25 +19,27 @@ export class SchemaWriteService {
   ) {}
 
   async save(source: string, expectedEtag?: string): Promise<SchemaWriteResult> {
-    const parsed = this.meta.validateFile(source);
-    if (!parsed.ok) return { kind: 'invalid', errors: parsed.error };
-    const configSources = new Map<string, string>();
-    for (const [path, content] of await this.db.readAll('config')) {
-      if (!path.endsWith('.yaml')) continue;
-      const namespace = path.slice('config/'.length, -'.yaml'.length);
-      if (namespace.split('/').length === 2) configSources.set(namespace, content);
-    }
-    const existing = await this.dryRun.validateExisting(parsed.value, configSources);
-    if (!existing.ok) return { kind: 'invalid', errors: existing.error };
-    const result = await this.db.write({ path: 'schema.yaml', content: source, expectedEtag });
-    switch (result.kind) {
-      case 'written':
-      case 'unchanged':
-        return result;
-      case 'conflict':
-        return { kind: 'conflict', currentEtag: result.actual ?? '', revision: result.revision };
-      case 'invalid':
-        return { kind: 'invalid', errors: result.errors };
-    }
+    return logged(undefined, 'config.schema.save', { logger: 'schema.write' }, async () => {
+      const parsed = this.meta.validateFile(source);
+      if (!parsed.ok) return { kind: 'invalid', errors: parsed.error };
+      const configSources = new Map<string, string>();
+      for (const [path, content] of await this.db.readAll('config')) {
+        if (!path.endsWith('.yaml')) continue;
+        const namespace = path.slice('config/'.length, -'.yaml'.length);
+        if (namespace.split('/').length === 2) configSources.set(namespace, content);
+      }
+      const existing = await this.dryRun.validateExisting(parsed.value, configSources);
+      if (!existing.ok) return { kind: 'invalid', errors: existing.error };
+      const result = await this.db.write({ path: 'schema.yaml', content: source, expectedEtag });
+      switch (result.kind) {
+        case 'written':
+        case 'unchanged':
+          return result;
+        case 'conflict':
+          return { kind: 'conflict', currentEtag: result.actual ?? '', revision: result.revision };
+        case 'invalid':
+          return { kind: 'invalid', errors: result.errors };
+      }
+    });
   }
 }

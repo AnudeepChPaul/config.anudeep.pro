@@ -12,8 +12,18 @@ lock because all writes advance one database revision; this also fixes lost revi
 from simultaneous writes. Intents live under the private journal, separate from attribution,
 and are excluded from sync. Product creation makes the registry visible last.
 
-Draft removal and the reversal of tick/publish semantics are approved but have not landed in
-this foundation slice. Their historical decisions below still describe the remaining legacy UI.
+The direct-write cutover has landed: Save is live, ticks select Promote/Delete only, and
+`DraftStore` is gone. Historical decisions below that depended on staging are marked obsolete or
+reversed rather than deleted, so the reasoning survives.
+
+The product toolbar is one idle span. Save is inserted into that span only while a live value
+differs from what was loaded. Promote then Delete keys are inserted only while a key is ticked.
+Nothing the line is not showing is left in the HTML. Delete is danger-coloured. Save still
+writes the live values posted in the form.
+
+Product schemas live at `schema/<product>.yaml`. The console and product writes do not use a
+global `schema.yaml` for that. Creating a product writes that file; retirement, key deletion and
+archive update or remove it.
 
 What was chosen, what else was considered, and what it cost. Recorded because the reasoning is
 the part that does not survive in the code.
@@ -26,19 +36,18 @@ commit. Rolling back is `git revert`, not a migration.
 **Consequence:** everything is bounded by one repository on one host, and a draft — which is not
 in git — is explicitly not durable.
 
-## Drafts publish whole, and a draft is one press of Save
+## Drafts publish whole, and a draft is one press of Save — obsolete
 
-**Alternative:** publish selected keys.
-**Why:** a partial publish ships a document nobody reviewed as a whole.
-**Consequence:** to hold a key back you undo the edit. Counts everywhere are in *saves*, not keys.
+**Status:** obsolete after the direct-write cutover.
+**Why it existed:** a partial publish shipped a document nobody reviewed as a whole.
+**Why it ended:** `db/` is the source of truth; Save writes live values. There is no draft and no
+publish step left to protect.
 
-## A tick is a change
+## A tick is a change — reversed
 
-**Why:** "send this one along" is an intent worth recording, and five edits to a namespace should
-be five version bumps.
-**Consequence:** a tick with no edit still writes a draft and bumps the revision, and it writes no
-value. It took two fixes to hold: once for keys with a committed value, once for keys without —
-the second was silently dropped for months of session time.
+**Status:** reversed.
+**Was:** a tick without an edit still wrote a draft and bumped the revision.
+**Now:** a tick selects keys for exactly two actions — Promote and Delete — and writes nothing.
 
 ## Nobody types a commit message
 
@@ -47,13 +56,9 @@ as "wip".
 **Consequence:** messages are generated as `[{service}-{env}] {date} {KEYS}`, one line per save.
 Key *names* appear; values never do.
 
-## A draft says what it is
+## A draft says what it is — obsolete
 
-**Alternative:** infer it — an empty change list, a namespace suffix, a schema path in the files.
-**Why:** inference caught the wrong thing twice. A product whose keys declare no defaults moves no
-key, exactly as a retirement does, so publish skipped its first environment file.
-**Consequence:** `kind` is required; a draft without one is dropped. Making it required was the
-useful part — the compiler then named every place a draft is created.
+**Status:** obsolete. `Draft.kind` and `DraftStore` are gone with the draft model.
 
 ## Retiring is separate from archiving
 
@@ -64,13 +69,10 @@ its last-known-good cache and never learns the registry forgot it; a cold start 
 `retiring: true` so a consumer can see it **without restarting** — the part none of the five
 original options had.
 
-## Archiving commits immediately
+## Archiving commits immediately — obsolete as an exception
 
-**Alternative:** stage it like everything else.
-**Why:** the operator's call, on a rare and deliberate act reachable only from the retiring list.
-**Consequence:** the one write here that skips review. Mitigated by the product already being
-visibly retiring, by an inline confirmation, and by reverting cleanly. It remains the sharpest
-edge in the console.
+**Status:** obsolete as a special case. Every write is immediate now; archive remains confirmation-
+gated and sharp, but it is no longer "the one write that skips review".
 
 ## An archive keeps each environment verbatim
 
@@ -116,8 +118,19 @@ Requiring it broke 267 tests at once, which is the honest blast radius of a requ
 ## Git is a backup medium, not the database
 
 The authoritative registry state is stored under `db/`. Git remains a synchronized backup and
-audit medium. Database revisions wake consumers immediately; synchronization is manual, idle
-triggered, and periodic. This reverses the earlier decision that Git itself was the registry.
+audit medium. Database revisions wake consumers immediately. Git synchronization is off until the
+operator turns **Auto sync** on (then idle + interval, and an immediate flush). While it is off,
+pending work is confirmed with **Sync changes now**. This reverses the earlier decision that Git
+itself was the registry.
+
+## SOPS rules are read from the clone
+
+**Why:** `.sops.yaml` is a git-reviewed encryption policy. `CONFIG_DB_PATH` holds live values and
+only copies `.sops.yaml` on an empty first bootstrap. Pointing `SopsEncryptor` at `db/` made a
+save of `SMTP_PASSWORD` return `secret_not_encrypted` while leaving live values unchanged.
+A later save of a non-secret field refused with `secret values were not encrypted: SMTP_PASSWORD`
+because the empty key is not ciphertext. Empty secrets are allowed to remain empty; a filled
+secret that encryption left in plaintext is still refused.
 
 ## Feature flags are global booleans
 
@@ -126,4 +139,20 @@ There is no targeting, rollout, context, or draft path. An absent environment va
 false, which is the safe failure direction.
 # Direct-write safety checkpoint — 2026-09-10
 
-Direct writers capture their base before expensive encryption and use explicit expected ETags, including null for absent files. Semantic no-op saves preserve ciphertext to avoid spurious versions from randomized encryption. This checkpoint does not reverse the remaining legacy console behavior; draft-removal decision reversals must be finalized with that cutover.
+Direct writers capture their base before expensive encryption and use explicit expected ETags, including null for absent files. Semantic no-op saves preserve ciphertext to avoid spurious versions from randomized encryption.
+
+## Direct-write cutover — 2026-09-11
+
+Staging existed to make "saved" mean something weaker than "live". Once `db/` became the source of
+truth that middle state stopped paying for itself. Product creation, environment values, retirement,
+archive, promote, and product-wide key delete all write through `ProductWriteOperations` /
+`DBEngine.writeMany()`. The console says **Live now** and **Backed up to git**; nothing says Publish.
+Pending `drafts.json` is discarded at boot (`discardLegacyWork`).
+
+## Postgres request_sid logging — 2026-09-11
+
+**Chosen:** IAM-shaped sink (`log.app_log` / `log.access_log`), minted `request_sid`, and field errors on the product page.
+**Rejected:** stdout-only (no Postgres); shipping through `audit.anudeep.pro` ingest.
+**Why:** promote failures already computed `ValidationError[]` but the console showed only "configuration is invalid". Operators debug IAM by request id in Postgres; this service uses `request_sid` (`sid_` prefix) and copies the same value into `request_id`.
+**Consequence:** Compose owns `log-db` (`postgresql://config:config@log-db:5432/log`, host port 5435). `CONFIG_LOG_DATABASE_URL` may still be unset for a host process. Inbound `X-Request-Sid` is ignored; secret values are redacted or never passed to log fields.
+

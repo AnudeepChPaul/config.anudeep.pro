@@ -33,6 +33,8 @@ container.
 | `CONFIG_BREAK_GLASS_PATH` | Absolute reads from the volume; relative from the tree | `/var/lib/config/break-glass.yaml` |
 | `CONFIG_POLL_INTERVAL_MS` | Fallback reload when a webhook is missed | 60s |
 | `CONFIG_PUSH_RETRY_INTERVAL_MS` | Retry for a push that failed | 60s |
+| `CONFIG_LOG_LEVEL` | pino level | `info` |
+| `CONFIG_LOG_DATABASE_URL` | Postgres for `log.app_log` / `log.access_log` | Compose sets `postgresql://config:config@log-db:5432/log`. Unset (host process) is stdout only |
 
 An age key is a **secret** key. `age1…` is the public recipient and will not decrypt anything;
 the symptom is a console that starts and cannot read a value.
@@ -53,11 +55,13 @@ which is the question two of this project's longest outages turned on.
 | Symptom | Cause seen in practice |
 |---|---|
 | `Permission denied (publickey)` on push | `CONFIG_DEPLOY_KEY` empty, so compose created a **directory** at the mount point and ssh was handed a folder |
-| Publishing says "not yet pushed" forever | No remote configured, or a local history that shares no ancestor with it (`git merge-base` empty) |
-| A published change does not appear in the console | Before `onCommitted`, the registry and schemas refreshed only on a webhook or the poll |
+| Auto sync / Sync changes now reports not on the remote | No remote configured, or a local history that shares no ancestor with it (`git merge-base` empty). Problem banner uses `backup-deferred` / `backup-no-remote`. |
+| A saved change does not appear in the console | Cache/`onCommitted` refresh failed; check logs |
 | Secrets will not decrypt | `CONFIG_AGE_KEY` holds the public recipient rather than the secret key |
-| A staged draft vanished | A draft with no `kind` is dropped on read; it is not durable state |
-| Save says "nothing to save" | The form posted no edit and no tick — an empty box on an unset key is not a change |
+| Save says `secret values were not encrypted: KEY` | A **filled** secret was stored as plaintext — `.sops.yaml` missing, wrong directory, or `encrypted_regex` does not include that key. An **empty** secret (iam's `SMTP_PASSWORD: ""`) is allowed. |
+| Delete returns `would_orphan` | Removing those keys would leave an environment document invalid; adjust data first |
+| Process refuses to start after a crash mid-write | Transaction journal needs recovery; do not delete `db/.journal` during the incident |
+| Promote/save says **configuration is invalid** with no reason | Fixed: the page shows each key's schema message (`.err`). Trace with `X-Request-Sid` |
 
 ## Migration
 
@@ -66,7 +70,23 @@ field as optional, **write** it into the registry, **then** require it. Requirin
 leaves a deploy that cannot read its own registry.
 
 - `version` on `services.yaml` and `schema/*.yaml` — done (`213a3e2`, registry `97887a9`, `a31b4ec`).
-- `kind` on a draft — not migrated by design: drafts without one are dropped.
+- Direct-write cutover — `drafts.json` discarded at boot; no draft format remains.
+
+## Logging
+
+Compose starts `log-db` (Postgres 16) as a dependency of `app`. Schema `sql/log/0001_log_schema.sql` is applied on the first empty volume.
+
+| Where | URL |
+|---|---|
+| Inside `app` | `postgresql://config:config@log-db:5432/log` |
+| Host (psql, GUI) | `postgresql://config:config@127.0.0.1:5435/log` |
+
+```sh
+psql postgresql://config:config@127.0.0.1:5435/log -c \
+  "SELECT occurred_at, level_name, message, logger, request_sid FROM log.app_log ORDER BY occurred_at DESC LIMIT 20;"
+```
+
+`make reset` drops `config_log_pgdata` with the other volumes, so the schema is applied again on next `make dev`. A process not started by this compose file, with `CONFIG_LOG_DATABASE_URL` unset, keeps stdout only.
 
 ## Recovery and rollback
 
@@ -116,6 +136,13 @@ console's sync operation.
 If synchronization fails, the database remains authoritative and served locally. Inspect the
 journal under `<CONFIG_DB_PATH>/.journal`; restart recovery merges an orphaned sending journal
 back into pending work. Do not delete journal files during an incident.
+## Direct-write cutover
+
+Pending drafts are discarded at boot. After deploy, Auto sync is **off**. Turn it on (immediate
+flush) or use **Sync changes now** so writes are mirrored off-host. On conflict (409), reload and re-apply; do not retry an
+unconditional overwrite. A `would_orphan` refusal means a delete would leave invalid environment
+data — fix the data, then retry.
+
 # Direct-write safety checkpoint — 2026-09-10
 
 Implementation checkpoint (not a deployment-ready cutover): value saves and product creation now refuse stale bases, including changes made while encryption runs. On conflict, reload and explicitly review/reapply the edit; do not retry an unconditional overwrite. No existing data or pending work was deleted at this checkpoint. Preserve db/ and take a current backup before rolling back code.

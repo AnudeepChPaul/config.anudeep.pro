@@ -1,5 +1,6 @@
 import { lstat } from 'node:fs/promises';
 import { isAbsolute, join, normalize } from 'node:path';
+import { logCaught } from '@config/src/logging.js';
 
 export function databasePath(root: string, path: string): string {
   if (
@@ -23,6 +24,7 @@ export async function assertNoSymlinks(root: string, path: string): Promise<void
       if ((await lstat(candidate)).isSymbolicLink())
         throw new Error(`symlink in database path: ${path}`);
     } catch (error) {
+      logCaught(error, 'config.db.path.lstat.failed', { logger: 'store.database-path' });
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }

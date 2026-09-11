@@ -1,3 +1,4 @@
+import { logged, logCaught, type MethodLog } from '@config/src/logging.js';
 import type { GitRepository } from './repository.js';
 
 /**
@@ -17,7 +18,10 @@ export interface RetryResult {
 }
 
 export class GitSyncer {
-  constructor(private readonly repository: GitRepository) {}
+  constructor(
+    private readonly repository: GitRepository,
+    private readonly log?: MethodLog,
+  ) {}
 
   /**
    * Pushes anything pending. Never throws.
@@ -26,10 +30,15 @@ export class GitSyncer {
    * for the length of a GitHub outage — turning one failure into a flood.
    */
   async retryUnpushed(): Promise<RetryResult> {
-    const pending = await this.repository.unpushedCommits().catch(() => []);
-    if (pending.length === 0) return { pushed: false, commits: 0 };
+    return logged(this.log, 'config.git.retry', { logger: 'git.syncer' }, async () => {
+      const pending = await this.repository.unpushedCommits().catch((error: unknown) => {
+        logCaught(error, 'config.git.unpushed.failed', { logger: 'git.syncer' });
+        return [];
+      });
+      if (pending.length === 0) return { pushed: false, commits: 0 };
 
-    const result = await this.repository.push();
-    return { pushed: result.pushed, commits: result.pushed ? pending.length : 0 };
+      const result = await this.repository.push();
+      return { pushed: result.pushed, commits: result.pushed ? pending.length : 0 };
+    });
   }
 }

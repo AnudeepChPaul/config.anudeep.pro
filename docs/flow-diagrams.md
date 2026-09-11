@@ -43,102 +43,87 @@ flowchart TD
 A denial says nothing about why: an ungranted caller cannot tell a namespace that exists from one
 that does not.
 
-## Saving and publishing
+## Saving values (live)
 
 ```mermaid
 flowchart TD
-    Save["Save: edited values and ticks"] --> Validate{"matches the schema?"}
-    Validate -->|"no"| Errors["422, per-key errors, swapped in"]
-    Validate --> Moved{"anything moved or ticked?"}
-    Moved -->|"no"| Nothing["nothing-staged"]
-    Moved --> Draft["Draft: ENV_UPDATES, one save appended"]
-    Draft --> Publish["Publish"]
-    Publish --> Stale{"file changed underneath?"}
-    Stale -->|"yes"| Conflict["publish-stale: nothing published"]
-    Stale --> Commit["One commit, generated message, trailers"]
-    Commit --> Push{"pushed?"}
-    Push -->|"yes"| Done["published"]
-    Push -->|"no"| Local["published-unpushed: durable here, backed up nowhere"]
-    Commit --> Reload["state.reload(): registry, schemas, values"]
+    Save["POST save"] --> Validate{"matches the schema?"}
+    Validate -->|no| R422["422 with field errors"]
+    Validate --> Cas{"ETag matches?"}
+    Cas -->|no| R409["409 reload and re-apply"]
+    Cas --> Write["DBEngine write; bump version if changed"]
+    Write --> Live["Live now; cache wakes"]
+    Live --> Backup{"Auto sync on?"}
+    Backup -->|yes| Idle["idle/timer SyncEngine"]
+    Backup -->|no| Manual["Sync changes now when pending"]
 ```
 
-A tick with no edit is a change: it records intent and bumps the revision without writing a value.
-
-## Creating a product
+## Create product
 
 ```mermaid
 flowchart TD
-    Form["/p/new"] --> Check{"name, uid, environments, schema"}
-    Check -->|"invalid"| Back["422: the form, refilled, errors by row"]
-    Check --> Uid{"uid already claimed?"}
-    Uid -->|"yes"| Back
-    Uid --> Staged["One draft: PRODUCT_CREATION"]
-    Staged --> Commit["Publish: services.yaml + schema + every env file, one commit"]
+    Create["POST /p/new"] --> Val["Validate schema and uid"]
+    Val --> Atomic["writeMany: schema → env files → services.yaml last"]
+    Atomic --> Visible["Product becomes visible"]
 ```
 
-One draft, because a registry entry without its schema is a product nobody can open and a schema
-without its entry is a file nothing reads.
-
-## Retiring, then archiving
+## Promote and Delete
 
 ```mermaid
 flowchart TD
-    Mark["Mark as retiring"] --> RDraft["Draft: PRODUCT_RETIREMENT at service/retiring"]
-    RDraft --> Act{"Act on it"}
-    Act -->|"Revert, staged"| Drop["Draft dropped: nothing left this console"]
-    Act -->|"Retire"| RCommit["Commit: schema gains retiring: true"]
-    RCommit --> Seen["Read API reports retiring: true — consumers see it without restarting"]
-    Seen --> Wait["An interval the operator chooses"]
-    Wait --> Archive{"Archive the Product"}
-    Archive -->|"Cancel archive"| Seen
-    Archive -->|"Yes, Archive it"| ACommit["One commit, immediately"]
-    ACommit --> Written["archived/&lt;name&gt;.yaml written"]
-    ACommit --> Gone["services.yaml entry, schema, env files removed"]
-    Gone --> Cold["A consumer restarting now gets 403 unknown_uid"]
+    Tick["Operator ticks keys"] --> Action{"Promote or Delete?"}
+    Action -->|Promote| Secret{"any secret?"}
+    Secret -->|yes| Refuse["422 cannot promote a secret"]
+    Secret -->|no| Target["Direct write into next environment"]
+    Target -->|invalid merged document| FieldErr["422 field errors on the product page"]
+    Action -->|Delete| Confirm["Confirm naming keys and every environment"]
+    Confirm --> Strip["Strip keys from every env file then schema"]
 ```
 
-The interval between the two steps is the design: a running consumer keeps its last-known-good
-values and is told, through the read API, that the product is going.
-
-## Failure, retry and fallback
+## Retire and archive
 
 ```mermaid
 flowchart TD
-    Publish["publish()"] --> Commit["commit"]
-    Commit --> Try{"push"}
-    Try -->|"fails"| Keep["Committed and served locally; the console says 'not yet pushed'"]
-    Keep --> Retry["Background retry every CONFIG_PUSH_RETRY_INTERVAL_MS"]
-    Retry --> Try
-    Webhook["GitHub push webhook"] --> Reload["pull, then reload"]
-    Missed["Webhook never arrived"] --> Poll["Poll every CONFIG_POLL_INTERVAL_MS"] --> Reload
-    ReloadFail["A part cannot be read"] --> LastGood["That part keeps its last known good value; the service stays up"]
+    Retire["setRetiring schema write"] --> Mark["Consumers see retiring: true"]
+    Mark --> Archive["archiveProduct: services.yaml first"]
+    Archive --> Gone["No longer served"]
 ```
 
-## Rollback
-
-| What | How |
-|---|---|
-| A published value | `git revert` the commit; the next reload serves the previous values |
-| A published retirement | Revert on the retiring page, or revert the commit |
-| An archive | `git revert` the archive commit: the entry, the schema and every environment come back, ciphertext intact |
-| A draft | Drop it; nothing reached git |
-| The service itself | Deploy the previous image; the repository is the state, and it is unchanged by a rollback |
-
-## Database write and synchronization
+## Git backup (auto-sync off by default)
 
 ```mermaid
 flowchart TD
-    Post[Console write] --> Validate[Validate and encrypt]
-    Validate --> DB[Write db atomically]
-    DB --> Rev[Increment revision]
-    Rev --> Wake[Wake cache watchers]
-    DB --> Journal[Append journal entry]
-    Journal --> Timer[Manual, idle, or interval sync]
-    Timer --> Mirror[Mirror db to config.bare]
-    Mirror --> Commit[Commit changed files]
-    Commit --> Push[Push remote]
-    Push --> Retry[Retry when unavailable]
+  Write[Live DB write] --> Gate{Auto sync on?}
+  Gate -->|yes| Engine[SyncEngine commit and push]
+  Gate -->|no| Pending[Journal and unpushed accumulate]
+  Pending --> Btn[Sync changes now]
+  Btn --> List[Preview list]
+  List --> Cancel[Cancel]
+  List --> Confirm[Confirm POST /sync]
+  Confirm --> Engine
+  ToggleOn[Auto sync turned on] --> Engine
+  Engine --> Ok{outcome}
+  Ok -->|synced| Clear[Clear problem banner]
+  Ok -->|deferred| Banner[backup-deferred notice]
+  Ok -->|throw| Fail[backup-failed notice]
 ```
+
+## Request logging
+
+```mermaid
+flowchart TD
+  Req[HTTP or webhook request] --> Mint["mint request_sid sid_…"]
+  Mint --> Header["X-Request-Sid"]
+  Mint --> ALS[AsyncLocalStorage]
+  ALS --> Pino[pino mixin]
+  Pino --> Std[stdout JSON]
+  Pino --> Sink["LogDbSink fail-open"]
+  Sink --> Pg[(Postgres log.app_log)]
+  Header --> Access["onResponse access_log"]
+  Access --> Pg
+  Sink -->|Postgres down| Drop[drop buffered rows; console still serves]
+```
+
 # Direct-write safety checkpoint — 2026-09-10
 
 Direct-save flow refinement: read ciphertext and ETag → decrypt → validate → compare semantic values → encrypt changed values with incremented version → verify each secret field → compare-and-swap. A concurrent write returns conflict without installing the candidate. A no-op verifies its base without re-encryption.

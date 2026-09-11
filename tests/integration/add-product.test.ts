@@ -111,7 +111,7 @@ keys:
       const before = await db.read('config/iam/prod.yaml');
 
       expect((await retire(true)).ok).toBe(true);
-      expect(await db.read('schema.yaml')).toMatch(/retiring: true/);
+      expect(await db.read('schema/iam.yaml')).toMatch(/retiring: true/);
       // Byte-identical: the revision counter did not move for a change nobody made.
       expect(await db.read('config/iam/prod.yaml')).toBe(before);
     });
@@ -125,7 +125,7 @@ keys:
       await retire(true);
 
       expect(await db.read('config/iam/prod.yaml')).toMatch(/MFA_ENFORCEMENT/);
-      expect(await db.read('schema.yaml')).toMatch(/retiring: true/);
+      expect(await db.read('schema/iam.yaml')).toMatch(/retiring: true/);
     });
 
     it('takes the flag off again, which is how a retirement is cancelled', async () => {
@@ -133,18 +133,18 @@ keys:
 
       await retire(false);
 
-      expect(await db.read('schema.yaml')).not.toMatch(/retiring: true/);
+      expect(await db.read('schema/iam.yaml')).not.toMatch(/retiring: true/);
     });
 
     it('changes nothing when it is asked for the state it is already in', async () => {
       // Reverting a retirement nobody made has nothing to undo. It used to leave a draft that
       // changed nothing and still had to be published to make the change nobody made go away.
-      const before = await db.read('schema.yaml');
+      const before = await db.read('schema/iam.yaml');
 
       const reverted = await retire(false);
 
       expect(reverted.ok).toBe(true);
-      expect(await db.read('schema.yaml')).toBe(before);
+      expect(await db.read('schema/iam.yaml')).toBe(before);
     });
 
     it('refuses a product with no schema to mark', async () => {
@@ -182,7 +182,7 @@ keys:
 
     expect(created.ok).toBe(true);
     expect(await db.read('services.yaml')).toMatch(/audit/);
-    expect(await db.read('schema.yaml')).toMatch(/RETENTION_DAYS/);
+    expect(await db.read('schema/audit.yaml')).toMatch(/RETENTION_DAYS/);
     expect(await db.read('config/audit/dev.yaml')).toBeTruthy();
     expect(await db.read('config/audit/prod.yaml')).toBeTruthy();
   });
@@ -268,6 +268,8 @@ keys:
     await addAudit();
 
     expect(await db.read('services.yaml')).toContain('audit');
-    expect(SchemaSet.fromDocument((await db.read('schema.yaml')) ?? '').has('audit')).toBe(true);
+    expect(SchemaSet.fromFiles({ audit: (await db.read('schema/audit.yaml')) ?? '' }).has('audit')).toBe(
+      true,
+    );
   });
 });

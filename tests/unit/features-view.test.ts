@@ -11,7 +11,7 @@ describe('feature flags view', () => {
       }),
     );
 
-    expect(page).toContain('>features</a>');
+    expect(page).toContain('>Features</a>');
     expect(page).toContain('hx-get="/features/new?env=dev"');
     expect(page).toContain('id="feature-list"');
     expect(page).toContain('NEW_CHECKOUT');

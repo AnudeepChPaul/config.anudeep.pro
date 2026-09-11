@@ -5,6 +5,7 @@ import {
   timingSafeEqual,
 } from 'node:crypto';
 import { err, ok, type Result } from '../identity/types.js';
+import { logged } from '../logging.js';
 import { decodeBase32 } from './base32.js';
 import { totpCounter, verifyTotp } from './totp.js';
 
@@ -120,43 +121,50 @@ export class BreakGlass {
   constructor(private readonly options: BreakGlassOptions) {}
 
   async attempt(password: string, code: string): Promise<Result<BreakGlassActor, Denied>> {
-    const now = (this.options.now ?? (() => Math.floor(Date.now() / 1000)))();
-    const { record } = this.options;
+    return logged(
+      undefined,
+      'config.break-glass.attempt',
+      { logger: 'auth.break-glass' },
+      async () => {
+        const now = (this.options.now ?? (() => Math.floor(Date.now() / 1000)))();
+        const { record } = this.options;
 
-    if (await this.options.isIamReachable()) {
-      // Refused before the credentials are even examined, so this path cannot be used to test
-      // passwords while iam is healthy — and the code is not spent, because the operator will
-      // need it when iam actually goes down.
-      this.options.alert({ outcome: 'refused_iam_up', at: now });
-      return err(DENIED);
-    }
+        if (await this.options.isIamReachable()) {
+          // Refused before the credentials are even examined, so this path cannot be used to test
+          // passwords while iam is healthy — and the code is not spent, because the operator will
+          // need it when iam actually goes down.
+          this.options.alert({ outcome: 'refused_iam_up', at: now });
+          return err(DENIED);
+        }
 
-    if (!record) {
-      // A repository with no break-glass record must not be one that anyone can edit during an
-      // outage. The wasted work keeps an unconfigured instance from answering instantly, which
-      // would tell an attacker to go and try another door.
-      await hashPassword(password);
-      this.options.alert({ outcome: 'failed', at: now });
-      return err(DENIED);
-    }
+        if (!record) {
+          // A repository with no break-glass record must not be one that anyone can edit during an
+          // outage. The wasted work keeps an unconfigured instance from answering instantly, which
+          // would tell an attacker to go and try another door.
+          await hashPassword(password);
+          this.options.alert({ outcome: 'failed', at: now });
+          return err(DENIED);
+        }
 
-    const passwordOk = await verifyPassword(password, record.passwordHash);
-    const totp = verifyTotp(code, {
-      secret: decodeBase32(record.totpSecret),
-      now,
-      lastUsedCounter: this.lastUsedCounter,
-    });
+        const passwordOk = await verifyPassword(password, record.passwordHash);
+        const totp = verifyTotp(code, {
+          secret: decodeBase32(record.totpSecret),
+          now,
+          lastUsedCounter: this.lastUsedCounter,
+        });
 
-    // Both are evaluated before either is judged, so the response time does not say which one
-    // failed.
-    if (!passwordOk || !totp.ok) {
-      this.options.alert({ outcome: 'failed', at: now });
-      return err(DENIED);
-    }
+        // Both are evaluated before either is judged, so the response time does not say which one
+        // failed.
+        if (!passwordOk || !totp.ok) {
+          this.options.alert({ outcome: 'failed', at: now });
+          return err(DENIED);
+        }
 
-    this.lastUsedCounter = totp.counter;
-    this.options.alert({ outcome: 'succeeded', at: now });
+        this.lastUsedCounter = totp.counter;
+        this.options.alert({ outcome: 'succeeded', at: now });
 
-    return ok({ email: record.actorEmail, id: `break-glass:${totpCounter(now)}` });
+        return ok({ email: record.actorEmail, id: `break-glass:${totpCounter(now)}` });
+      },
+    );
   }
 }

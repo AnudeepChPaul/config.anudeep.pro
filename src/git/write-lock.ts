@@ -1,3 +1,5 @@
+import { logCaught } from '@config/src/logging.js';
+
 /**
  * Serialises writes to the repository.
  *
@@ -29,7 +31,9 @@ export class WriteLock {
       release = resolve;
     });
 
-    await previous.catch(() => {});
+    await previous.catch((error: unknown) => {
+      logCaught(error, 'config.write-lock.previous.failed', { logger: 'git.write-lock' });
+    });
     this.depth += 1;
 
     try {

@@ -19,8 +19,8 @@ habits follow from that, each learned from a test that passed while the code was
 
 | Suite | Count | What it covers |
 |---|---|---|
-| `tests/unit` | 39 files | Schema validation and building, drafts, the registry, notices, the rendered CSS and DOM, the browser scripts under jsdom |
-| `tests/integration` | 20 files | The console end to end over Fastify inject, the read API over a real Unix socket, git behaviour against real repositories, SOPS round trips |
+| `tests/unit` | many files | Schema validation, product-write operations, notices, request_sid/logging sink, auto-sync/pending-sync, DOM/CSS, ticks.js under jsdom |
+| `tests/integration` | many files | Live console (`ui.test.ts`), promote/delete, write service, read API over a real Unix socket, SOPS, git sync |
 
 Notable ones: `every-page-state.test.ts` renders twelve page states and asserts four rules across
 all of them, because a rule holds only where it is looked at. `key-form.test.ts` and
@@ -53,6 +53,7 @@ because every interesting bug in this project lived exactly there.
 - **Rendered pixels.** CSS assertions pin mechanisms (a font-size is declared, a row has a fixed
   height); alignment and spacing are checked in a browser.
 - **The webhook path** is covered for signature handling, not against GitHub itself.
+- **Logging Postgres inserts** are unit-tested against a fake pool (redaction, fail-open flush). A live log database is not started in CI.
 - **Archiving** is covered by integration tests; the only end-to-end archive against a real remote
   was performed by the operator.
 
@@ -78,6 +79,19 @@ Unit tests cover atomic file writes, revisions, ETags, path-scoped conflicts, jo
 flag validation and resolution, schema composition, synchronization, scheduling, and client
 fallbacks. Integration coverage against a real Git mirror and a running database-backed server is
 still required before general availability.
+## Direct-write cutover verification — 2026-09-11
+
+`tests/integration/ui.test.ts` asserts the live console: Save redirects with `done=saved` and
+shows "Live now"; Promote/Delete use ticks; `/drafts` and `/publish` are gone; AC8/AC9 use
+`visible()` so stylesheet history comments do not fail the wording rules.
+`tests/unit/notices.test.ts` covers the live/back-up notice codes and refusal of removed draft
+codes.
+
+```sh
+docker compose run --rm test pnpm exec vitest run tests/integration/ui.test.ts
+docker compose run --rm test pnpm exec vitest run tests/unit/notices.test.ts
+```
+
 # Direct-write safety checkpoint — 2026-09-10
 
 Additional regressions in tests/unit/db-config-write-service.test.ts cover document version increments, semantic no-op encryption avoidance, mixed encrypted/plaintext secret refusal, concurrent modification during encryption, and dependency-error redaction. tests/unit/db-topology-write-service.test.ts covers atomic refusal when the global schema changes during product encryption. The version, mixed-secret, and topology-conflict tests were observed failing before their fixes. Focused verification: pnpm exec vitest run tests/unit/db-config-write-service.test.ts tests/unit/db-topology-write-service.test.ts — 11 passed; pnpm typecheck passed. Full cutover/end-to-end verification remains outstanding.

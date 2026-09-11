@@ -1,6 +1,7 @@
 import { parse as parseYaml } from 'yaml';
 import { GitRepository } from '../git/repository.js';
 import { ServiceRegistry } from '../identity/registry.js';
+import { logCaught } from '../logging.js';
 import { SchemaSet } from '../schema/validator.js';
 
 /**
@@ -33,6 +34,7 @@ export async function validateRepository(repoDir: string): Promise<Finding[]> {
   try {
     schemas = SchemaSet.fromFiles(await repository.readSchemas());
   } catch (error) {
+    logCaught(error, 'config.validate.schemas.failed', { logger: 'cli.validate-repo' });
     return [{ file: 'schema/', message: (error as Error).message }];
   }
 
@@ -47,8 +49,7 @@ export async function validateRepository(repoDir: string): Promise<Finding[]> {
       const document = parseYaml(source) as Record<string, unknown> | null;
       parsed = document ?? {};
     } catch (error) {
-      // Recorded and skipped, not thrown: a push that breaks two files should report both, or
-      // fixing them takes two round trips.
+      logCaught(error, 'config.validate.yaml.failed', { logger: 'cli.validate-repo', file });
       findings.push({ file, message: `is not valid YAML: ${(error as Error).message}` });
       continue;
     }
@@ -83,7 +84,8 @@ export async function validateRepository(repoDir: string): Promise<Finding[]> {
 async function readServices(repository: GitRepository): Promise<string | null> {
   try {
     return await repository.readFile('services.yaml');
-  } catch {
+  } catch (error) {
+    logCaught(error, 'config.validate.services.read.failed', { logger: 'cli.validate-repo' });
     return null;
   }
 }
@@ -101,6 +103,7 @@ function validateGrants(
   try {
     registry = ServiceRegistry.fromYaml(servicesYaml);
   } catch (error) {
+    logCaught(error, 'config.validate.services.parse.failed', { logger: 'cli.validate-repo' });
     return [{ file: 'services.yaml', message: (error as Error).message }];
   }
 

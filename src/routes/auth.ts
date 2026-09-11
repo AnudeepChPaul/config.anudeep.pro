@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { setUserEmail, logCaught } from '@config/src/logging.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { BreakGlass } from '../auth/break-glass.js';
 import { createPkce, type OidcClient, pkceFor } from '../auth/oidc.js';
@@ -68,6 +69,7 @@ export function registerAuthRoutes(
   app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
     const session = auth.codec.verify(request.cookies[SESSION_COOKIE] ?? '');
     if (session) request.session = session;
+    setUserEmail(session?.email);
     if (session || open.has(request.url.split('?')[0] ?? '')) return;
 
     return reply.code(302).header('location', '/login').send();
@@ -143,9 +145,8 @@ export function registerAuthRoutes(
           verifier: flow.verifier,
           nonce: flow.nonce,
         });
-      } catch {
-        // Deliberately not the underlying reason: it would distinguish a wrong audience from an
-        // expired token for anyone who can reach this endpoint.
+      } catch (error) {
+        logCaught(error, 'config.auth.oidc.exchange.failed', { logger: 'routes.auth' });
         return signInFailed(reply, 'iam could not complete this sign-in.');
       }
 

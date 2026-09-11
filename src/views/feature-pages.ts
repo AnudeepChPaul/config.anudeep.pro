@@ -1,11 +1,18 @@
 import { html, raw, type SafeHtml } from '@config/src/views/html.js';
-import { consoleTabs, layout, type PageNotice, pageHeader } from '@config/src/views/page-frame.js';
+import {
+  consoleTabs,
+  layout,
+  layoutChrome,
+  type PageNotice,
+  pageHeader,
+  titled,
+} from '@config/src/views/page-frame.js';
 export function renderFeatureAddRow(environment = ''): SafeHtml {
   return html`<li class="row feature-row">
     <form method="post" action="/features" hx-post="/features" hx-target="#page"
-          hx-swap="innerHTML" class="fieldrow" style="width:100%;margin:0;">
+          hx-swap="innerHTML" class="fieldrow feature-add">
       ${environment ? html`<input type="hidden" name="environment" value="${environment}">` : html``}
-      <label class="field" style="flex:1;margin:0;">Feature name
+      <label class="field">Feature name
         <input type="text" name="name" required pattern="[A-Z][A-Z0-9_]*" autofocus>
       </label>
       <button type="submit">Save</button>
@@ -26,6 +33,8 @@ export function renderFeatures(options: {
   settingsLink?: boolean;
   build?: string;
   fragment?: boolean;
+  autoSync?: boolean;
+  currentPath?: string;
 }): SafeHtml {
   const names = Object.keys(options.flags).sort((left, right) => left.localeCompare(right));
   const rows = names.map((name) => {
@@ -61,7 +70,7 @@ export function renderFeatures(options: {
     <nav class="tabs" aria-label="Feature environments">${(options.environments ?? []).map(
       (environment) => {
         const url = `/features?env=${encodeURIComponent(environment)}`;
-        return html`<a class="tab ${environment === options.environment ? 'on' : ''}" href="${url}" hx-get="${url}" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">${environment}</a>`;
+        return html`<a class="tab ${environment === options.environment ? 'on' : ''}" href="${url}" hx-get="${url}" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">${titled(environment)}</a>`;
       },
     )}</nav>
     ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
@@ -69,5 +78,7 @@ export function renderFeatures(options: {
       ${addRow}
       ${rows.length > 0 ? rows : html`<li class="row"><span class="hint">No features yet.</span></li>`}
     </ul>`;
-  return options.fragment ? body : layout('Features', body, options.settingsLink, options.build);
+  return options.fragment
+    ? body
+    : layout('Features', body, options.settingsLink, options.build, layoutChrome(options));
 }

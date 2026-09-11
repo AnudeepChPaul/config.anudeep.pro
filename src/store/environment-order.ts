@@ -1,4 +1,5 @@
 import { parse as parseYaml } from 'yaml';
+import { logCaught } from '@config/src/logging.js';
 
 /**
  * Which environment promotes into which.
@@ -23,7 +24,8 @@ export class EnvironmentOrder {
     let parsed: unknown;
     try {
       parsed = parseYaml(source);
-    } catch {
+    } catch (error) {
+      logCaught(error, 'config.environments.yaml.failed', { logger: 'store.environment-order' });
       return EnvironmentOrder.none();
     }
 

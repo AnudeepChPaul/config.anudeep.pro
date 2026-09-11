@@ -12,7 +12,6 @@ import { DBEngine, type WriteEvent } from '@config/src/store/data-layer.js';
 import type { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
 import { ConfigWriteService } from '@config/src/store/write-service.js';
-import { parse, stringify } from 'yaml';
 
 /** Migrate a legacy repository fixture into an isolated authoritative DB, never production data. */
 export async function liveOptions(
@@ -24,15 +23,11 @@ export async function liveOptions(
   const repository = new GitRepository(repoDir);
   const db = new DBEngine(join(repoDir, '.test-db'), onWrite ? { onWrite } : {});
   const sources = await repository.readSources();
-  const definitions = Object.fromEntries(
-    Object.entries(schemas).map(([name, source]) => {
-      const definition = parse(source);
-      delete definition.version;
-      return [name, definition];
-    }),
-  );
   const files = [
-    { path: 'schema.yaml', content: stringify({ version: 1, services: definitions }) },
+    ...Object.entries(schemas).map(([name, source]) => ({
+      path: `schema/${name}.yaml`,
+      content: source,
+    })),
     { path: 'services.yaml', content: await repository.readFile('services.yaml') },
     { path: 'environments.yaml', content: await repository.readFile('environments.yaml') },
     ...[...sources.sources].map(([namespace, content]) => ({

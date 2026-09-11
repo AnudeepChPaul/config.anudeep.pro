@@ -54,6 +54,8 @@ export interface ServiceConfig {
   readonly enableSettings: boolean;
   /** Addresses admitted to it beside a break-glass session. Lowercased; empty admits nobody. */
   readonly settingsAllow: readonly string[];
+  /** Optional Postgres for application and access logs. Null keeps stdout only. */
+  readonly logDatabaseUrl: string | null;
 }
 
 /** The environments this service knows how to be. Anything else is a misconfiguration. */
@@ -146,5 +148,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
       .split(',')
       .map((entry) => entry.trim().toLowerCase())
       .filter((entry) => entry.length > 0),
+    logDatabaseUrl: env.CONFIG_LOG_DATABASE_URL?.trim() || null,
   };
 }

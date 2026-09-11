@@ -1,26 +1,36 @@
+import { isDeepStrictEqual } from 'node:util';
 import { buildInfo, buildLabel } from '@config/src/build-info.js';
 import type { FlagWriteService } from '@config/src/flags/flag-write-service.js';
-import { defaultsOf, keyBodies, keyDrafts } from '@config/src/routes/product-form.js';
+import { logCaught, logRefused } from '@config/src/logging.js';
+import { allKeyBodies, defaultsOf, keyBodies, keyDrafts } from '@config/src/routes/product-form.js';
+import { safeNextPath } from '@config/src/routes/safe-next-path.js';
 import { buildSchema } from '@config/src/schema/builder.js';
 import type { SchemaWriteService } from '@config/src/schema/schema-write-service.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
 import { type DBEngine, etagFor } from '@config/src/store/data-layer.js';
 import { EnvironmentOrder } from '@config/src/store/environment-order.js';
 import type { ConfigLoader } from '@config/src/store/loader.js';
-import { versionOf } from '@config/src/store/metadata.js';
+import { isMetadataKey, versionOf } from '@config/src/store/metadata.js';
+import type { PendingSyncReport } from '@config/src/store/pending-sync.js';
+import { unsyncedKeyCounts, unsyncedTotal } from '@config/src/store/unsynced.js';
 import {
   type ProductWriteOperations,
   productBase,
 } from '@config/src/store/product-write-operations.js';
+import type { SyncResult } from '@config/src/store/sync-engine.js';
 import type { SyncScheduler } from '@config/src/store/sync-scheduler.js';
+import type { SyncStatus } from '@config/src/store/sync-status.js';
 import { renderFeatureAddRow, renderFeatures } from '@config/src/views/feature-pages.js';
+import { presentWriteFailure } from '@config/src/views/field-errors.js';
 import {
   type LivePageOptions,
   renderConfirmation,
   renderLiveProduct,
   renderLiveProducts,
+  renderSyncPreview,
 } from '@config/src/views/live-pages.js';
 import { renderNewProduct } from '@config/src/views/new-product-page.js';
+import { noticeFor } from '@config/src/views/notices.js';
 import { renderSettings } from '@config/src/views/pages.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { parse } from 'yaml';
@@ -31,8 +41,12 @@ export interface LiveUiOptions {
   readonly operations: ProductWriteOperations;
   readonly flagWriteService?: FlagWriteService;
   readonly schemaWriteService?: Pick<SchemaWriteService, 'save'>;
-  readonly syncScheduler?: Pick<SyncScheduler, 'syncNow'>;
-  readonly pendingBackup?: () => Promise<number>;
+  readonly syncScheduler?: Pick<SyncScheduler, 'syncNow' | 'isAutoSync' | 'setAutoSync'>;
+  readonly pendingSync?: () => Promise<PendingSyncReport>;
+  /** Last Git copy of a path, or null when the clone has never committed it. */
+  readonly readSynced?: (path: string) => Promise<string | null>;
+  readonly autoSyncStore?: { read(): Promise<boolean>; write(enabled: boolean): Promise<void> };
+  readonly syncStatus?: Pick<SyncStatus, 'notice' | 'clear' | 'noteError' | 'noteResult'>;
   readonly settings?: { enabled: boolean; allow: readonly string[] };
   readonly onCommitted?: () => void | Promise<void>;
 }
@@ -53,6 +67,12 @@ const send = (reply: FastifyReply, page: unknown, status = 200) =>
   reply.code(status).type('text/html; charset=utf-8').send(String(page));
 const backTo = (service: string, environment: string) =>
   `/p/${service}?env=${encodeURIComponent(environment)}`;
+const problemFields = (errors: readonly { key: string; message: string }[] | undefined) => ({
+  error_keys: errors?.map((entry) => entry.key).join(',') ?? '',
+  error_messages: errors?.map((entry) => entry.message).join('; ') ?? '',
+});
+const refused = (event: string, fields: Record<string, string | number | boolean | undefined>) =>
+  logRefused(event, { logger: 'routes.live-ui', ...fields });
 
 export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOptions): void {
   const { db, loader, operations } = options;
@@ -61,21 +81,93 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
     !!request.session &&
     (request.session.via === 'break-glass' ||
       options.settings.allow.includes(request.session.email.trim().toLowerCase()));
-  const common = (request: FastifyRequest): LivePageOptions => ({
-    fragment: isHtmx(request),
-    settingsLink: maySeeSettings(request),
-    build: buildLabel(buildInfo()),
-  });
+  const currentPathOf = (request: FastifyRequest) => {
+    const url = request.url || '/';
+    const path = url.split('?')[0] ?? '/';
+    return path.startsWith('/sync') ? '/' : url;
+  };
+  const common = (
+    request: FastifyRequest,
+    extra: Partial<LivePageOptions> = {},
+  ): LivePageOptions => {
+    const query = request.query as Body;
+    const fromQuery = noticeFor(text(query.done), { n: Number(text(query.n)) });
+    const sticky = options.syncStatus?.notice() ?? undefined;
+    const notice = extra.notice ?? fromQuery ?? sticky;
+    return {
+      fragment: isHtmx(request),
+      settingsLink: maySeeSettings(request),
+      build: buildLabel(buildInfo()),
+      autoSync: options.syncScheduler ? options.syncScheduler.isAutoSync() : undefined,
+      currentPath: currentPathOf(request),
+      ...extra,
+      ...(notice
+        ? { notice, dismissTo: extra.dismissTo ?? (fromQuery ? '/' : sticky ? '/sync/ack' : '/') }
+        : {}),
+    };
+  };
+  const afterSync = (request: FastifyRequest, reply: FastifyReply, result: SyncResult) => {
+    options.syncStatus?.noteResult(result);
+    const next = safeNextPath(text((request.body as Body | undefined)?.next));
+    if (result.kind === 'synced') {
+      const params = new URLSearchParams({ done: 'backed-up' });
+      if (result.files.length > 0) params.set('n', String(result.files.length));
+      return reply
+        .code(303)
+        .header('location', `${next.split('?')[0]}?${params}`)
+        .send();
+    }
+    if (result.kind === 'clean') return reply.code(303).header('location', next).send();
+    const done = result.reason?.includes('no remote') ? 'backup-no-remote' : 'backup-deferred';
+    return reply
+      .code(303)
+      .header('location', `${next.split('?')[0]}?done=${done}`)
+      .send();
+  };
   const state = async () => {
     const snapshot = await db.snapshot();
-    const schemas = SchemaSet.fromDocument(
-      snapshot.files.get('schema.yaml') ?? 'version: 1\nservices: {}',
-    );
+    const schemas = SchemaSet.fromTree(snapshot.files);
     const registry = parse(snapshot.files.get('services.yaml') ?? 'version: 1\nservices: []') as {
       services: { name: string; uid: number }[];
     };
     const order = EnvironmentOrder.fromYaml(snapshot.files.get('environments.yaml') ?? '');
     return { ...snapshot, schemas, registry, order };
+  };
+  const previousConfig = async (path: string, namespace: string) => {
+    const source = await options.readSynced?.(path);
+    if (!source) return {};
+    try {
+      return await loader.resolveOne(namespace, source);
+    } catch (error) {
+      logCaught(error, 'config.ui.synced.read.failed', { logger: 'routes.live-ui' });
+      return {};
+    }
+  };
+  const unsyncedChanges = async (
+    path: string,
+    namespace: string,
+    current: Record<string, unknown>,
+    schemas: SchemaSet,
+    service: string,
+  ) => {
+    const keys = [
+      ...new Set(
+        ((await options.pendingSync?.())?.entries ?? [])
+          .filter((entry) => entry.path === path)
+          .flatMap((entry) => entry.keys)
+          .filter((key) => !isMetadataKey(key)),
+      ),
+    ];
+    if (keys.length === 0) return [];
+    const previous = await previousConfig(path, namespace);
+    return keys
+      .map((key) => ({
+        key,
+        from: previous[key],
+        to: current[key],
+        secret: schemas.isSecret(service, key),
+      }))
+      .filter((change) => !isDeepStrictEqual(change.from, change.to));
   };
   const productPage = async (
     request: FastifyRequest,
@@ -85,6 +177,7 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
     submitted: Body = {},
     notice?: LivePageOptions['notice'],
     status = 200,
+    fieldErrors: Readonly<Record<string, string>> = {},
   ) => {
     const current = await state();
     if (
@@ -98,6 +191,25 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
     const source = current.files.get(path);
     const values =
       source === undefined ? {} : await loader.resolveOne(`${service}/${active}`, source);
+    const unsynced = await unsyncedChanges(
+      path,
+      `${service}/${active}`,
+      values,
+      current.schemas,
+      service,
+    );
+    const changeByKey = Object.fromEntries(unsynced.map((change) => [change.key, change]));
+    const query = text((request.query as Body).q ?? '').toLowerCase();
+    const highlight = text((request.query as Body).hl ?? '');
+    // What the same key holds in the other declared environments, read once for the page rather
+    // than per row: promotion is a decision about the difference between two of them.
+    const others = new Map<string, Record<string, unknown>>();
+    for (const other of current.order.all()) {
+      if (other === active) continue;
+      const otherSource = current.files.get(`config/${service}/${other}.yaml`);
+      if (otherSource !== undefined)
+        others.set(other, await loader.resolveOne(`${service}/${other}`, otherSource));
+    }
     const rows = [...current.schemas.definitionsFor(service)].map(([key, definition]) => {
       const typed = submitted[`key.${key}`];
       const value = definition.secret
@@ -111,8 +223,22 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
                   .split(',')
                   .map((value) => value.trim())
               : text(typed);
-      return { key, definition, value };
+      const elsewhere = Object.fromEntries(
+        [...others].map(([environment, held]) => [environment, held[key]]),
+      );
+      return {
+        key,
+        definition,
+        value,
+        elsewhere,
+        found: key === highlight,
+        ...(changeByKey[key] ? { change: changeByKey[key] } : {}),
+        ...(fieldErrors[key] ? { error: fieldErrors[key] } : {}),
+      };
     });
+    // Filtering the fields, not navigating: this is still the product page, with fewer rows on
+    // it, because looking for one key in a product with forty of them was a scroll.
+    const shown = query ? rows.filter((row) => row.key.toLowerCase().includes(query)) : rows;
     // Without this an htmx navigation between environments leaves the address bar on the old
     // one, so a reload lands on a different screen from the one being read.
     if (isHtmx(request))
@@ -125,12 +251,14 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
         service,
         environment: active,
         environments: current.order.all(),
-        rows,
+        rows: shown,
+        query,
         version: versionOf(values),
         etag: source === undefined ? null : etagFor(source),
         next: current.order.next(active),
         retiring: current.schemas.isRetiring(service),
         missing: source === undefined,
+        unsynced,
       }),
       status,
     );
@@ -142,48 +270,85 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
     environment: string,
     result: Awaited<ReturnType<ProductWriteOperations['writeValues']>>,
     submitted: Body = {},
+    done: 'saved' | 'promoted' | 'deleted' | 'created' = 'saved',
   ) => {
     if (result.ok) {
       await options.onCommitted?.();
-      if (!isHtmx(request))
-        return reply
-          .code(303)
-          .header('location', `${backTo(service, environment)}&done=saved`)
-          .send();
-      return productPage(
-        request,
-        reply,
-        service,
-        environment,
-        {},
-        { tone: 'done', text: `Live now in ${service}/${environment}` },
-      );
+      const count = result.value.changedKeys.length;
+      const notice =
+        done === 'promoted'
+          ? {
+              tone: 'done' as const,
+              text:
+                count === 0
+                  ? 'Promoted. Live now.'
+                  : `Promoted ${count} key${count === 1 ? '' : 's'}. Live now.`,
+            }
+          : done === 'deleted'
+            ? {
+                tone: 'done' as const,
+                text:
+                  count === 0
+                    ? 'Keys removed from the schema and every environment.'
+                    : `Removed ${count} key${count === 1 ? '' : 's'} from the schema and every environment.`,
+              }
+            : done === 'created'
+              ? { tone: 'done' as const, text: 'Created from schema defaults. Live now.' }
+              : { tone: 'done' as const, text: `Live now in ${service}/${environment}` };
+      if (!isHtmx(request)) {
+        const params = new URLSearchParams({ env: environment, done });
+        if (count > 0 && (done === 'promoted' || done === 'deleted'))
+          params.set('n', String(count));
+        return reply.code(303).header('location', `/p/${service}?${params}`).send();
+      }
+      return productPage(request, reply, service, environment, {}, notice);
     }
+    const presented = presentWriteFailure(result.error);
+    refused('config.ui.write.failed', {
+      service,
+      environment,
+      code: result.error.code,
+      detail: result.error.detail,
+      status: result.error.code === 'conflict' ? 409 : 422,
+      ...problemFields(result.error.errors),
+    });
     return productPage(
       request,
       reply,
       service,
       environment,
       submitted,
-      { tone: 'problem', text: result.error.detail },
+      presented.notice,
       result.error.code === 'conflict' ? 409 : 422,
+      presented.byKey,
     );
   };
   for (const url of ['/', '/p/retiring'])
     app.get(url, async (request, reply) => {
       const current = await state();
+      const counts = unsyncedKeyCounts((await options.pendingSync?.())?.entries ?? []);
       return send(
         reply,
         renderLiveProducts({
           ...common(request),
-          products: current.registry.services.map((entry) => ({
-            name: entry.name,
-            uid: entry.uid,
-            retiring: current.schemas.isRetiring(entry.name),
-            environments: current.order.all(),
-            keys: [...current.schemas.definitionsFor(entry.name).keys()],
-          })),
-          pendingBackup: (await options.pendingBackup?.()) ?? 0,
+          products: current.registry.services.map((entry) => {
+            const missingSchema = !current.schemas.has(entry.name);
+            return {
+              name: entry.name,
+              uid: entry.uid,
+              retiring: current.schemas.isRetiring(entry.name),
+              environments: current.order.all(),
+              keys: missingSchema ? [] : [...current.schemas.definitionsFor(entry.name).keys()],
+              missingSchema,
+              unsynced: counts.get(entry.name) ?? 0,
+            };
+          }),
+          unsynced: unsyncedTotal(counts),
+          showSyncNow: Boolean(
+            options.syncScheduler &&
+              !options.syncScheduler.isAutoSync() &&
+              ((await options.pendingSync?.())?.ready ?? false),
+          ),
           retiringOnly: url !== '/',
           query: text((request.query as Body).q),
         }),
@@ -193,16 +358,31 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
     '/p/:service',
     async (request: FastifyRequest<{ Params: { service: string }; Querystring: Body }>, reply) => {
       const environment = text(request.query.env);
-      return productPage(
-        request,
-        reply,
-        request.params.service,
-        environment,
-        {},
-        request.query.done === 'saved'
-          ? { tone: 'done', text: `Live now in ${request.params.service}/${environment}` }
-          : undefined,
-      );
+      const done = text(request.query.done);
+      const count = Number(text(request.query.n));
+      const notice =
+        done === 'saved'
+          ? { tone: 'done' as const, text: `Live now in ${request.params.service}/${environment}` }
+          : done === 'created'
+            ? { tone: 'done' as const, text: 'Created from schema defaults. Live now.' }
+            : done === 'promoted'
+              ? {
+                  tone: 'done' as const,
+                  text:
+                    Number.isSafeInteger(count) && count >= 0
+                      ? `Promoted ${count} key${count === 1 ? '' : 's'}. Live now.`
+                      : 'Promoted. Live now.',
+                }
+              : done === 'deleted'
+                ? {
+                    tone: 'done' as const,
+                    text:
+                      Number.isSafeInteger(count) && count >= 0
+                        ? `Removed ${count} key${count === 1 ? '' : 's'} from the schema and every environment.`
+                        : 'Keys removed from the schema and every environment.',
+                  }
+                : undefined;
+      return productPage(request, reply, request.params.service, environment, {}, notice);
     },
   );
   app.post(
@@ -227,7 +407,14 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
             back: backTo(service, environment),
           }),
         );
-      if (body.intent === 'create' && text(body.base) !== productBase(current.files, service))
+      if (body.intent === 'create' && text(body.base) !== productBase(current.files, service)) {
+        refused('config.ui.write.failed', {
+          service,
+          environment,
+          code: 'conflict',
+          detail: 'Product changed; review the defaults again.',
+          status: 409,
+        });
         return productPage(
           request,
           reply,
@@ -237,6 +424,7 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
           { tone: 'problem', text: 'Product changed; review the defaults again.' },
           409,
         );
+      }
       const changes: Record<string, unknown> = {};
       for (const [name, value] of Object.entries(body))
         if (name.startsWith('key.')) {
@@ -258,7 +446,14 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
                       .filter(Boolean)
                   : raw;
         }
-      if (body.intent !== 'create' && typeof body.etag !== 'string')
+      if (body.intent !== 'create' && typeof body.etag !== 'string') {
+        refused('config.ui.write.failed', {
+          service,
+          environment,
+          code: 'conflict',
+          detail: 'Reload this page before saving; its file version is missing.',
+          status: 409,
+        });
         return productPage(
           request,
           reply,
@@ -268,6 +463,7 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
           { tone: 'problem', text: 'Reload this page before saving; its file version is missing.' },
           409,
         );
+      }
       const result = await operations.writeValues(
         {
           service,
@@ -277,7 +473,15 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
         },
         actor(request),
       );
-      return resultPage(request, reply, service, environment, result, body);
+      return resultPage(
+        request,
+        reply,
+        service,
+        environment,
+        result,
+        body,
+        body.intent === 'create' ? 'created' : 'saved',
+      );
     },
   );
   app.post('/promote', async (request: FastifyRequest<{ Body: Body }>, reply) => {
@@ -289,7 +493,7 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
       { service, from, to, keys: list(body.select) },
       actor(request),
     );
-    return resultPage(request, reply, service, result.ok ? to : from, result);
+    return resultPage(request, reply, service, result.ok ? to : from, result, body, 'promoted');
   });
   app.post(
     '/p/:service/delete-keys',
@@ -299,7 +503,14 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
       const environment = text(body.environment);
       const keys = list(body.select);
       const current = await state();
-      if (!keys.length || keys.some((key) => !current.schemas.definitionsFor(service).has(key)))
+      if (!keys.length || keys.some((key) => !current.schemas.definitionsFor(service).has(key))) {
+        refused('config.ui.write.failed', {
+          service,
+          environment,
+          code: 'invalid',
+          detail: 'Select declared keys to remove.',
+          status: 422,
+        });
         return productPage(
           request,
           reply,
@@ -309,6 +520,7 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
           { tone: 'problem', text: 'Select declared keys to remove.' },
           422,
         );
+      }
       const environments = [...current.files.keys()]
         .filter((path) => path.startsWith(`config/${service}/`) && path.endsWith('.yaml'))
         .map((path) => path.slice(`config/${service}/`.length, -5));
@@ -325,7 +537,7 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
           }),
         );
       const result = await operations.deleteKeys(service, keys, actor(request), text(body.base));
-      return resultPage(request, reply, service, environment, result);
+      return resultPage(request, reply, service, environment, result, body, 'deleted');
     },
   );
   app.post(
@@ -348,8 +560,16 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
           }),
         );
       const result = await operations.setRetiring(service, retiring, actor(request));
-      if (!result.ok)
+      if (!result.ok) {
+        refused('config.ui.write.failed', {
+          service,
+          code: result.error.code,
+          detail: result.error.detail,
+          status: result.error.code === 'conflict' ? 409 : 422,
+          ...problemFields(result.error.errors),
+        });
         return reply.code(result.error.code === 'conflict' ? 409 : 422).send(result.error);
+      }
       await options.onCommitted?.();
       return reply.code(303).header('location', `/p/${service}`).send();
     },
@@ -374,8 +594,16 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
           }),
         );
       const result = await operations.archiveProduct(service, actor(request), text(body.base));
-      if (!result.ok)
+      if (!result.ok) {
+        refused('config.ui.write.failed', {
+          service,
+          code: result.error.code,
+          detail: result.error.detail,
+          status: result.error.code === 'conflict' ? 409 : 422,
+          ...problemFields(result.error.errors),
+        });
         return reply.code(result.error.code === 'conflict' ? 409 : 422).send(result.error);
+      }
       await options.onCommitted?.();
       return reply.code(303).header('location', '/p/retiring').send();
     },
@@ -389,9 +617,24 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
   app.post('/p/new', async (request: FastifyRequest<{ Body: Body }>, reply) => {
     const body = request.body ?? {};
     const service = text(body.name).trim();
+    const current = await state();
+    const typed = {
+      name: service,
+      uid: text(body.uid),
+      environments: list(body.environment),
+      keys: allKeyBodies(body),
+    };
+    if (text(body.intent) === 'add-key')
+      return send(
+        reply,
+        renderNewProduct({
+          ...common(request),
+          environments: current.order.all(),
+          typed: { ...typed, keys: [...typed.keys, {}] },
+        }),
+      );
     const keys = keyDrafts(body);
     const schema = buildSchema({ service, keys });
-    const current = await state();
     const result = schema.ok
       ? await operations.createProduct(
           {
@@ -407,22 +650,25 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
           ok: false as const,
           error: { code: 'invalid', detail: 'Invalid schema', errors: schema.error },
         };
-    if (!result.ok)
+    if (!result.ok) {
+      refused('config.ui.write.failed', {
+        service,
+        code: result.error.code,
+        detail: result.error.detail,
+        status: result.error.code === 'conflict' ? 409 : 422,
+        ...problemFields(result.error.errors),
+      });
       return send(
         reply,
         renderNewProduct({
           ...common(request),
           environments: current.order.all(),
-          typed: {
-            name: service,
-            uid: text(body.uid),
-            environments: list(body.environment),
-            keys: keyBodies(body),
-          },
+          typed: { ...typed, keys: typed.keys.length ? typed.keys : keyBodies(body) },
           problems: result.error.errors ?? [{ key: '', message: result.error.detail }],
         }),
         result.error.code === 'conflict' ? 409 : 422,
       );
+    }
     await options.onCommitted?.();
     return reply.code(303).header('location', `/p/${service}`).send();
   });
@@ -432,6 +678,73 @@ export function registerLiveUiRoutes(app: FastifyInstance, options: LiveUiOption
       : reply.code(404).send('Not found'),
   );
   const declaredEnvironments = async () => (await state()).order.all();
+  app.get('/sync', async (request, reply) => {
+    if (!options.syncScheduler) return reply.code(404).send('Not found');
+    if (options.syncScheduler.isAutoSync()) {
+      if (isHtmx(request)) return send(reply, '');
+      return reply.code(303).header('location', '/').send();
+    }
+    const pending = (await options.pendingSync?.()) ?? {
+      entries: [],
+      unpushed: [],
+      ready: false,
+    };
+    if (!pending.ready) {
+      if (isHtmx(request)) return send(reply, '');
+      return reply.code(303).header('location', '/').send();
+    }
+    return send(
+      reply,
+      renderSyncPreview({
+        ...common(request),
+        fragment: isHtmx(request),
+        entries: pending.entries,
+        unpushed: pending.unpushed,
+      }),
+    );
+  });
+  app.get('/sync/ack', async (request, reply) => {
+    options.syncStatus?.clear();
+    return reply
+      .code(303)
+      .header('location', safeNextPath(text((request.query as Body).next)))
+      .send();
+  });
+  app.post('/sync', async (request, reply) => {
+    if (!options.syncScheduler) return reply.code(404).send('Not found');
+    if (text((request.body as Body | undefined)?.confirm) !== 'yes')
+      return reply.code(303).header('location', '/sync').send();
+    try {
+      return afterSync(request, reply, await options.syncScheduler.syncNow());
+    } catch (error) {
+      logCaught(error, 'config.ui.sync.failed', { logger: 'routes.live-ui' });
+      options.syncStatus?.noteError();
+      return reply.code(303).header('location', '/?done=backup-failed').send();
+    }
+  });
+  app.post('/sync/auto', async (request, reply) => {
+    if (!options.syncScheduler || !options.autoSyncStore) return reply.code(404).send('Not found');
+    const enabled = text((request.body as Body | undefined)?.autoSync) === 'true';
+    await options.autoSyncStore.write(enabled);
+    options.syncScheduler.setAutoSync(enabled);
+    if (!enabled) {
+      return reply
+        .code(303)
+        .header('location', safeNextPath(text((request.body as Body | undefined)?.next)))
+        .send();
+    }
+    try {
+      return afterSync(request, reply, await options.syncScheduler.syncNow());
+    } catch (error) {
+      logCaught(error, 'config.ui.auto-sync.failed', { logger: 'routes.live-ui' });
+      options.syncStatus?.noteError();
+      const next = safeNextPath(text((request.body as Body | undefined)?.next));
+      return reply
+        .code(303)
+        .header('location', `${next.split('?')[0]}?done=backup-failed`)
+        .send();
+    }
+  });
   registerFeatureRoutes(app, options, declaredEnvironments);
 }
 function registerFeatureRoutes(
@@ -447,11 +760,18 @@ function registerFeatureRoutes(
     const environment = query.env?.trim() || environments[0] || '';
     if (environment && !environments.includes(environment))
       return reply.code(400).send('Unknown environment');
-    return reply
-      .type('text/html; charset=utf-8')
-      .send(
-        String(renderFeatures({ flags, environment, environments, fragment: isHtmx(request) })),
-      );
+    return reply.type('text/html; charset=utf-8').send(
+      String(
+        renderFeatures({
+          flags,
+          environment,
+          environments,
+          fragment: isHtmx(request),
+          autoSync: options.syncScheduler ? options.syncScheduler.isAutoSync() : undefined,
+          currentPath: request.url,
+        }),
+      ),
+    );
   });
 
   app.get('/features/new', async (request, reply) => {
@@ -460,11 +780,6 @@ function registerFeatureRoutes(
     const environment = (request.query as { env?: string }).env || environments[0] || '';
     if (!environments.includes(environment)) return reply.code(400).send('Unknown environment');
     return reply.type('text/html; charset=utf-8').send(String(renderFeatureAddRow(environment)));
-  });
-
-  app.post('/sync', async (_request, reply) => {
-    if (!options.syncScheduler) return reply.code(404).send('Not found');
-    return reply.send(await options.syncScheduler.syncNow());
   });
 
   app.post(
@@ -500,11 +815,18 @@ function registerFeatureRoutes(
       if (result.kind === 'invalid') return reply.code(422).send(result);
       await options.onCommitted?.();
       const flags = await options.flagWriteService.all();
-      return reply
-        .type('text/html; charset=utf-8')
-        .send(
-          String(renderFeatures({ flags, environment, environments, fragment: isHtmx(request) })),
-        );
+      return reply.type('text/html; charset=utf-8').send(
+        String(
+          renderFeatures({
+            flags,
+            environment,
+            environments,
+            fragment: isHtmx(request),
+            autoSync: options.syncScheduler ? options.syncScheduler.isAutoSync() : undefined,
+            currentPath: request.url,
+          }),
+        ),
+      );
     },
   );
 
@@ -533,11 +855,18 @@ function registerFeatureRoutes(
       if (result.kind === 'invalid') return reply.code(422).send(result);
       await options.onCommitted?.();
       const flags = await options.flagWriteService.all();
-      return reply
-        .type('text/html; charset=utf-8')
-        .send(
-          String(renderFeatures({ flags, environment, environments, fragment: isHtmx(request) })),
-        );
+      return reply.type('text/html; charset=utf-8').send(
+        String(
+          renderFeatures({
+            flags,
+            environment,
+            environments,
+            fragment: isHtmx(request),
+            autoSync: options.syncScheduler ? options.syncScheduler.isAutoSync() : undefined,
+            currentPath: request.url,
+          }),
+        ),
+      );
     },
   );
 

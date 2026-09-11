@@ -1,6 +1,7 @@
 import { parse as parseYaml } from 'yaml';
 import type { BreakGlassRecord } from '../auth/break-glass.js';
 import { ServiceRegistry } from '../identity/registry.js';
+import { logCaught, logged } from '../logging.js';
 import { SchemaSet } from '../schema/validator.js';
 
 /**
@@ -19,10 +20,8 @@ import { SchemaSet } from '../schema/validator.js';
 export interface RepositoryStateOptions {
   /** Reads a path out of the repository at HEAD. Rejects when it is not there. */
   readonly readFile: (path: string) => Promise<string>;
-  /** Loads and parses every schema. Called on each reload. */
+  /** Loads and parses every `schema/<product>.yaml`. Called on each reload. */
   readonly loadSchemas: () => Promise<Record<string, string>>;
-  /** Optional global schema source; preferred over legacy per-service files. */
-  readonly loadSchemaDocument?: () => Promise<string>;
   /** Decrypts the break-glass record. Absent leaves the record unreadable, which locks it. */
   readonly decrypt?: (path: string, source: string) => Promise<string>;
   readonly breakGlassPath?: string;
@@ -69,12 +68,12 @@ export class RepositoryState {
    * while an unreadable one keeps it.
    */
   async reload(): Promise<void> {
-    await this.reloadRegistry();
-    await this.reloadSchemas();
-    await this.reloadBreakGlass();
-    // After the registry, always: the values a commit publishes must never become readable
-    // ahead of the grants that same commit changed.
-    await this.options.onCache?.();
+    return logged(undefined, 'config.repo.reload', { logger: 'boot.repository-state' }, async () => {
+      await this.reloadRegistry();
+      await this.reloadSchemas();
+      await this.reloadBreakGlass();
+      await this.options.onCache?.();
+    });
   }
 
   private async reloadRegistry(): Promise<void> {
@@ -83,23 +82,16 @@ export class RepositoryState {
       this.currentRegistry = ServiceRegistry.fromYaml(source);
       this.options.onRegistry?.();
     } catch (error) {
+      logCaught(error, 'config.repo.registry.failed', { logger: 'boot.repository-state' });
       this.options.onError?.('services.yaml', error as Error);
     }
   }
 
   private async reloadSchemas(): Promise<void> {
     try {
-      if (this.options.loadSchemaDocument) {
-        try {
-          this.currentSchemas = SchemaSet.fromDocument(await this.options.loadSchemaDocument());
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-          this.currentSchemas = SchemaSet.fromFiles(await this.options.loadSchemas());
-        }
-      } else {
-        this.currentSchemas = SchemaSet.fromFiles(await this.options.loadSchemas());
-      }
+      this.currentSchemas = SchemaSet.fromFiles(await this.options.loadSchemas());
     } catch (error) {
+      logCaught(error, 'config.repo.schemas.failed', { logger: 'boot.repository-state' });
       this.options.onError?.('schemas', error as Error);
     }
   }
@@ -112,8 +104,7 @@ export class RepositoryState {
     try {
       source = await this.options.readFile(path);
     } catch (error) {
-      // Gone from the repository: the credential is revoked, and keeping it would mean a
-      // deletion did nothing.
+      logCaught(error, 'config.repo.break-glass.read.failed', { logger: 'boot.repository-state' });
       this.currentRecord = null;
       this.options.onError?.(path, error as Error);
       return;
@@ -131,9 +122,7 @@ export class RepositoryState {
         actorEmail: parsed.actorEmail,
       };
     } catch (error) {
-      // Present but unreadable — a decryption failure, a truncated file. Keeping the last good
-      // record is the safe direction: the alternative locks out the emergency path during what
-      // is already an emergency.
+      logCaught(error, 'config.repo.break-glass.parse.failed', { logger: 'boot.repository-state' });
       this.options.onError?.(path, error as Error);
     }
   }

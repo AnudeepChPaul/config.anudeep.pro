@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { logCaught, logged } from '@config/src/logging.js';
 import { assertNoSymlinks, databasePath } from '@config/src/store/database-path.js';
 import type { FileWriter } from '@config/src/store/file-writer.js';
 import { z } from 'zod';
@@ -30,6 +31,7 @@ export async function readOptional(path: string): Promise<string | null> {
   try {
     return await readFile(path, 'utf8');
   } catch (error) {
+    logCaught(error, 'config.journal.file.read.failed', { logger: 'store.transaction-journal' });
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
@@ -53,44 +55,50 @@ export class TransactionJournal {
       keys?: readonly string[];
     }[],
   ): Promise<PreparedTransaction> {
-    const id = randomUUID();
-    await mkdir(join(this.directory, id), { recursive: true, mode: 0o700 });
-    await this.writer.syncDirectory(this.root);
-    await this.writer.syncDirectory(join(this.root, '.journal'));
-    await this.writer.syncDirectory(this.directory);
-    try {
-      for (const [index, file] of files.entries()) {
-        if (file.content !== null) await this.writer.write(this.staged(id, index), file.content);
+    return logged(undefined, 'config.tx.prepare', { logger: 'store.transaction-journal' }, async () => {
+      const id = randomUUID();
+      await mkdir(join(this.directory, id), { recursive: true, mode: 0o700 });
+      await this.writer.syncDirectory(this.root);
+      await this.writer.syncDirectory(join(this.root, '.journal'));
+      await this.writer.syncDirectory(this.directory);
+      try {
+        for (const [index, file] of files.entries()) {
+          if (file.content !== null) await this.writer.write(this.staged(id, index), file.content);
+        }
+        return {
+          id,
+          files: files.map((file) => ({
+            path: file.path,
+            hash: file.content === null ? null : contentHash(file.content),
+            ...(file.actor ? { actor: file.actor } : {}),
+            keys: [...(file.keys ?? [])],
+          })),
+        };
+      } catch (error) {
+        logCaught(error, 'config.tx.prepare.failed', { logger: 'store.transaction-journal' });
+        await this.complete(id);
+        throw error;
       }
-      return {
-        id,
-        files: files.map((file) => ({
-          path: file.path,
-          hash: file.content === null ? null : contentHash(file.content),
-          ...(file.actor ? { actor: file.actor } : {}),
-          keys: [...(file.keys ?? [])],
-        })),
-      };
-    } catch (error) {
-      await this.complete(id);
-      throw error;
-    }
+    });
   }
 
   async recordIntent(
     transaction: PreparedTransaction,
     revision: number,
   ): Promise<TransactionIntent> {
-    const intent = intentSchema.parse({ version: 1, revision, files: transaction.files });
-    await this.writer.write(
-      join(this.directory, transaction.id, 'intent.json'),
-      JSON.stringify(intent),
-    );
-    return intent;
+    return logged(undefined, 'config.tx.intent', { logger: 'store.transaction-journal' }, async () => {
+      const intent = intentSchema.parse({ version: 1, revision, files: transaction.files });
+      await this.writer.write(
+        join(this.directory, transaction.id, 'intent.json'),
+        JSON.stringify(intent),
+      );
+      return intent;
+    });
   }
 
   /** Check every remaining payload before resuming any rename. Missing/corrupt data fails closed. */
   async apply(id: string, intent: TransactionIntent): Promise<void> {
+    return logged(undefined, 'config.tx.apply', { logger: 'store.transaction-journal' }, async () => {
     for (const [index, file] of intent.files.entries()) {
       await assertNoSymlinks(this.root, file.path);
       if (file.hash === null) continue;
@@ -109,13 +117,16 @@ export class TransactionJournal {
         await this.writer.install(this.staged(id, index), path);
       }
     }
+    });
   }
 
   async pending(): Promise<Array<{ id: string; intent: TransactionIntent }>> {
+    return logged(undefined, 'config.tx.pending', { logger: 'store.transaction-journal' }, async () => {
     let entries: string[];
     try {
       entries = await readdir(this.directory);
     } catch (error) {
+      logCaught(error, 'config.tx.pending.readdir.failed', { logger: 'store.transaction-journal' });
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw error;
     }
@@ -132,11 +143,14 @@ export class TransactionJournal {
       pending.push({ id, intent });
     }
     return pending.sort((a, b) => a.intent.revision - b.intent.revision);
+    });
   }
 
   async complete(id: string): Promise<void> {
-    await rm(join(this.directory, id), { recursive: true, force: true });
-    await this.writer.syncDirectory(this.directory);
+    return logged(undefined, 'config.tx.complete', { logger: 'store.transaction-journal' }, async () => {
+      await rm(join(this.directory, id), { recursive: true, force: true });
+      await this.writer.syncDirectory(this.directory);
+    });
   }
 
   private staged(id: string, index: number): string {

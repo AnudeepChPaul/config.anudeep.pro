@@ -1,3 +1,4 @@
+import { logCaught } from '@config/src/logging.js';
 import type { Namespace } from '../identity/types.js';
 import type { ConfigTree, RawConfig, Sha } from './types.js';
 
@@ -68,8 +69,8 @@ export class ConfigCache {
       // freezes propagation for every service on the host.
       try {
         listener();
-      } catch {
-        // Nothing useful to do here; the waiter's own timeout will release it.
+      } catch (error) {
+        logCaught(error, 'config.cache.listener.failed', { logger: 'store.cache' });
       }
     }
   }

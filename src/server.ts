@@ -1,7 +1,6 @@
 import { readFile as readFileFromDisk } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { discardLegacyWork } from '@config/src/boot/discard-legacy-work.js';
-import pino from 'pino';
 import { buildReadApi, buildWebApp, buildWebhookApp } from './app.js';
 import { BreakGlass } from './auth/break-glass.js';
 import { OidcClient } from './auth/oidc.js';
@@ -16,18 +15,23 @@ import { GitRepository } from './git/repository.js';
 import { GitSyncer } from './git/syncer.js';
 import { AccessGuard } from './identity/access-guard.js';
 import { PeerCredentialResolver, platformPeerCredentialReader } from './identity/peercred.js';
+import { createLogSink } from './logging/db-sink.js';
+import { configureLogging, getLog, logCaught } from './logging.js';
 import { SchemaDryRun } from './schema/schema-dry-run.js';
 import { SchemaWriteService } from './schema/schema-write-service.js';
+import { AutoSyncStore } from './store/auto-sync-store.js';
 import { ConfigCache } from './store/cache.js';
 import { DBEngine } from './store/data-layer.js';
 import { DBRepositoryView } from './store/db-repository-view.js';
 import { EnvironmentOrder } from './store/environment-order.js';
 import { ConfigLoader } from './store/loader.js';
+import { PendingSync } from './store/pending-sync.js';
 import { SnapshotStore } from './store/snapshot.js';
 import { SopsDecryptor } from './store/sops.js';
 import { SopsEncryptor } from './store/sops-encryptor.js';
 import { gitSyncPort, SyncEngine } from './store/sync-engine.js';
 import { SyncScheduler } from './store/sync-scheduler.js';
+import { SyncStatus } from './store/sync-status.js';
 import { WriteJournal } from './store/write-journal.js';
 import { ConfigWriteService } from './store/write-service.js';
 
@@ -42,7 +46,14 @@ import { ConfigWriteService } from './store/write-service.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const log = pino({ level: config.logLevel });
+  const sink = createLogSink({
+    logDatabaseUrl: config.logDatabaseUrl,
+    environment: config.environment,
+    onError: (error) => {
+      process.stderr.write(`log sink: ${error.message}\n`);
+    },
+  });
+  const log = configureLogging(config.logLevel, config.environment === 'prod', sink);
   let iamReachable = true;
 
   // Beside the repository and the age key, which is already the private state directory of
@@ -69,6 +80,8 @@ async function main(): Promise<void> {
   const cache = new ConfigCache();
   const journal = new WriteJournal(`${config.dbPath}/.journal`);
   await journal.recover();
+  const autoSyncStore = new AutoSyncStore(`${config.dbPath}/.journal`);
+  const syncStatus = new SyncStatus();
   let scheduler: SyncScheduler | undefined;
   const db = new DBEngine(config.dbPath, {
     onWrite: async (event) => {
@@ -90,11 +103,15 @@ async function main(): Promise<void> {
     gitSyncPort(repository),
     (commit) => cache.markSynced(commit),
     async () => (await db.snapshot()).files,
+    log,
   );
   scheduler = new SyncScheduler(syncEngine, config.syncIntervalMs, 1_000, (error) => {
+    syncStatus.noteError();
     log.error({ err: error }, 'database synchronization failed');
   });
+  scheduler.setAutoSync(await autoSyncStore.read());
   scheduler.start();
+  const pendingSync = new PendingSync(journal, repository, Boolean(config.gitRemote));
   const readEnvironmentOrder = async () =>
     EnvironmentOrder.fromYaml((await db.read('environments.yaml')) ?? '');
   let flagEnvironments = (await readEnvironmentOrder()).all();
@@ -140,7 +157,10 @@ async function main(): Promise<void> {
       cache.reload(await loader.resolve(snapshot), {
         flagsByEnvironment: await flagsByEnvironment(),
       });
-      cache.markSynced(await repository.headCommit().catch(() => ''));
+      cache.markSynced(await repository.headCommit().catch((error: unknown) => {
+        logCaught(error, 'config.boot.head.failed', { logger: 'server' });
+        return '';
+      }));
       log.warn({ commit: cache.commit() }, 'serving the last known good configuration');
     } else {
       log.warn('no configuration available; services will use their compiled-in defaults');
@@ -179,13 +199,6 @@ async function main(): Promise<void> {
         }
       }
       return files;
-    },
-    loadSchemaDocument: async () => {
-      const source = await db.read('schema.yaml');
-      if (source !== null) return source;
-      const missing = new Error('schema.yaml is absent') as NodeJS.ErrnoException;
-      missing.code = 'ENOENT';
-      throw missing;
     },
     decrypt: (path, source) => decryptor.decrypt(path, source),
     breakGlassPath: config.breakGlassPath,
@@ -226,6 +239,8 @@ async function main(): Promise<void> {
       alert: (entry) => log.warn({ ...entry, event: 'access_denied' }),
     }),
     onRead: (entry) => log.info({ ...entry, event: 'config_read' }),
+    logger: log,
+    logSink: sink,
   });
   await readApi.listen(config.socketPath);
   log.info({ socket: config.socketPath }, 'read API listening');
@@ -250,11 +265,25 @@ async function main(): Promise<void> {
     operations: new ConfigWriteService({
       db,
       loader,
-      encryptor: new SopsEncryptor(config.dbPath),
+      // .sops.yaml lives in the clone. The database directory is values; pointing encryption
+      // there left schema secrets in plaintext and the console refused the save.
+      encryptor: new SopsEncryptor(config.repoDir),
+      log,
     }),
     schemaWriteService: new SchemaWriteService(db, new SchemaDryRun(loader)),
     flagWriteService,
     syncScheduler: scheduler,
+    pendingSync: () => pendingSync.report(),
+    readSynced: async (path) => {
+      try {
+        return await repository.readFile(path);
+      } catch (error) {
+        logCaught(error, 'config.git.read-synced.failed', { logger: 'server' });
+        return null;
+      }
+    },
+    autoSyncStore,
+    syncStatus,
     environment: config.environment,
     auth: config.sessionSecret
       ? {
@@ -271,6 +300,7 @@ async function main(): Promise<void> {
         }
       : undefined,
     logger: log,
+    logSink: sink,
   });
   await web.listen({ host: config.httpHost, port: config.httpPort });
   log.info({ host: config.httpHost, port: config.httpPort }, 'configuration UI listening');
@@ -300,15 +330,19 @@ async function main(): Promise<void> {
     },
     onError: (error) => log.error({ err: error }, 'webhook pull failed'),
     logger: log,
+    logSink: sink,
   });
   await webhooks.listen({ host: '0.0.0.0', port: config.webhookPort });
   log.info({ port: config.webhookPort }, 'webhook listener started');
 
   // A missed webhook self-heals, and unpushed commits publish themselves once GitHub returns.
-  const syncer = new GitSyncer(repository);
+  const syncer = new GitSyncer(repository, log);
   const retry = setInterval(() => {
     void syncer.retryUnpushed().then((result) => {
-      if (result.pushed) log.info({ commits: result.commits }, 'published pending commits');
+      if (result.pushed) {
+        syncStatus.clear();
+        log.info({ commits: result.commits }, 'published pending commits');
+      }
     });
   }, config.pushRetryIntervalMs);
 
@@ -317,7 +351,10 @@ async function main(): Promise<void> {
   const reload = setInterval(() => {
     void (async () => {
       try {
-        await repository.pull().catch(() => undefined);
+        await repository.pull().catch((error: unknown) => {
+          logCaught(error, 'config.reload.pull.failed', { logger: 'server' });
+          return undefined;
+        });
         await reloadFromRepository();
       } catch (error) {
         log.error({ err: error }, 'reload failed; continuing to serve the current configuration');
@@ -339,6 +376,7 @@ async function main(): Promise<void> {
     await readApi.close();
     await web.close();
     await webhooks.close();
+    await sink?.close();
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);
@@ -357,12 +395,15 @@ async function isIamReachable(config: ServiceConfig): Promise<boolean> {
   try {
     const response = await fetch(config.iamHealthUrl, { signal: AbortSignal.timeout(2_000) });
     return response.ok;
-  } catch {
+  } catch (error) {
+    logCaught(error, 'config.iam.health.failed', { logger: 'server' });
     return false;
   }
 }
 
 main().catch((error: unknown) => {
+  logCaught(error, 'config.main.failed', { logger: 'server' });
+  getLog()?.fatal({ err: error }, 'config.main.failed');
   process.stderr.write(`${String(error)}\n`);
   process.exit(1);
 });

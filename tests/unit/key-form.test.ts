@@ -301,6 +301,52 @@ describe('the action line', () => {
   });
 });
 
+describe('adding another variable', () => {
+  it('starts with one key row and no add control', () => {
+    expect(document.querySelectorAll('[data-key-row]')).toHaveLength(1);
+    expect((document.querySelector('[data-add-key-line]') as HTMLElement).hidden).toBe(true);
+  });
+
+  it('offers Add a variable once a key name is typed', () => {
+    const name = document.querySelector('[name="key.0.name"]') as HTMLInputElement;
+    name.value = 'SESSION_TTL';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    expect((document.querySelector('[data-add-key-line]') as HTMLElement).hidden).toBe(false);
+    expect(document.querySelector('[data-add-key]')?.textContent).toMatch(/Add a variable/);
+  });
+
+  it('appends a blank row with the next index, without posting', () => {
+    const name = document.querySelector('[name="key.0.name"]') as HTMLInputElement;
+    name.value = 'SESSION_TTL';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    const form = document.querySelector('#new-product') as HTMLFormElement;
+    const add = document.querySelector('[data-add-key]') as HTMLButtonElement;
+    const event = new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: add });
+    form.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.querySelectorAll('[data-key-row]')).toHaveLength(2);
+    expect(document.querySelector('[name="key.1.name"]')).not.toBeNull();
+    expect((document.querySelector('[name="key.0.name"]') as HTMLInputElement).value).toBe(
+      'SESSION_TTL',
+    );
+    expect((document.querySelector('[name="key.1.name"]') as HTMLInputElement).value).toBe('');
+  });
+
+  it('renders every row the server sent back, with Add a variable', () => {
+    document.body.innerHTML = String(
+      renderNewProduct({
+        environments: ['dev'],
+        fragment: true,
+        typed: { keys: [{ name: 'SESSION_TTL', type: 'int' }, { name: 'REGION', type: 'string' }, {}] },
+      }),
+    );
+    expect(document.querySelectorAll('[data-key-row]')).toHaveLength(3);
+    expect((document.querySelector('[name="key.1.name"]') as HTMLInputElement).value).toBe('REGION');
+    expect((document.querySelector('[data-add-key-line]') as HTMLElement).hidden).toBe(false);
+  });
+});
+
 describe('the secret checkbox', () => {
   it('says what ticking it means', () => {
     expect(secretBox().closest('label')?.textContent).toMatch(/treated as secret/i);

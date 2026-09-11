@@ -1,30 +1,19 @@
 import { html, raw, type SafeHtml } from '@config/src/views/html.js';
-import { layout, pageHeader, trail, writeAction } from '@config/src/views/page-frame.js';
-export function renderNewProduct(options: {
-  environments: readonly string[];
+import {
+  layout,
+  layoutChrome,
+  pageHeader,
+  trail,
+  writeAction,
+} from '@config/src/views/page-frame.js';
 
-  typed?: {
-    name?: string;
-    uid?: string;
-    environments?: readonly string[];
-    keys?: ReadonlyArray<Record<string, string>>;
-  };
-
-  problems?: ReadonlyArray<{ key: string; message: string }>;
-  settingsLink?: boolean;
-  build?: string;
-  fragment?: boolean;
-}): SafeHtml {
-  const typed = options.typed ?? {};
-  const problems = options.problems ?? [];
-  const about = (key: string) => problems.filter((problem) => problem.key === key);
-  // One blank row is always offered: a schema with no keys is allowed, but making someone press
-  // "add" before they can type anything asks a question nobody has a reason to answer.
-  const rows = typed.keys && typed.keys.length > 0 ? typed.keys : [{}];
-
-  const keyRows = rows.map((row, index) => {
-    const name = row.name ?? '';
-    return html`<div class="card keydraft" data-key-row>
+function renderKeyRow(
+  row: Record<string, string>,
+  index: number,
+  problems: ReadonlyArray<{ key: string; message: string }>,
+): SafeHtml {
+  const name = row.name ?? '';
+  return html`<div class="card keydraft" data-key-row>
       <div class="fieldrow">
         <label class="field">
           <span class="fieldlabel">Key</span>
@@ -41,7 +30,6 @@ export function renderNewProduct(options: {
           </select>
         </label>
       </div>
-      
       <div class="fieldrow" data-when="string">
         <label class="field checkfield">
           <input type="checkbox" name="key.${index}.secret" value="1" data-key-secret ${
@@ -55,7 +43,6 @@ export function renderNewProduct(options: {
           <span class="fieldlabel">Values <span class="hint">comma separated</span></span>
           <input type="text" name="key.${index}.values" value="${row.values ?? ''}" placeholder="optional, all">
         </label>
-        
         <label class="field" data-when="int">
           <span class="fieldlabel">Min</span>
           <input type="number" step="1" name="key.${index}.min" value="${row.min ?? ''}">
@@ -64,12 +51,10 @@ export function renderNewProduct(options: {
           <span class="fieldlabel">Max</span>
           <input type="number" step="1" name="key.${index}.max" value="${row.max ?? ''}">
         </label>
-        
         <label class="field" data-when="string int url string[]" data-not-secret>
           <span class="fieldlabel">Default <span class="hint">blank means none</span></span>
           <input type="text" data-key-default name="key.${index}.default" value="${row.default ?? ''}">
         </label>
-        
         <label class="field checkfield" data-when="bool">
           <input type="checkbox" name="key.${index}.defaultBool" value="true" ${
             row.defaultBool === 'true' ? raw('checked') : html``
@@ -84,9 +69,35 @@ export function renderNewProduct(options: {
                  placeholder="What this key does">
         </label>
       </div>
-      ${about(name).map((problem) => html`<p class="err">${problem.message}</p>`)}
+      ${problems.map((problem) => html`<p class="err">${problem.message}</p>`)}
     </div>`;
-  });
+}
+
+export function renderNewProduct(options: {
+  environments: readonly string[];
+
+  typed?: {
+    name?: string;
+    uid?: string;
+    environments?: readonly string[];
+    keys?: ReadonlyArray<Record<string, string>>;
+  };
+
+  problems?: ReadonlyArray<{ key: string; message: string }>;
+  settingsLink?: boolean;
+  build?: string;
+  fragment?: boolean;
+  autoSync?: boolean;
+  currentPath?: string;
+}): SafeHtml {
+  const typed = options.typed ?? {};
+  const problems = options.problems ?? [];
+  const about = (key: string) => problems.filter((problem) => problem.key === key);
+  // One blank row is always offered: a schema with no keys is allowed, but making someone press
+  // add before they can type the first one asks a question nobody has a reason to answer.
+  const rows = typed.keys && typed.keys.length > 0 ? typed.keys : [{}];
+  const keyRows = rows.map((row, index) => renderKeyRow(row, index, about(row.name ?? '')));
+  const named = rows.some((row) => (row.name ?? '').trim().length > 0);
 
   const body = html`
       ${pageHeader({
@@ -103,7 +114,7 @@ export function renderNewProduct(options: {
             post: '/p/new',
             include: '#new-product',
             resting: html`Create product`,
-            running: 'Creating…',
+            running: 'Creating',
           })}
           <span class="sep">·</span>
           
@@ -143,11 +154,14 @@ export function renderNewProduct(options: {
             )}
           </div>
         </div>
-        ${keyRows}
+        <div id="key-rows">${keyRows}</div>
+        <div class="actionline" data-add-key-line ${named ? html`` : raw('hidden')}>
+          <button type="submit" class="linkbtn" name="intent" value="add-key" data-add-key>Add a variable</button>
+        </div>
       </form>
     `;
 
   return options.fragment
     ? body
-    : layout('Add a product', body, options.settingsLink, options.build);
+    : layout('Add a product', body, options.settingsLink, options.build, layoutChrome(options));
 }

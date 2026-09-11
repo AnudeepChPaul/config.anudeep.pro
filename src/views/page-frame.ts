@@ -1,9 +1,18 @@
 import { html, raw, type SafeHtml } from '@config/src/views/html.js';
+export const layoutChrome = (options: {
+  autoSync?: boolean;
+  currentPath?: string;
+}): { autoSync?: boolean; currentPath?: string } => ({
+  ...(options.autoSync !== undefined ? { autoSync: options.autoSync } : {}),
+  ...(options.currentPath ? { currentPath: options.currentPath } : {}),
+});
+
 export const layout = (
   title: string,
   body: SafeHtml,
   settingsLink = false,
   build = '',
+  extras: { autoSync?: boolean; currentPath?: string } = {},
 ): SafeHtml => html`<!doctype html>
 <html lang="en">
 <head>
@@ -88,6 +97,7 @@ export const layout = (
                      color: var(--muted); white-space: nowrap; overflow: hidden;
                      text-overflow: ellipsis; }
   .pagehead .actions-right { display: flex; align-items: center; gap: 10px; }
+  .actions-right form { display: flex; align-items: center; margin: 0; }
 
   /* ---------------------------------------------------------------- surfaces */
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
@@ -106,8 +116,12 @@ export const layout = (
   .rows { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
   .rows > *:first-child { border-top-left-radius: var(--radius-lg); border-top-right-radius: var(--radius-lg); }
   .rows > *:last-child { border-bottom-left-radius: var(--radius-lg); border-bottom-right-radius: var(--radius-lg); }
-  .row { display: flex; align-items: flex-start; gap: 14px; padding: 13px 16px; }
+  .row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 13px 16px; }
   .row + .row { border-top: 1px solid var(--hair); }
+  .row-keys { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 12rem; min-width: 0; }
+  .row-end { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end;
+             gap: 8px 14px; margin-left: auto; flex: 0 0 auto; }
+  .row-end form { display: flex; align-items: center; margin: 0; }
 
   /* ---------------------------------------------------------------- controls
      One height for everything a value is typed or chosen in, so rows line up whatever they
@@ -115,6 +129,8 @@ export const layout = (
      of the same height. */
   label { display: block; font-weight: 600; font-size: var(--type-sm); margin-bottom: .25rem; }
   .hint { color: var(--muted); font-size: .75rem; font-weight: 400; }
+  .sub { color: var(--muted); margin: 0 0 1rem; }
+  .sub:last-child { margin-bottom: 0; }
   .field { margin-bottom: 1rem; }
   /* The add-product form: fields side by side where they belong together, and each key in its
      own card so a schema of several keys reads as a list rather than one long column. */
@@ -128,7 +144,9 @@ export const layout = (
   .checkfield input { width: 16px; height: 16px; accent-color: var(--ink); }
   .checkfield .fieldlabel { margin: 0; }
   .keydraft { margin-bottom: 12px; }
-  .actionline { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .actionline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .actionline.end { justify-content: flex-end; }
+  .sync-actions { margin-bottom: 1.5rem; }
   .discard-ask, .archive-ask { display: inline-flex; align-items: center; gap: 10px;
                  font-size: var(--type-sm); color: var(--danger); }
   /* Not danger: bringing a product back takes nothing away. */
@@ -157,9 +175,9 @@ export const layout = (
      beside "Not now" — at two sizes, on two baselines, with their underlines at two heights. */
   .linkbtn { background: none; border: 0; padding: 0; height: auto; color: var(--accent);
              font-size: var(--type-sm); line-height: 1.4; display: inline-flex;
-             align-items: center; text-decoration: underline; text-underline-offset: 3px;
+             align-items: center; text-decoration: none; text-underline-offset: 3px;
              cursor: pointer; }
-  .linkbtn:hover:not(:disabled) { color: var(--ink); }
+  .linkbtn:hover:not(:disabled) { color: var(--ink); text-decoration: underline;}
   .linkbtn:disabled { color: var(--muted); text-decoration: none; cursor: not-allowed; }
   /* The consequential action — publishing, promoting — is heavier, not a different colour.
      Colour says what a thing IS: --accent is anything you can press, --unpublished is a state.
@@ -193,9 +211,9 @@ export const layout = (
      an htmx swap leaves it alone, and quiet enough not to compete with the page above it. */
   /* Centred, because it belongs to the page rather than to a column of it, and small: the
      build is read once during an incident and never again. */
-  .pagefoot { max-width: 62rem; margin: 0 auto; padding: 18px 24px 28px;
+  .pagefoot { max-width: 54rem; margin: 0 auto; padding: 18px 1rem 28px 4rem;
               font-size: var(--type-xs); display: flex; justify-content: center;
-              align-items: center; gap: 10px; color: var(--muted); }
+              align-items: center; gap: 10px; color: var(--muted); box-sizing: border-box; }
   .pagefoot .build { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .pagefoot a { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
   .pagefoot a:hover { color: var(--accent); }
@@ -209,7 +227,7 @@ export const layout = (
   .settings-unset { font-size: var(--type-xs); color: var(--muted); }
   /* The inset the .card used to supply. Dropping the card removed the duplicated border and
      took the padding with it, leaving every row flush against the edge. */
-  .settings-row { padding: 7px 16px; }
+  .settings-row { padding: 7px 16px; align-items: center; }
   .settings-row + .settings-row { border-top: 1px solid var(--hair); }
   .tabadd { display: inline-flex; align-items: center; gap: 10px; margin-left: 12px; }
   .hidden-attr-guard {}
@@ -233,10 +251,12 @@ export const layout = (
          display: inline-block; }
 
   /* A flag and its switch on one line: the name takes the room, the switch keeps its size. */
-  .feature-row { align-items: center; padding: 1rem; margin: 0; display: flex; justify-content: space-between; }
+  .feature-row { justify-content: space-between; }
   .feature-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
   .feature-switch { flex-shrink: 0; margin-bottom: 0; }
   .feature-switch label { margin-bottom: 0; }
+  .feature-add { width: 100%; margin: 0; }
+  .feature-add .field { flex: 1; margin: 0; }
 
   /* What a key was, and what it is about to be, beside its name. */
   .wasnow { display: inline-flex; align-items: center; gap: 6px; font-size: var(--type-sm); }
@@ -244,7 +264,8 @@ export const layout = (
   .wasnow .arrow { color: var(--muted); }
 
   /* A product's name on the list: the one thing on that page you are looking for. */
-  .pname { font-size: var(--type-base); font-weight: 600; }
+  .pname { font-size: var(--type-base); font-weight: 600; flex: 0 0 auto; }
+  .product-info { display: flex; align-items: center; flex-direction: column; width: 10rem; }
   /* A line in the promote offer: what would move, and what is refused. */
   .moveline { font-size: var(--type-sm); display: flex; align-items: baseline; gap: 8px;
               flex-wrap: wrap; }
@@ -279,12 +300,17 @@ export const layout = (
 
   /* ---------------------------------------------------------------- the toolbar */
   .actions { font-size: var(--type-sm); }
-  .actionslot { min-height: 3.35rem; }
+  .actionslot { min-height: 2.35rem; }
   .actionslot .card { margin-bottom: 0; }
-  .actionline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; flex-direction: row-reverse; justify-content: end }
+  .actionslot .actionline { margin-bottom: 0; }
+  .actionslot .idle { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; flex: 1;
+                      min-width: 0; }
+  .actionslot .idle > button:first-of-type { margin-left: auto; }
   .actionline input, .actionline code { font-size: inherit; }
   .actionline .count { color: var(--unpublished); }
-  .actionline .idle { color: var(--muted); }
+  .actionline .idle { color: var(--muted); font-size: var(--type-xs); }
+  .idle .wasnow { font-size: inherit; }
+  .idle .diffkey { font-weight: 600; color: var(--ink); }
   .sep { color: var(--muted); }
   .selection { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   /* The selection count is a hover trigger like the others, but it is ordinary running text
@@ -293,8 +319,10 @@ export const layout = (
 
   /* ---------------------------------------------------------------- key rows */
   .keyline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: .25rem; }
-  .keyrow { display: flex; align-items: center; gap: 14px; min-height: var(--control-h); }
-  .keypick { width: 16px; flex-shrink: 0; padding-top: 9px; }
+  .keyline label { margin-bottom: 0; }
+  .keyrow { display: flex; align-items: flex-start; gap: 14px; min-height: var(--control-h); }
+  .keybody { flex: 1; min-width: 0; }
+  .keypick { width: 16px; flex-shrink: 0; padding-top: 4px; }
   .keypick input, .pick { width: 16px; height: 16px; accent-color: var(--ink); cursor: pointer;
                           margin: 0; }
   .pick { margin-top: 3px; }
@@ -302,10 +330,10 @@ export const layout = (
      draft either way. It must not look like an ordinary box that failed to respond. */
   .keypick input.locked { accent-color: var(--unpublished); cursor: not-allowed; }
   .keypick input:disabled { accent-color: var(--line); cursor: not-allowed; opacity: .55; }
-  /* Where a search result landed: a rule in the margin rather than a scroll nobody asked for.
-     In the accent, because it marks where you are looking — it is not a state of the file. */
-  .found { border-left: 3px solid var(--accent); margin-left: -1.15rem;
-           padding-left: calc(1.15rem - 3px); }
+  /* Where a search result landed: a rule on the row rather than a scroll nobody asked for.
+     Inset shadow, not a left border with a negative margin: that margin pulled the marker
+     outside the rounded first/last row and the page ground showed through the corners. */
+  .found { box-shadow: inset 3px 0 0 var(--accent); }
 
   /* The switch reflects the checkbox, not a class the server rendered: with no script on the
      page a server-rendered state cannot move when you click it. */
@@ -322,12 +350,15 @@ export const layout = (
   /* The word beside it is generated too, for the same reason. */
   .switch .state::after { content: 'false'; }
   .switch input:checked ~ .state::after { content: 'true'; }
+  .switch.policy { font-size: var(--type-sm); color: var(--muted); gap: 8px; }
+  .switch.policy .name { font-weight: 500; }
 
   /* Hover peek on a key name — same mechanics as the pending detail, no script. */
   .peek { position: relative; display: inline-flex; cursor: help;
           border-bottom: 1px dotted var(--field-line); }
   .peek .detail { bottom: calc(100% + 6px); }
   .peek:hover .detail, .peek:focus-within .detail { display: block; }
+  .keyline .peek label { display: inline; }
   .detail .envname { color: var(--muted); font-size: .75rem; }
 
   /* ---------------------------------------------------------------- a write in flight
@@ -348,16 +379,26 @@ export const layout = (
 <body>
 <main id="page">${body}</main>
 
-${
-  build || settingsLink
-    ? html`<footer class="pagefoot">${build ? html`<span class="build">${build}</span>` : html``}${
-        settingsLink
-          ? html`<a href="/settings" hx-get="/settings" hx-target="#page" hx-swap="innerHTML"
+${build || settingsLink || extras.autoSync !== undefined
+    ? html`<footer class="pagefoot">${build ? html`<span class="build">${build}</span>` : html``}${extras.autoSync !== undefined
+      ? html`<form class="autosync" method="post" action="/sync/auto" hx-post="/sync/auto" hx-target="#page" hx-swap="innerHTML">
+            <input type="hidden" name="next" value="${extras.currentPath ?? '/'}">
+            <input type="hidden" name="autoSync" value="false">
+            <label class="switch policy">
+              <span class="name">Auto sync</span>
+              <input type="checkbox" name="autoSync" value="true" ${extras.autoSync ? raw('checked') : raw('')}
+                     onchange="this.form.requestSubmit()" aria-label="Auto sync">
+              <span class="track"><span class="knob"></span></span>
+            </label>
+          </form>`
+      : html``
+      }${settingsLink
+        ? html`<a href="/settings" hx-get="/settings" hx-target="#page" hx-swap="innerHTML"
               hx-push-url="true">Settings</a>`
-          : html``
+        : html``
       }</footer>`
     : html``
-}
+  }
 
 <script src="/assets/htmx.js" defer></script>
 <script src="/assets/ticks.js" defer></script>
@@ -380,8 +421,7 @@ export function writeAction(options: {
   // keyboard submit and a no-JS browser must still work. htmx handles the click on a button that
   // carries hx-post and the form's submit never fires, so a click makes exactly one request.
   const request = options.post
-    ? html`hx-post="${options.post}" hx-target="#page" hx-swap="innerHTML" hx-include="${
-        options.include ?? 'closest form'
+    ? html`hx-post="${options.post}" hx-target="#page" hx-swap="innerHTML" hx-include="${options.include ?? 'closest form'
       }"${options.vals ? raw(` hx-vals='${options.vals}'`) : html``}`
     : html``;
   return html`<button type="submit" class="${options.className ?? 'linkbtn'}" ${request} ${options.attributes ?? html``}>
@@ -398,9 +438,8 @@ export interface PageNotice {
 export function noticeLine(notice: PageNotice | undefined, dismissTo: string): SafeHtml {
   if (!notice) return html``;
   const done = notice.tone === 'done';
-  return html`<span class="notice ${done ? 'done' : 'problem'}" data-notice ${
-    done ? raw('data-transient') : html``
-  }><span class="notice-text">${notice.text}</span><a class="linkbtn no" data-dismiss
+  return html`<span class="notice ${done ? 'done' : 'problem'}" data-notice ${done ? raw('data-transient') : html``
+    }><span class="notice-text">${notice.text}</span><a class="linkbtn no" data-dismiss
       href="${dismissTo}" hx-get="${dismissTo}" hx-target="#page" hx-swap="innerHTML"
       hx-push-url="true">Dismiss</a></span>`;
 }
@@ -417,17 +456,29 @@ export function pageHeader(options: {
   notice?: PageNotice;
 
   dismissTo?: string;
+  /** Skip the reserved search and notice rows. A card that is not a page must not inherit their height. */
+  compact?: boolean;
 }): SafeHtml {
   return html`<div class="pagehead">
-    <div class="searchrow">${options.search ?? html``}</div>
-    
-    <div class="noticerow">${noticeLine(options.notice, options.dismissTo ?? '/')}</div>
+    ${options.compact
+      ? html``
+      : html`<div class="searchrow">${options.search ?? html``}</div>
+    <div class="noticerow">${noticeLine(options.notice, options.dismissTo ?? '/')}</div>`
+    }
     <div class="titlerow">
       <h1>${options.title}</h1>
       <div class="actions-right">${options.actions ?? html``}</div>
     </div>
     <div class="facts">${options.facts ?? html``}</div>
   </div>`;
+}
+
+/** Visible form of a product or environment id. Hrefs keep the raw name. */
+export function titled(value: string): string {
+  return value.replace(
+    /(^|[^A-Za-z0-9])([A-Za-z])/g,
+    (_match, sep: string, letter: string) => sep + letter.toUpperCase(),
+  );
 }
 
 export function trail(here: string): SafeHtml {
@@ -438,9 +489,9 @@ export function trail(here: string): SafeHtml {
 export function consoleTabs(active: 'products' | 'features'): SafeHtml {
   return html`<nav class="tabs" aria-label="Console sections">
     <a class="tab ${active === 'products' ? 'on' : ''}" href="/" hx-get="/" hx-target="#page"
-       hx-swap="innerHTML" hx-push-url="true">products</a>
+       hx-swap="innerHTML" hx-push-url="true">Products</a>
     <a class="tab ${active === 'features' ? 'on' : ''}" href="/features" hx-get="/features"
-       hx-target="#page" hx-swap="innerHTML" hx-push-url="true">features</a>
+       hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Features</a>
   </nav>`;
 }
 
@@ -453,15 +504,15 @@ export function searchBox(options: {
         hx-get="${options.action}" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">
     <input type="search" name="q" value="${options.query}" placeholder="${options.placeholder}"
            aria-label="${options.placeholder}">
-    ${writeAction({ resting: html`Search`, running: 'Searching…' })}
+    ${writeAction({ resting: html`Search`, running: 'Searching' })}
     ${
-      // The same treatment as Search beside it. It was a hint — a size smaller, muted, not
-      // underlined — so two controls on one row sat on different baselines and read as
-      // misaligned. They are both actions, so they look like actions.
-      options.query
-        ? html`<a class="linkbtn no" href="${options.action}" hx-get="${options.action}"
+    // The same treatment as Search beside it. It was a hint — a size smaller, muted, not
+    // underlined — so two controls on one row sat on different baselines and read as
+    // misaligned. They are both actions, so they look like actions.
+    options.query
+      ? html`<a class="linkbtn no" href="${options.action}" hx-get="${options.action}"
               hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Clear</a>`
-        : html``
+      : html``
     }
   </form>`;
 }

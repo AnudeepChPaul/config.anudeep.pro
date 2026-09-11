@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { logCaught } from '@config/src/logging.js';
 
 /**
  * The GitHub push webhook — the only route on this service the public internet can reach.
@@ -69,7 +70,8 @@ export function registerWebhookRoutes(app: FastifyInstance, options: WebhookOpti
     let payload: { ref?: unknown };
     try {
       payload = JSON.parse(raw.toString('utf8')) as { ref?: unknown };
-    } catch {
+    } catch (error) {
+      logCaught(error, 'config.webhook.payload.failed', { logger: 'webhook' });
       return reply.code(400).send({ code: 'bad_payload' });
     }
 
@@ -77,7 +79,10 @@ export function registerWebhookRoutes(app: FastifyInstance, options: WebhookOpti
 
     // Answer first, pull after. GitHub gives ten seconds and then retries, so a slow pull would
     // turn one push into a queue of duplicate deliveries.
-    void options.onPush().catch((error: Error) => options.onError?.(error));
+    void options.onPush().catch((error: Error) => {
+      logCaught(error, 'config.webhook.push.failed', { logger: 'webhook' });
+      options.onError?.(error);
+    });
 
     return reply.code(202).send();
   });
