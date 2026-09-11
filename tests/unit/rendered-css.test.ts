@@ -20,29 +20,11 @@ import { describe, expect, it } from 'vitest';
 const definition = (over: Record<string, unknown> = {}) =>
   ({ type: 'bool', secret: false, ...over }) as unknown as KeyRow['definition'];
 
-const productsPage = (pending: number) =>
+const productsPage = () =>
   String(
     renderProducts({
-      commit: 'a'.repeat(40),
       products: [
-        {
-          name: 'iam (1002)',
-          service: 'iam',
-          keys: '4 keys',
-          environments: [
-            {
-              name: 'dev',
-              namespace: 'iam/dev',
-              drafts: pending,
-              pending: Array.from({ length: pending }, (_, i) => ({
-                key: `K${i}`,
-                from: 'a',
-                to: 'b',
-                secret: false,
-              })),
-            },
-          ],
-        },
+        { name: 'iam', environments: ['dev'], retiring: false, keys: ['A', 'B', 'C', 'D'] },
       ],
     }),
   );
@@ -51,10 +33,14 @@ const productPage = (rows: KeyRow[]) =>
   String(
     renderProduct({
       service: 'iam',
-      environments: [{ name: 'dev', namespace: 'iam/dev', pending: [] }],
-      active: 'dev',
+      environment: 'dev',
+      environments: ['dev'],
+      etag: 'e',
       rows,
-      commit: 'a'.repeat(40),
+      version: 1,
+      next: null,
+      retiring: false,
+      missing: false,
     }),
   );
 
@@ -65,20 +51,20 @@ describe('the hover panel is not clipped by its container', () => {
   const listOverflow = (page: string) => page.match(/\.rows\s*\{[^}]*\}/)?.[0] ?? '';
 
   it('does not hide overflow on the row list', () => {
-    const page = String(renderProducts({ products: [], commit: 'a'.repeat(40) }));
+    const page = String(renderProducts({ products: [] }));
 
     expect(listOverflow(page)).not.toMatch(/overflow:\s*hidden/);
   });
 
   it('still rounds the card, on the first and last rows instead', () => {
-    const page = String(renderProducts({ products: [], commit: 'a'.repeat(40) }));
+    const page = String(renderProducts({ products: [] }));
 
     expect(page).toContain('.rows > *:first-child');
     expect(page).toContain('.rows > *:last-child');
   });
 
   it('gives the panel a stacking order so a later row does not cover it', () => {
-    const page = String(renderProducts({ products: [], commit: 'a'.repeat(40) }));
+    const page = String(renderProducts({ products: [] }));
 
     expect(page).toMatch(/\.detail\s*\{[^}]*z-index/);
   });
@@ -94,8 +80,6 @@ describe('the switch reflects the checkbox', () => {
         key: 'KILL_PASSWORD_LOGIN',
         definition: definition(),
         value: false,
-        publishedValue: false,
-        pending: false,
       },
     ]);
 
@@ -133,8 +117,6 @@ describe('the switch reflects the checkbox', () => {
         key: 'KILL_PASSWORD_LOGIN',
         definition: definition(),
         value: true,
-        publishedValue: true,
-        pending: false,
       },
     ]);
 
@@ -189,6 +171,76 @@ describe('every link button matches the toolbar', () => {
   });
 });
 
+describe('the action line keeps reading order', () => {
+  it('does not reverse the flex direction, which would put Delete before Save', () => {
+    const rules = [...productPage([]).matchAll(/\.actionline \{[^}]*\}/g)].map((match) => match[0]);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/row-reverse/);
+  });
+
+  it('can sit the confirmation actions on the right', () => {
+    expect(productPage([])).toMatch(/\.actionline\.end \{[^}]*justify-content:\s*flex-end/);
+  });
+
+  it('spaces the sync action list above Confirm', () => {
+    expect(productPage([])).toMatch(/\.sync-actions \{[^}]*margin-bottom:\s*1\.5rem/);
+  });
+
+  it('keeps a retiring row\'s actions on the right', () => {
+    expect(productPage([])).toMatch(/\.row-end \{[^}]*margin-left:\s*auto/);
+    expect(productPage([])).toMatch(/\.row-end \{[^}]*justify-content:\s*flex-end/);
+  });
+});
+
+describe('the product toolbar sits on the right', () => {
+  it('pushes the write actions to the right edge of the slot', () => {
+    const css = productPage([]);
+    expect(css).toMatch(/\.actionslot \.idle > button:first-of-type\s*\{[^}]*margin-left:\s*auto/);
+  });
+
+  it('draws the idle line in the small type, so saved diffs fit beside the facts', () => {
+    expect(productPage([])).toMatch(/\.actionline \.idle \{[^}]*font-size:\s*var\(--type-xs\)/);
+  });
+});
+
+describe('the footer sits in the same column as the page', () => {
+  it('uses the same max-width as main, so the build line is not a different measure', () => {
+    const page = productPage([]);
+    const main = page.match(/\n\s*main \{[^}]*\}/)?.[0] ?? '';
+    const foot = page.match(/\.pagefoot \{[^}]*\}/)?.[0] ?? '';
+    const width = main.match(/max-width:\s*[^;]+/)?.[0];
+    expect(width).toBeTruthy();
+    expect(foot).toContain(width ?? 'missing');
+  });
+});
+
+describe('a key name lines up with its tick', () => {
+  it('cancels the global label margin inside the key line', () => {
+    // `label { margin-bottom: .25rem }` is for stacked fields. On a key row it dropped the
+    // name below the checkbox, so the tick looked attached to the row above.
+    expect(productPage([])).toMatch(/\.keyline label\s*\{[^}]*margin-bottom:\s*0/);
+  });
+});
+
+describe('sign-in copy is a styled subtitle, not an undefined class', () => {
+  it('defines .sub so the login lede is muted rather than body-coloured', () => {
+    expect(productPage([])).toMatch(/\.sub\s*\{[^}]*color:\s*var\(--muted\)/);
+  });
+});
+
+describe('a feature row is the same kind of row as a product', () => {
+  it('does not restate padding, which made flags a different height from products', () => {
+    const rule = productPage([]).match(/\.feature-row\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).not.toMatch(/padding:/);
+  });
+});
+
+describe('header actions sit on the title baseline', () => {
+  it('makes forms in the title actions flex items, not blocks that drop the button', () => {
+    expect(productPage([])).toMatch(/\.actions-right form\s*\{[^}]*display:\s*flex/);
+  });
+});
+
 describe('button styling is global', () => {
   // It was a toolbar-local rule, so every button outside the toolbar — Sign in, the product
   // list's actions — was set at a different size from the ones beside them.
@@ -228,19 +280,19 @@ describe('a write in flight says so', () => {
   });
 
   it('gives every write action a resting and a running label', () => {
+    // The product page carries three write actions in one form -- Save, Promote and Delete
+    // keys -- so it is the page where a missing label would show.
     const busy = String(
       renderProduct({
         service: 'iam',
-        environments: [
-          {
-            name: 'dev',
-            namespace: 'iam/dev',
-            pending: [{ key: 'A', from: '1', to: '2', secret: false }],
-          },
-        ],
-        active: 'dev',
+        environment: 'dev',
+        environments: ['dev', 'prod'],
+        etag: 'e',
         rows: [],
-        commit: 'a'.repeat(40),
+        version: 1,
+        next: 'prod',
+        retiring: false,
+        missing: false,
       }),
     );
 
@@ -251,50 +303,13 @@ describe('a write in flight says so', () => {
   });
 });
 
-describe('every publish action reads the same way', () => {
-  // One idiom across the console: a link-styled question in the environment's own colour, and
-  // absent rather than greyed when there is nothing behind it.
-  it('renders the products publish as a link, phrased as a question', () => {
-    // The search button comes first on the page now, so this names the publish one rather than
-    // taking whichever button happens to be first.
-    const button =
-      productsPage(2)
-        .match(/<button[\s\S]*?<\/button>/g)
-        ?.find((markup) => markup.includes('Publish')) ?? '';
-
-    expect(button).toContain('linkbtn');
-    expect(button).toContain('go');
-    expect(button).toMatch(/\?/);
-  });
-
-  it('offers no products publish at all when nothing is waiting', () => {
-    // The search button remains: it changes nothing, so it is not a publish action.
-    expect(productsPage(0)).not.toContain('value="publish"');
-    expect(productsPage(0)).not.toContain('Publish selected');
-  });
-
-  it('renders the whole-product publish as a link, and not at all when idle', () => {
-    const busy = String(
-      renderProduct({
-        service: 'iam',
-        environments: [
-          {
-            name: 'dev',
-            namespace: 'iam/dev',
-            drafts: 1,
-            pending: [{ key: 'A', from: '1', to: '2', secret: false }],
-          },
-        ],
-        active: 'dev',
-        rows: [],
-        commit: 'a'.repeat(40),
-      }),
-    );
-
-    expect(busy).toMatch(/<button[^>]*class="linkbtn go"[\s\S]*?Publish all 1 draft in iam\?/);
-    expect(productPage([])).not.toContain('Publish all');
-  });
-});
+/*
+ * The publish idiom that lived here is gone: the direct-write cutover removed publishing, so
+ * there is no link-styled question to assert the shape of. The rule it protected — a write
+ * action is link-styled, phrased as a question, and absent rather than greyed when there is
+ * nothing behind it — now applies to Delete keys and Archive, and is asserted where those are
+ * rendered. AC9 forbids any wording implying a saved change is not yet in effect.
+ */
 
 describe('a hidden element is actually hidden', () => {
   // `hidden` is a UA style of `display: none`, and ANY author rule setting display beats it —
@@ -375,14 +390,12 @@ describe('nothing styles itself inline', () => {
   // Every page that HAS this markup: the product list's names, and a page whose hover panels
   // carry changed values.
   const busyPages = () => [
-    productsPage(2),
+    productsPage(),
     productPage([
       {
         key: 'MFA_ENFORCEMENT',
         definition: definition({ type: 'string' }),
         value: 'all',
-        publishedValue: 'optional',
-        pending: true,
       },
     ]),
   ];
@@ -490,6 +503,11 @@ describe('an action is never painted as a state', () => {
     expect(rule('.found')).not.toMatch(/var\(--unpublished\)/);
     expect(rule('.found')).toMatch(/var\(--accent\)/);
   });
+
+  it('keeps the search marker inside the rounded row', () => {
+    expect(rule('.found')).not.toMatch(/margin-left:\s*-/);
+    expect(rule('.found')).toMatch(/box-shadow:\s*inset/);
+  });
 });
 
 describe('a link action is the same size whichever element it is', () => {
@@ -593,6 +611,10 @@ describe('the settings table', () => {
 
   it('insets its rows from the border rather than letting them touch it', () => {
     expect(rule('.settings-row')).toMatch(/padding:/);
+  });
+
+  it('centres the name and the value on one baseline', () => {
+    expect(rule('.settings-row')).toMatch(/align-items:\s*center/);
   });
 
   // The rule is worthless unless something wears the class.

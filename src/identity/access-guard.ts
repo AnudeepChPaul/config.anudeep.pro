@@ -1,3 +1,4 @@
+import { logCaught } from '@config/src/logging.js';
 import type { Socket } from 'node:net';
 import type { PeerCredentialResolver } from './peercred.js';
 import type { ServiceRegistry } from './registry.js';
@@ -64,9 +65,8 @@ export class AccessGuard {
     let uid: number;
     try {
       uid = this.options.resolver.resolve(socket).uid;
-    } catch {
-      // Not "unknown caller" — the mechanism itself is not working, which must never be the
-      // path that grants access.
+    } catch (error) {
+      logCaught(error, 'config.access.credentials.failed', { logger: 'identity.access-guard' });
       return this.deny({
         outcome: 'denied',
         uid: null,

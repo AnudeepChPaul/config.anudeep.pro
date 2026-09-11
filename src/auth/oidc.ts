@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { logCaught, logged } from '@config/src/logging.js';
 
 /**
  * Signing in through iam: OpenID Connect authorization code flow with PKCE.
@@ -66,19 +67,21 @@ export class OidcClient {
   constructor(private readonly options: OidcOptions) {}
 
   async authorizationUrl(params: { state: string; nonce: string; pkce: Pkce }): Promise<string> {
-    const { authorization_endpoint } = await this.discover();
-    const url = new URL(authorization_endpoint);
+    return logged(undefined, 'config.oidc.authorize', { logger: 'auth.oidc' }, async () => {
+      const { authorization_endpoint } = await this.discover();
+      const url = new URL(authorization_endpoint);
 
-    url.searchParams.set('response_type', 'code');
-    url.searchParams.set('client_id', this.options.clientId);
-    url.searchParams.set('redirect_uri', this.options.redirectUri);
-    url.searchParams.set('scope', SCOPE);
-    url.searchParams.set('state', params.state);
-    url.searchParams.set('nonce', params.nonce);
-    url.searchParams.set('code_challenge', params.pkce.challenge);
-    url.searchParams.set('code_challenge_method', 'S256');
+      url.searchParams.set('response_type', 'code');
+      url.searchParams.set('client_id', this.options.clientId);
+      url.searchParams.set('redirect_uri', this.options.redirectUri);
+      url.searchParams.set('scope', SCOPE);
+      url.searchParams.set('state', params.state);
+      url.searchParams.set('nonce', params.nonce);
+      url.searchParams.set('code_challenge', params.pkce.challenge);
+      url.searchParams.set('code_challenge_method', 'S256');
 
-    return url.toString();
+      return url.toString();
+    });
   }
 
   async exchange(params: {
@@ -86,37 +89,39 @@ export class OidcClient {
     verifier: string;
     nonce: string;
   }): Promise<IdTokenClaims> {
-    const { token_endpoint } = await this.discover();
+    return logged(undefined, 'config.oidc.exchange', { logger: 'auth.oidc' }, async () => {
+      const { token_endpoint } = await this.discover();
 
-    const response = await fetch(token_endpoint, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        // The client secret goes in the header rather than the body: request bodies turn up in
-        // proxy logs and error reports far more often than Authorization does.
-        authorization: `Basic ${Buffer.from(
-          `${encodeURIComponent(this.options.clientId)}:${encodeURIComponent(this.options.clientSecret)}`,
-        ).toString('base64')}`,
-      },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code: params.code,
-        redirect_uri: this.options.redirectUri,
-        client_id: this.options.clientId,
-        code_verifier: params.verifier,
-      }).toString(),
+      const response = await fetch(token_endpoint, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          // The client secret goes in the header rather than the body: request bodies turn up in
+          // proxy logs and error reports far more often than Authorization does.
+          authorization: `Basic ${Buffer.from(
+            `${encodeURIComponent(this.options.clientId)}:${encodeURIComponent(this.options.clientSecret)}`,
+          ).toString('base64')}`,
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: params.code,
+          redirect_uri: this.options.redirectUri,
+          client_id: this.options.clientId,
+          code_verifier: params.verifier,
+        }).toString(),
+      });
+
+      if (!response.ok) {
+        throw new OidcError(`iam refused the authorization code (${response.status})`);
+      }
+
+      const body = (await response.json()) as { id_token?: unknown };
+      if (typeof body.id_token !== 'string') {
+        throw new OidcError('iam returned no id_token');
+      }
+
+      return this.validate(body.id_token, params.nonce);
     });
-
-    if (!response.ok) {
-      throw new OidcError(`iam refused the authorization code (${response.status})`);
-    }
-
-    const body = (await response.json()) as { id_token?: unknown };
-    if (typeof body.id_token !== 'string') {
-      throw new OidcError('iam returned no id_token');
-    }
-
-    return this.validate(body.id_token, params.nonce);
   }
 
   private validate(idToken: string, nonce: string): IdTokenClaims {
@@ -129,7 +134,8 @@ export class OidcClient {
         string,
         unknown
       >;
-    } catch {
+    } catch (error) {
+      logCaught(error, 'config.oidc.token.failed', { logger: 'auth.oidc' });
       throw new OidcError('the id_token payload is not JSON');
     }
 
@@ -164,22 +170,23 @@ export class OidcClient {
 
   private async discover(): Promise<Discovery> {
     if (this.discovery) return this.discovery;
+    return logged(undefined, 'config.oidc.discover', { logger: 'auth.oidc' }, async () => {
+      const url = `${this.options.issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
+      const response = await fetch(url);
+      if (!response.ok)
+        throw new OidcError(`could not reach iam's discovery document (${response.status})`);
 
-    const url = `${this.options.issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
-    const response = await fetch(url);
-    if (!response.ok)
-      throw new OidcError(`could not reach iam's discovery document (${response.status})`);
+      const body = (await response.json()) as Partial<Discovery>;
+      if (!body.authorization_endpoint || !body.token_endpoint) {
+        throw new OidcError("iam's discovery document is missing endpoints");
+      }
 
-    const body = (await response.json()) as Partial<Discovery>;
-    if (!body.authorization_endpoint || !body.token_endpoint) {
-      throw new OidcError("iam's discovery document is missing endpoints");
-    }
-
-    this.discovery = {
-      authorization_endpoint: body.authorization_endpoint,
-      token_endpoint: body.token_endpoint,
-    };
-    return this.discovery;
+      this.discovery = {
+        authorization_endpoint: body.authorization_endpoint,
+        token_endpoint: body.token_endpoint,
+      };
+      return this.discovery;
+    });
   }
 }
 

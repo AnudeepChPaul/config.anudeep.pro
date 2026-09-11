@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { logCaught } from '@config/src/logging.js';
 
 /**
  * What is actually running here.
@@ -31,8 +32,8 @@ function packageVersion(): string {
     const here = dirname(fileURLToPath(import.meta.url));
     const raw = readFileSync(join(here, '..', 'package.json'), 'utf8');
     return String(JSON.parse(raw).version ?? '0.0.0');
-  } catch {
-    // A version is a label, never a reason to fail to start.
+  } catch (error) {
+    logCaught(error, 'config.build.version.failed', { logger: 'build-info' });
     return '0.0.0';
   }
 }

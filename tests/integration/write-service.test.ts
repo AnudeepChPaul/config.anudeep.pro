@@ -1,21 +1,26 @@
 import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { GitRepository } from '@config/src/git/repository.js';
-import { SchemaSet } from '@config/src/schema/validator.js';
+import type { DBEngine, WriteEvent } from '@config/src/store/data-layer.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
 import { ConfigWriteService } from '@config/src/store/write-service.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.js';
+import { type AgeKeypair, generateAgeKey, hasSops, liveOptions, TestRepo } from '../helpers.js';
 
 /**
- * The write path end to end: validate, check for a stale base, encrypt, commit.
+ * The write path end to end: validate, check the base, encrypt, write.
  *
- * Against a real repository and real sops. The properties that matter here — that a secret is
- * ciphertext by the time it is committed, that a stale editor cannot overwrite someone else's
- * change, that a rejected save leaves no commit — are all properties of the interaction between
- * git, sops and the schema, so mocking any of them would test the mock.
+ * Against a real database and real sops. The properties that matter here -- that a secret is
+ * ciphertext by the time it is stored, that a stale editor cannot overwrite someone else's
+ * change, that a rejected save writes nothing -- are properties of the interaction between the
+ * data engine, sops and the schema, so mocking any of them would test the mock.
+ *
+ * It used to commit, and these assertions read the git tree. The database is authoritative now
+ * and git is a backup the sync engine writes on its own schedule, so the same properties are
+ * asserted where the value actually lands. Pushing, and the commit message it carries, moved
+ * with it: tests/unit/sync-engine.test.ts and tests/integration/data-engine-sync.test.ts own
+ * that half.
  */
 
 const withSops = hasSops() ? describe : describe.skip;
@@ -37,13 +42,14 @@ keys:
 `;
 
 const ACTOR = { email: 'me@anudeep.pro', id: '7f3a1c9e' };
-const REQUEST = { id: '01JQZX', sourceIp: '203.0.113.7' };
+const PATH = 'config/iam/prod.yaml';
 
 withSops('ConfigWriteService', () => {
   let key: AgeKeypair;
   let repo: TestRepo;
-  let git: GitRepository;
+  let db: DBEngine;
   let service: ConfigWriteService;
+  let written: WriteEvent[];
 
   /** A repo whose .sops.yaml encrypts exactly the keys the schema marks secret. */
   const setUp = async (encryptedRegex = '^(SMTP_PASSWORD)$') => {
@@ -51,48 +57,43 @@ withSops('ConfigWriteService', () => {
     repo = await TestRepo.create();
     await repo.commit({
       'schema/iam.yaml': SCHEMA,
+      'environments.yaml': 'order: [prod]\n',
+      'services.yaml':
+        'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/prod]\n',
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "${encryptedRegex}"\n    age: ${key.recipient}\n`,
     });
-    git = new GitRepository(repo.dir);
-    service = new ConfigWriteService({
-      repository: git,
-      loader: new ConfigLoader(new SopsDecryptor(key.secret)),
-      encryptor: new SopsEncryptor(repo.dir),
-      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
-    });
+    written = [];
+    const loader = new ConfigLoader(new SopsDecryptor(key.secret));
+    const live = await liveOptions(repo.dir, { iam: SCHEMA }, loader, (event) =>
+      written.push(event),
+    );
+    db = live.db;
+    service = live.operations;
   };
 
-  /** The committed file text, still encrypted — what a reviewer would see on GitHub. */
-  const committed = async () => (await git.readSources()).sources.get('iam/prod') ?? '';
+  /** The stored file text, still encrypted -- what a backup would carry. */
+  const stored = async () => (await db.read(PATH)) ?? '';
 
   /** The decrypted values, as a service would receive them. */
   const served = async () => {
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
-    return (await loader.resolve(await git.readSources())).namespaces.get('iam/prod');
+    return loader.resolveOne('iam/prod', await stored());
   };
 
-  const save = async (overrides: Record<string, unknown> = {}, base?: string) =>
-    service.save(
+  /** The entity tag a save must be based on, which is what the console renders into the form. */
+  const base = () => db.etag(PATH);
+
+  const save = async (overrides: Record<string, unknown> = {}, expectedEtag?: string | null) =>
+    service.writeValues(
       {
         service: 'iam',
         environment: 'prod',
-        baseCommit: base ?? (await git.headCommit()),
         changes: { MFA_ENFORCEMENT: 'all', ...overrides },
-        message: 'Tighten MFA after the login spike',
+        expectedEtag: expectedEtag === undefined ? await base() : expectedEtag,
       },
       ACTOR,
-      REQUEST,
     );
-
-  /** Rebuilds the service after the repo's remote changes, since git is read per call. */
-  const rebuild = () =>
-    new ConfigWriteService({
-      repository: git,
-      loader: new ConfigLoader(new SopsDecryptor(key.secret)),
-      encryptor: new SopsEncryptor(repo.dir),
-      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
-    });
 
   beforeEach(async () => {
     await setUp();
@@ -103,14 +104,13 @@ withSops('ConfigWriteService', () => {
   });
 
   describe('saving', () => {
-    it('commits the change and reports the new commit', async () => {
-      const before = await git.headCommit();
+    it('writes the change and reports the revision it landed at', async () => {
+      const before = await db.revision();
 
       const result = await save();
 
       expect(result.ok).toBe(true);
-      expect(result.ok && result.value.commit).not.toBe(before);
-      expect(result.ok && result.value.commit).toBe(await git.headCommit());
+      expect(await db.revision()).not.toBe(before);
     });
 
     it('serves the new value afterwards', async () => {
@@ -127,14 +127,18 @@ withSops('ConfigWriteService', () => {
       expect(await served()).toMatchObject({ SESSION_TTL: 600, MFA_ENFORCEMENT: 'admins' });
     });
 
-    it('removes a key set to undefined', async () => {
-      // Deleting the override, not setting it to null — the value returns to the service's
-      // compiled-in default.
+    it('refuses to remove a key through a value save', async () => {
+      // This used to delete the override. AC5 gave removal its own operation, because taking a
+      // key out means taking it out of the schema and every environment at once -- and doing
+      // that as a side effect of one environment's Save is how a key came to be set somewhere
+      // it was no longer declared.
       await save({ SESSION_TTL: 600 });
 
-      await save({ SESSION_TTL: undefined });
+      const result = await save({ SESSION_TTL: undefined });
 
-      expect(await served()).not.toHaveProperty('SESSION_TTL');
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error.detail).toMatch(/Delete/);
+      expect(await served()).toMatchObject({ SESSION_TTL: 600 });
     });
 
     it('writes keys in sorted order regardless of the order they were added', async () => {
@@ -145,7 +149,7 @@ withSops('ConfigWriteService', () => {
 
       await save({ AUDIT_ENABLED: true });
 
-      const text = await committed();
+      const text = await stored();
       expect(text.indexOf('AUDIT_ENABLED')).toBeLessThan(text.indexOf('MFA_ENFORCEMENT'));
       expect(text.indexOf('MFA_ENFORCEMENT')).toBeLessThan(text.indexOf('SESSION_TTL'));
     });
@@ -155,7 +159,7 @@ withSops('ConfigWriteService', () => {
     it('encrypts a secret before committing it', async () => {
       await save({ SMTP_PASSWORD: 'hunter2' });
 
-      expect(await committed()).toContain('ENC[AES256_GCM');
+      expect(await stored()).toContain('ENC[AES256_GCM');
     });
 
     it('never commits the plaintext of a secret', async () => {
@@ -163,7 +167,7 @@ withSops('ConfigWriteService', () => {
       // makes storing secrets in git defensible at all.
       await save({ SMTP_PASSWORD: 'hunter2' });
 
-      expect(await committed()).not.toContain('hunter2');
+      expect(await stored()).not.toContain('hunter2');
     });
 
     it('round-trips the secret so services still receive it', async () => {
@@ -172,11 +176,11 @@ withSops('ConfigWriteService', () => {
       expect(await served()).toMatchObject({ SMTP_PASSWORD: 'hunter2' });
     });
 
-    it('leaves non-secret values readable in the committed file', async () => {
-      // The premise of git-as-database: a reviewer can see what a flag changed to.
+    it('leaves non-secret values readable in the stored file', async () => {
+      // The premise of the backup being reviewable: a reader can see what a flag changed to.
       await save();
 
-      expect(await committed()).toContain('all');
+      expect(await stored()).toContain('all');
     });
 
     it('refuses to commit when .sops.yaml would leave a schema secret in plaintext', async () => {
@@ -184,13 +188,30 @@ withSops('ConfigWriteService', () => {
       // disagree in this direction the secret is committed in the clear, and neither file is
       // obviously wrong on its own.
       await setUp('^(NOTHING_MATCHES_THIS)$');
-      const before = await git.headCommit();
+      const before = await stored();
 
       const result = await save({ SMTP_PASSWORD: 'hunter2' });
 
       expect(result.ok).toBe(false);
       expect(!result.ok && result.error.code).toBe('secret_not_encrypted');
-      expect(await git.headCommit()).toBe(before);
+      expect(await stored()).toBe(before);
+    });
+
+    it('cannot encrypt from the database directory, which does not hold .sops.yaml', async () => {
+      // The console pointed SopsEncryptor at CONFIG_DB_PATH. Rules live in the clone; the
+      // database is values. That save returned "secret values were not encrypted: SMTP_PASSWORD".
+      const broken = new ConfigWriteService({
+        db,
+        loader: new ConfigLoader(new SopsDecryptor(key.secret)),
+        encryptor: new SopsEncryptor(join(repo.dir, '.test-db')),
+      });
+      const result = await broken.writeValues(
+        { service: 'iam', environment: 'prod', changes: { SMTP_PASSWORD: 'hunter2' } },
+        ACTOR,
+      );
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error.code).toBe('secret_not_encrypted');
+      expect(!result.ok && result.error.detail).toMatch(/SMTP_PASSWORD/);
     });
 
     it('leaves no plaintext anywhere in the working tree', async () => {
@@ -210,10 +231,10 @@ withSops('ConfigWriteService', () => {
   });
 
   describe('the stale-commit check', () => {
-    it('rejects a save whose base commit is behind HEAD', async () => {
-      // Git's only concurrency control here. Without it the second editor silently discards the
-      // first's change, and the audit trail shows a clean commit either way.
-      const stale = await git.headCommit();
+    it('rejects a save whose base is behind the stored file', async () => {
+      // The engine's concurrency control. Without it the second editor silently discards the
+      // first's change, and the history shows a clean write either way.
+      const stale = await base();
       await save({ SESSION_TTL: 600 });
 
       const result = await save({ MFA_ENFORCEMENT: 'admins' }, stale);
@@ -222,26 +243,17 @@ withSops('ConfigWriteService', () => {
       expect(!result.ok && result.error.code).toBe('conflict');
     });
 
-    it('makes no commit when it rejects a stale save', async () => {
-      const stale = await git.headCommit();
+    it('writes nothing when it rejects a stale save', async () => {
+      const stale = await base();
       await save({ SESSION_TTL: 600 });
-      const head = await git.headCommit();
+      const settled = await stored();
 
       await save({ MFA_ENFORCEMENT: 'admins' }, stale);
 
-      expect(await git.headCommit()).toBe(head);
+      expect(await stored()).toBe(settled);
     });
 
-    it('reports the commit the editor should reload from', async () => {
-      const stale = await git.headCommit();
-      await save({ SESSION_TTL: 600 });
-
-      const result = await save({ MFA_ENFORCEMENT: 'admins' }, stale);
-
-      expect(!result.ok && result.error.currentCommit).toBe(await git.headCommit());
-    });
-
-    it('accepts a save based on the current HEAD', async () => {
+    it('accepts a save based on the current file', async () => {
       await save({ SESSION_TTL: 600 });
 
       await expect(save({ MFA_ENFORCEMENT: 'admins' })).resolves.toMatchObject({ ok: true });
@@ -256,12 +268,12 @@ withSops('ConfigWriteService', () => {
       expect(!result.ok && result.error.code).toBe('invalid');
     });
 
-    it('makes no commit when validation fails', async () => {
-      const before = await git.headCommit();
+    it('writes nothing when validation fails', async () => {
+      const before = await stored();
 
       await save({ MFA_ENFORCEMENT: 'everyone' });
 
-      expect(await git.headCommit()).toBe(before);
+      expect(await stored()).toBe(before);
     });
 
     it('reports every problem at once', async () => {
@@ -281,103 +293,46 @@ withSops('ConfigWriteService', () => {
   });
 
   describe('the audit trail', () => {
-    it('writes the operator message as the commit subject', async () => {
+    // Attribution is emitted with the write and consumed by the sync engine, which composes the
+    // commit message when it next backs up. What must be true at write time is that the actor
+    // and the key NAMES are recorded, and that no value ever is.
+    it('records the actor', async () => {
       await save();
 
-      expect(await repo.git('log', '-1', '--format=%s')).toBe('Tighten MFA after the login spike');
+      expect(written.map((event) => event.actor)).toContain(ACTOR.email);
     });
 
-    it('records the actor and the request', async () => {
+    it('records the key that changed', async () => {
       await save();
 
-      const body = await repo.git('log', '-1', '--format=%B');
-      expect(body).toContain('Actor: me@anudeep.pro');
-      expect(body).toContain('Request-Id: 01JQZX');
-      expect(body).toContain('Source-IP: 203.0.113.7');
+      expect(written.flatMap((event) => event.keys)).toContain('MFA_ENFORCEMENT');
     });
 
-    it('records the key that changed and hashes of its values', async () => {
-      await save();
-
-      const body = await repo.git('log', '-1', '--format=%B');
-      expect(body).toContain('Key: MFA_ENFORCEMENT');
-      expect(body).toMatch(/Old-Value-Hash: sha256:[0-9a-f]{64}/);
-      expect(body).toMatch(/New-Value-Hash: sha256:[0-9a-f]{64}/);
-    });
-
-    it('never puts a secret value in the commit message', async () => {
+    it('never puts a secret value in what it records', async () => {
       await save({ SMTP_PASSWORD: 'hunter2' });
 
-      expect(await repo.git('log', '-1', '--format=%B')).not.toContain('hunter2');
-    });
-  });
-
-  describe('publishing', () => {
-    it('reports the save as published when the push succeeds', async () => {
-      const remote = await repo.addRemote();
-      service = rebuild();
-
-      const result = await save();
-
-      expect(result.ok && result.value.published).toBe(true);
-      expect(await repo.git('ls-remote', remote, 'refs/heads/main')).toContain(
-        result.ok ? result.value.commit : '',
-      );
+      expect(JSON.stringify(written)).not.toContain('hunter2');
     });
 
-    it('still succeeds when the push fails', async () => {
-      // The plan's chosen failure behaviour. A GitHub outage during an incident must not stop
-      // an operator from closing registration.
-      await repo.addRemote();
-      await repo.breakRemote();
-      service = rebuild();
-
-      const result = await save();
-
-      expect(result.ok).toBe(true);
-    });
-
-    it('flags an unpushed save rather than claiming it was published', async () => {
-      await repo.addRemote();
-      await repo.breakRemote();
-      service = rebuild();
-
-      const result = await save();
-
-      expect(result.ok && result.value.published).toBe(false);
-    });
-
-    it('serves the value even though it was never pushed', async () => {
-      // Committed locally is the durability guarantee; the push is the off-host backup.
-      await repo.addRemote();
-      await repo.breakRemote();
-      service = rebuild();
+    it('emits nothing at all when the save changes nothing', async () => {
+      await save();
+      written = [];
 
       await save();
 
-      expect(await served()).toMatchObject({ MFA_ENFORCEMENT: 'all' });
-    });
-
-    it('leaves the commit for the background retry to publish', async () => {
-      await repo.addRemote();
-      await repo.breakRemote();
-      service = rebuild();
-
-      await save();
-
-      expect(await git.unpushedCommits()).toHaveLength(1);
+      expect(written).toEqual([]);
     });
   });
 
   describe('serialisation between concurrent saves', () => {
     it('applies one and rejects the other as stale rather than losing a change', async () => {
-      // Both editors loaded the same HEAD. The lock makes them run in turn; the stale check
+      // Both editors read the same file. The lock makes them run in turn; the stale check
       // then catches the second, which would otherwise silently overwrite the first.
-      const base = await git.headCommit();
+      const shared = await base();
 
       const [first, second] = await Promise.all([
-        save({ SESSION_TTL: 600 }, base),
-        save({ MFA_ENFORCEMENT: 'admins' }, base),
+        save({ SESSION_TTL: 600 }, shared),
+        save({ MFA_ENFORCEMENT: 'admins' }, shared),
       ]);
 
       const outcomes = [first.ok, second.ok].sort();

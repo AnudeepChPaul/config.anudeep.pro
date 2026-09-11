@@ -1,281 +1,153 @@
-/**
- * Keeps each key's tick in step with whether its value actually changed.
- *
- * Server-rendered `checked` is decided when the page is built, so without this, typing a new
- * value changes nothing until a reload — the tick would say "unchanged" while the field says
- * otherwise. Every control carries what it started as in `data-original`; this compares against
- * that rather than tracking edits, so typing a value and typing it back leaves no trace.
- *
- * Ticks stay overridable in one direction only. On an unchanged key, setting one by hand stops
- * it following the value, because you have said something the comparison cannot know: send this
- * unchanged key to the next environment. A key you have actually changed cannot be unticked —
- * the form posts every field, so an edited-but-unticked key would be written into the draft
- * document and then left out of the change set, which reads on screen as an edit that was
- * accepted and then silently lost. If you do not want the change, undo the change.
- */
+/** Key selection is independent of edits. Secrets survive a refused swap only in memory. */
 (() => {
-  /**
-   * The form is looked up per event, never held.
-   *
-   * htmx replaces the contents of #page on every tab click and every save, so a form captured
-   * once is detached on the first navigation — along with any listener bound to it. The page
-   * then looks alive and does nothing: ticking a box changed no count and selected nothing.
-   * Listening on the document survives every swap, because the document is the one node htmx
-   * never replaces.
-   */
-  const currentForm = () => document.querySelector('form[data-keys]');
-
-  /** Keys whose tick the person set themselves; the comparison leaves those alone. */
-  let claimed = new Set();
-
-  const currentValue = (control) =>
-    control.type === 'checkbox' ? String(control.checked) : String(control.value);
-
-  const isDirty = (control) => currentValue(control) !== control.getAttribute('data-original');
-
-  const controlFor = (form, key) => form.querySelector(`[data-key="${CSS.escape(key)}"]`);
-  const tickFor = (form, key) => form.querySelector(`input[data-select="${CSS.escape(key)}"]`);
-
-  const LOCKED =
-    'This value was changed, so it goes with the draft. Put the old value back to drop it.';
-
-  const syncTick = (form, control) => {
-    const key = control.getAttribute('data-key');
-    if (!key) return;
-
-    const tick = tickFor(form, key);
-    if (!tick) return;
-
-    const dirty = isDirty(control);
-    if (dirty) {
-      // A change outranks an earlier by-hand untick: the key is going either way now.
-      claimed.delete(key);
-      tick.checked = true;
-      tick.title = LOCKED;
-      // A box you cannot clear must not look like one you can; the class is what says so.
-      tick.classList.add('locked');
-      return;
-    }
-
-    tick.title = '';
-    tick.classList.remove('locked');
-    if (!claimed.has(key)) tick.checked = false;
+  const pending = new WeakMap();
+  const currentForm = () => document.querySelector('form[data-live-values]');
+  const dirty = (form) =>
+    [...form.querySelectorAll('[data-original]')].some((field) => {
+      const original = field.getAttribute('data-original') ?? '';
+      if (field.matches('[data-secret], [type="password"]')) return field.value !== '';
+      if (field.type === 'checkbox') return (field.checked ? 'true' : 'false') !== original;
+      return field.value !== original;
+    });
+  const writeAction = (form, spec) => {
+    const button = document.createElement('button');
+    button.type = 'submit';
+    button.className = spec.className;
+    button.name = 'intent';
+    button.value = spec.intent;
+    button.setAttribute('hx-post', spec.post);
+    button.setAttribute('hx-target', '#page');
+    button.setAttribute('hx-swap', 'innerHTML');
+    button.setAttribute('hx-include', form.id ? `#${form.id}` : 'closest form');
+    button.setAttribute('hx-vals', JSON.stringify({ intent: spec.intent }));
+    if (spec.formAction) button.setAttribute('formaction', spec.formAction);
+    const resting = document.createElement('span');
+    resting.className = 'resting';
+    resting.textContent = spec.label;
+    const running = document.createElement('span');
+    running.className = 'running';
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner';
+    running.append(spinner, spec.running);
+    button.append(resting, running);
+    return button;
   };
-
-  const refreshButtons = (form) => {
-    const ticked = form.querySelectorAll('input[name="select"]:checked').length;
-
-    for (const el of form.querySelectorAll('button[data-needs-ticks]')) el.disabled = ticked === 0;
-
-    // The count belongs wherever it is stated — the running sentence and the actions both — so
-    // the number you are about to act on is the number you are looking at.
-    const total = form.querySelectorAll('input[name="select"]').length;
-    const drafted = form.querySelector('[data-selection]')?.getAttribute('data-drafted');
-    const draftedKeys = (drafted ?? '').split(',').filter(Boolean);
-    const unsaved =
-      draftedKeys.length === 0 ||
-      [...form.querySelectorAll('input[name="select"]:checked')].some(
-        (box) => !draftedKeys.includes(box.value),
-      ) ||
-      [...form.querySelectorAll('[data-key]')].some((control) => isDirty(control));
-
-    for (const el of form.querySelectorAll('[data-label]')) {
-      // The sentence says one of two things: what is unsaved on this page, counted here, or
-      // what the draft holds, counted by the server. Recounting the second from ticks would
-      // state a number that has nothing to do with what publishing would do.
-      const drafts = el.getAttribute('data-drafted-label');
-      if (drafts !== null && !unsaved) {
-        el.textContent = drafts;
-        continue;
-      }
-      el.textContent = el
-        .getAttribute('data-label')
-        .replace('{n}', String(ticked))
-        .replace('{t}', String(total))
-        .replace('{s}', ticked === 1 ? '' : 's');
+  const recipes = (form) => {
+    const wanted = [];
+    const ticked = form.querySelectorAll('input[name="select"]:checked').length > 0;
+    if (ticked && form.dataset.promotePost)
+      wanted.push({
+        intent: 'promote',
+        make: () =>
+          writeAction(form, {
+            className: 'linkbtn',
+            intent: 'promote',
+            post: form.dataset.promotePost,
+            formAction: form.dataset.promotePost,
+            label: form.dataset.promoteLabel || 'Promote',
+            running: 'Promoting',
+          }),
+      });
+    if (ticked && form.dataset.deletePost)
+      wanted.push({
+        intent: 'delete',
+        make: () =>
+          writeAction(form, {
+            className: 'linkbtn no',
+            intent: 'delete',
+            post: form.dataset.deletePost,
+            formAction: form.dataset.deletePost,
+            label: 'Delete keys',
+            running: 'Checking',
+          }),
+      });
+    if (dirty(form) && form.dataset.savePost)
+      wanted.push({
+        intent: 'save',
+        make: () =>
+          writeAction(form, {
+            className: 'linkbtn',
+            intent: 'save',
+            post: form.dataset.savePost,
+            label: 'Save',
+            running: 'Saving',
+          }),
+      });
+    return wanted;
+  };
+  const refresh = () => {
+    const form = currentForm();
+    const line = form?.querySelector('.actionline .idle');
+    if (!form || !line) return;
+    const wanted = recipes(form);
+    for (const extra of [...line.querySelectorAll('button')]) {
+      if (!wanted.some((spec) => spec.intent === extra.value)) extra.remove();
     }
-
-    // What is ticked but not yet in the draft, plus anything edited on the page. With neither,
-    // pressing Draft would rewrite the same document and count a revision for it; unticking a
-    // drafted key narrows a publish rather than creating something to write down.
-    const selection = form.querySelector('[data-selection]');
-    const draftedAttr = selection?.getAttribute('data-drafted');
-    if (draftedAttr !== null && draftedAttr !== undefined) {
-      const draftedKeys = draftedAttr.split(',').filter(Boolean);
-      const somethingNew =
-        draftedKeys.length === 0 ||
-        [...form.querySelectorAll('input[name="select"]:checked')].some(
-          (box) => !draftedKeys.includes(box.value),
-        ) ||
-        [...form.querySelectorAll('[data-key]')].some((control) => isDirty(control));
-
-      // Two states, one toolbar, and unsaved wins: while the page holds anything the draft does
-      // not, publishing is withdrawn. Offering it here invites publishing a draft that leaves
-      // out what is on the screen.
-      for (const el of form.querySelectorAll('[data-draft-action]')) el.hidden = !somethingNew;
-      for (const el of form.querySelectorAll('[data-publish-action]')) el.hidden = somethingNew;
-    }
-
-    // Nothing ticked and nothing written down: the toolbar has nothing to act on, so it shows
-    // where you are instead. A saved draft counts as something, since it is publishable
-    // whatever the ticks say.
-    const actions = form.querySelector('[data-actions]');
-    if (actions) {
-      const idle = ticked === 0 && actions.getAttribute('data-has-draft') === null;
-      const selection = actions.querySelector('[data-selection]');
-      const where = actions.querySelector('.idle');
-      if (selection) selection.hidden = idle;
-      if (where) where.hidden = !idle;
+    for (const spec of wanted) {
+      const existing = line.querySelector(`button[value="${spec.intent}"]`);
+      const button = existing ?? spec.make();
+      line.append(button);
+      if (!existing) globalThis.htmx?.process?.(button);
     }
   };
-
-  /**
-   * The panel behind the count: which keys are selected, and what each one is about to change.
-   *
-   * The server cannot render this before a draft is saved — it has never seen these edits — so
-   * it is built from the page. Text nodes throughout: a config value is arbitrary text, and
-   * assembling this as markup would let a value close a tag.
-   */
-  const refreshDetail = (form) => {
-    // Scoped to the selection: the idle line carries a panel of its own — what differs from
-    // the next environment — and it renders first, so "the first panel in the form" wrote the
-    // selection into that one and left this one showing the drift.
-    const panel = form.querySelector('[data-selection] [data-detail]');
-    if (!panel) return;
-
-    const heading = panel.querySelector('h3');
-    panel.textContent = '';
-    if (heading) panel.append(heading);
-
-    const line = (parts) => {
-      const row = document.createElement('div');
-      for (const [text, className] of parts) {
-        const span = document.createElement(className === 'key' ? 'strong' : 'span');
-        if (className && className !== 'key') span.className = className;
-        span.textContent = text;
-        row.append(span, document.createTextNode(' '));
-      }
-      panel.append(row);
-    };
-
-    for (const tick of form.querySelectorAll('input[name="select"]:checked')) {
-      const key = tick.value;
-      const control = controlFor(form, key);
-      if (!control) continue;
-
-      if (tick.getAttribute('data-secret') !== null) {
-        line([
-          [key, 'key'],
-          ['changed — value hidden', 'hint'],
-        ]);
-        continue;
-      }
-
-      // What it is published as, when that is known: `data-original` is what the field was
-      // rendered with, which for a saved draft is the draft's own value.
-      const was = tick.getAttribute('data-published') ?? control.getAttribute('data-original');
-      const now = currentValue(control);
-
-      if (was === now)
-        line([
-          [key, 'key'],
-          ['unchanged — selected to promote', 'hint'],
-        ]);
-      else
-        line([
-          [key, 'key'],
-          [was || '(unset)', 'was'],
-          ['→', 'hint'],
-          [now || '(removed)', 'is'],
-        ]);
-    }
-  };
-
-  const refresh = (form) => {
-    refreshButtons(form);
-    refreshDetail(form);
-  };
-
-  document.addEventListener('input', (event) => {
-    const form = event.target.closest?.('form[data-keys]');
-    const control = event.target.closest?.('[data-key]');
-    if (!form || !control) return;
-    syncTick(form, control);
-    refresh(form);
-  });
-
-  document.addEventListener('change', (event) => {
-    const form = event.target.closest?.('form[data-keys]');
-    if (!form) return;
-
-    const control = event.target.closest('[data-key]');
-    if (control) syncTick(form, control);
-
-    if (event.target.name === 'select') {
-      const owner = controlFor(form, event.target.value);
-      // Refusing the click rather than disabling the box: a disabled checkbox is not submitted,
-      // which would drop the very key it is meant to hold.
-      if (owner && isDirty(owner)) event.target.checked = true;
-      else claimed.add(event.target.value);
-    }
-
-    refresh(form);
-  });
-
-  const initial = currentForm();
-  if (initial) refresh(initial);
-
-  /**
-   * A swap brings a different page, or the same page rebuilt by the server.
-   *
-   * Its counts have to be recomputed rather than inherited — the state it was rendered with is
-   * the server's, and the ticks a person set by hand on the page that was just thrown away do
-   * not apply to the keys on this one.
-   *
-   * `autofocus` is honoured only when a browser parses a document, never when an element is
-   * swapped in, so the message field — which appears the moment a draft exists and is the only
-   * thing left to supply — is focused here by hand.
-   */
-  /**
-   * A confirmation says the thing you asked for happened; it has no job after that.
-   *
-   * The server renders it, so it appears with the swap and appears without this script at all.
-   * Only the removal is here, which is the half that is safe to lose: a page that keeps a
-   * completion notice too long is untidy, where a page that never shows one has swallowed the
-   * answer. Nothing else is removed — a notice about a push that did not reach the remote
-   * carries no data-transient, because it is still something to act on.
-   */
   const clearTransientNotices = () => {
     for (const notice of document.querySelectorAll('[data-transient]')) {
       setTimeout(() => notice.remove(), 5000);
     }
   };
-
-  clearTransientNotices();
-
-  document.addEventListener('htmx:afterSwap', () => {
-    clearTransientNotices();
-    claimed = new Set();
-    const form = currentForm();
-    if (form) refresh(form);
-    document.querySelector('[autofocus]')?.focus();
+  const revealFound = () => {
+    document.querySelector('.keyrow.found')?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  };
+  const revealFoundSoon = () => {
+    revealFound();
+    requestAnimationFrame(() => {
+      revealFound();
+      requestAnimationFrame(revealFound);
+    });
+  };
+  document.addEventListener('change', refresh);
+  document.addEventListener('input', refresh);
+  document.addEventListener('htmx:beforeRequest', (event) => {
+    const { elt, xhr } = event.detail;
+    const form = elt?.closest?.('form[data-live-values]');
+    if (!form || !xhr) return;
+    pending.set(xhr, {
+      action: form.action,
+      secrets: [...form.querySelectorAll('input[type="password"]')].map((input) => [
+        input.name,
+        input.value,
+      ]),
+    });
   });
-
-  /**
-   * A refused write is an answer, so put it on the screen.
-   *
-   * htmx does not swap a 4xx response, and hx-retarget does not change that: the server rendered
-   * a page naming exactly which key was wrong and the browser threw it away. Saving an
-   * out-of-range value looked like pressing a button that did nothing — during an incident, that
-   * is indistinguishable from the console being broken.
-   *
-   * Only 422, and only because every 422 here IS a rendered page about what was refused. A 500
-   * still goes to htmx's error handling, because a stack trace is not a page.
-   */
   document.addEventListener('htmx:beforeSwap', (event) => {
-    if (event.detail.xhr && event.detail.xhr.status === 422) {
+    const status = event.detail.xhr?.status;
+    if (status === 409 || status === 422) {
       event.detail.shouldSwap = true;
       event.detail.isError = false;
     }
   });
+  document.addEventListener('htmx:afterSwap', (event) => {
+    const xhr = event.detail?.xhr;
+    const saved = xhr && pending.get(xhr);
+    const form = currentForm();
+    if (saved && form?.action === saved.action && (xhr.status === 409 || xhr.status === 422)) {
+      for (const [name, value] of saved.secrets) {
+        const input = [...form.querySelectorAll('input[type="password"]')].find(
+          (input) => input.name === name,
+        );
+        if (input) input.value = value;
+      }
+    }
+    if (xhr) pending.delete(xhr);
+    refresh();
+    clearTransientNotices();
+    document.querySelector('[autofocus]')?.focus();
+    revealFoundSoon();
+  });
+  document.addEventListener('htmx:afterSettle', revealFoundSoon);
+  window.addEventListener('load', revealFoundSoon);
+  window.addEventListener('pageshow', revealFoundSoon);
+  refresh();
+  clearTransientNotices();
+  revealFoundSoon();
 })();

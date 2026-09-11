@@ -8,7 +8,7 @@ import { SessionCodec } from '@config/src/auth/session.js';
 import { generateTotp, totpCounter } from '@config/src/auth/totp.js';
 import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
-import { DraftStore } from '@config/src/store/draft-store.js';
+import type { WriteEvent } from '@config/src/store/data-layer.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
@@ -16,7 +16,7 @@ import { ConfigWriteService } from '@config/src/store/write-service.js';
 import formbody from '@fastify/formbody';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.js';
+import { type AgeKeypair, generateAgeKey, hasSops, liveOptions, TestRepo } from '../helpers.js';
 
 /**
  * Authentication in front of the editor.
@@ -49,24 +49,19 @@ withSops('the editor behind authentication', () => {
   let issuer: FastifyInstance;
   let issuerUrl: string;
 
+  let written: WriteEvent[] = [];
+  let live: Awaited<ReturnType<typeof liveOptions>>;
+  const etagForProd = async () => (await live.db.etag('config/iam/prod.yaml')) ?? '';
+
   const codec = new SessionCodec(SECRET);
 
   const start = async (withOidc = true) => {
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
-    const drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     alert = vi.fn();
+    written = [];
+    live = await liveOptions(repo.dir, { iam: SCHEMA }, loader, (event) => written.push(event));
     app = await buildWebApp({
-      repository: git,
-      loader,
-      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
-      drafts,
-      writeService: new ConfigWriteService({
-        repository: git,
-        loader,
-        encryptor: new SopsEncryptor(repo.dir),
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
-        drafts,
-      }),
+      ...live,
       environment: 'dev',
       auth: {
         codec,
@@ -295,29 +290,32 @@ withSops('the editor behind authentication', () => {
   });
 
   describe('attribution', () => {
-    it('commits as the signed-in person, not as an anonymous placeholder', async () => {
-      // The reason this slice exists. Before it, every commit in the audit trail said
+    // Attribution is recorded with the write and carried to the commit the sync engine writes
+    // when it next backs up, rather than being written by the edit itself. So these assert what
+    // the write recorded; tests/unit/sync-engine.test.ts owns the message it becomes.
+    it('records the signed-in person, not an anonymous placeholder', async () => {
+      // The reason this slice exists. Before it, every entry in the audit trail said
       // `unauthenticated@localhost`, which records that a change happened and nothing else.
-      // Staging then publishing, since an edit no longer commits on its own.
-      await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all' }, signedInCookie());
-      await post('/publish', { namespace: 'iam/prod', message: 'tighten MFA' }, signedInCookie());
+      await post(
+        '/p/iam/prod',
+        { 'key.MFA_ENFORCEMENT': 'all', etag: await etagForProd() },
+        signedInCookie(),
+      );
 
-      const body = await repo.git('log', '-1', '--format=%B');
-      expect(body).toContain('Actor: me@anudeep.pro');
-      expect(body).not.toContain('unauthenticated');
+      expect(written.map((event) => event.actor).join(' ')).toContain('me@anudeep.pro');
+      expect(written.map((event) => event.actor).join(' ')).not.toContain('unauthenticated');
     });
 
     it('records which credential was used', async () => {
       // A change made under break-glass was made while the identity provider was down and
       // nobody could be checked against it. That belongs in the record.
-      await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all' }, signedInCookie('break-glass'));
       await post(
-        '/publish',
-        { namespace: 'iam/prod', message: 'emergency' },
+        '/p/iam/prod',
+        { 'key.MFA_ENFORCEMENT': 'all', etag: await etagForProd() },
         signedInCookie('break-glass'),
       );
 
-      expect(await repo.git('log', '-1', '--format=%B')).toContain('Signed-In-With: break-glass');
+      expect(written.map((event) => event.actor).join(' ')).toContain('break-glass');
     });
   });
 

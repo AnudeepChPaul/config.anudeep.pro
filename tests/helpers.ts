@@ -6,7 +6,42 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { BreakGlass } from '@config/src/auth/break-glass.js';
 import { SessionCodec } from '@config/src/auth/session.js';
+import { GitRepository } from '@config/src/git/repository.js';
 import { SESSION_COOKIE } from '@config/src/routes/auth.js';
+import { DBEngine, type WriteEvent } from '@config/src/store/data-layer.js';
+import type { ConfigLoader } from '@config/src/store/loader.js';
+import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
+import { ConfigWriteService } from '@config/src/store/write-service.js';
+
+/** Migrate a legacy repository fixture into an isolated authoritative DB, never production data. */
+export async function liveOptions(
+  repoDir: string,
+  schemas: Record<string, string>,
+  loader: ConfigLoader,
+  onWrite?: (event: WriteEvent) => void,
+) {
+  const repository = new GitRepository(repoDir);
+  const db = new DBEngine(join(repoDir, '.test-db'), onWrite ? { onWrite } : {});
+  const sources = await repository.readSources();
+  const files = [
+    ...Object.entries(schemas).map(([name, source]) => ({
+      path: `schema/${name}.yaml`,
+      content: source,
+    })),
+    { path: 'services.yaml', content: await repository.readFile('services.yaml') },
+    { path: 'environments.yaml', content: await repository.readFile('environments.yaml') },
+    ...[...sources.sources].map(([namespace, content]) => ({
+      path: `config/${namespace}.yaml`,
+      content,
+    })),
+  ];
+  await db.writeMany(files);
+  return {
+    db,
+    loader,
+    operations: new ConfigWriteService({ db, loader, encryptor: new SopsEncryptor(repoDir) }),
+  };
+}
 
 const run = promisify(execFile);
 
@@ -178,3 +213,15 @@ export function guarded(): {
     headers: { cookie: `${SESSION_COOKIE}=${session}` },
   };
 }
+
+/**
+ * A rendered page without its stylesheet.
+ *
+ * AC8 and AC9 are rules about what a reader sees: no screen refers to drafts or publishing, and
+ * nothing implies a saved change is not yet in effect. The stylesheet is excluded because its
+ * comments record WHY several rules exist, and two of those reasons were publish-era defects --
+ * a Search button that submitted a publish, and a publish action painted in the state colour.
+ * Deleting that history to satisfy a substring match would cost the explanation and protect
+ * nothing.
+ */
+export const visible = (body: string): string => body.replace(/<style>[\s\S]*?<\/style>/, '');

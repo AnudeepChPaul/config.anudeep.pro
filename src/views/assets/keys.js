@@ -191,6 +191,63 @@
     }
   });
 
+  const syncAddKey = () => {
+    const line = document.querySelector('[data-add-key-line]');
+    if (!line) return;
+    const named = [...document.querySelectorAll('#new-product [name$=".name"]')].some(
+      (input) => (input.value || '').trim().length > 0,
+    );
+    line.hidden = !named;
+  };
+
+  const addKeyRow = () => {
+    const form = document.querySelector('#new-product');
+    const rows = form && form.querySelector('#key-rows');
+    const last = rows && rows.querySelector('[data-key-row]:last-of-type');
+    if (!form || !rows || !last) return;
+    let max = -1;
+    for (const named of form.querySelectorAll('[name^="key."]')) {
+      const n = Number(/^key\.(\d+)\./.exec(named.name)?.[1]);
+      if (Number.isFinite(n)) max = Math.max(max, n);
+    }
+    const clone = last.cloneNode(true);
+    for (const err of clone.querySelectorAll('.err')) err.remove();
+    for (const el of clone.querySelectorAll('[name]')) {
+      el.name = el.name.replace(/^key\.\d+\./, `key.${max + 1}.`);
+      if (el.type === 'checkbox' || el.type === 'radio') el.checked = false;
+      else if (el.tagName === 'SELECT') el.selectedIndex = 0;
+      else el.value = '';
+    }
+    rows.append(clone);
+    apply(clone);
+    syncAddKey();
+    const name = clone.querySelector('input[name$=".name"]');
+    if (name) name.focus();
+  };
+
+  document.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!target || !target.matches || !target.matches('#new-product [name$=".name"]')) return;
+    syncAddKey();
+  });
+
+  document.addEventListener(
+    'submit',
+    (event) => {
+      const submitter = event.submitter;
+      if (!submitter || !submitter.closest || !submitter.closest('[data-add-key]')) return;
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      event.stopPropagation();
+      addKeyRow();
+    },
+    true,
+  );
+
   applyAll();
-  document.addEventListener('htmx:afterSwap', applyAll);
+  syncAddKey();
+  document.addEventListener('htmx:afterSwap', () => {
+    applyAll();
+    syncAddKey();
+  });
 })();

@@ -1,130 +1,127 @@
 // @vitest-environment jsdom
 
-import {
-  type KeyRow,
-  renderDrafts,
-  renderProduct,
-  renderProducts,
-} from '@config/src/views/pages.js';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { type KeyRow, renderProduct } from '@config/src/views/pages.js';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 const definition = (over: Record<string, unknown> = {}) =>
   ({ type: 'string', secret: false, ...over }) as unknown as KeyRow['definition'];
-const pending = [{ key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false }] as never;
-const env = (name: string, drafts: number, holding: unknown[] = []) => ({
-  name,
-  namespace: `iam/${name}`,
-  drafts,
-  pending: holding as never,
-});
 const toolbar = {
   service: 'iam',
-  active: 'dev',
-  environments: [env('dev', 1, pending)],
+  environment: 'dev',
+  environments: ['dev', 'stage'],
+  etag: 'e',
   rows: [row()],
-  commit: 'a'.repeat(40),
-  revision: 3,
-  drafted: ['MFA_ENFORCEMENT'],
+  version: 3,
+  next: 'stage',
+  retiring: false,
+  missing: false,
   fragment: true,
 } as Parameters<typeof renderProduct>[0];
 
 /**
  * Every write action owns its loader.
  *
- * htmx marks the element that ISSUED a request with .htmx-request, and the rule that swaps
- * resting for running is `.htmx-request .resting`. With the request on the form, the class landed
- * on the form: the global publish, whose button sits in the page header and submits through
- * `form="publish-products"`, was outside it and never span at all, while the product toolbar --
- * one form holding both Save and Publish -- span BOTH whichever was pressed.
- *
- * So each action issues its own request. The class then lands on the button, and the only spinner
- * that runs is the one belonging to the action that was pressed.
+ * htmx marks the element that ISSUED a request with .htmx-request. The buttons are not in the
+ * first HTML — they are inserted into the idle span when a change or a tick needs them — and
+ * each still carries its own hx-post so one spinner cannot run the other.
  */
 function row(over: Partial<KeyRow> = {}): KeyRow {
   return {
     key: 'MFA_ENFORCEMENT',
     definition: definition({ type: 'enum', values: ['optional', 'all'] }),
     value: 'all',
-    publishedValue: 'optional',
-    pending: true,
     ...over,
   };
 }
 
 const load = (html: string) => {
   document.body.innerHTML = html;
+  document.dispatchEvent(new CustomEvent('htmx:afterSwap', { detail: {} }));
   return document.body;
 };
 
-const actions = () => [...document.querySelectorAll('button.linkbtn, button')];
+beforeAll(() => {
+  new Function(readFileSync(join(process.cwd(), 'src/views/assets/ticks.js'), 'utf8'))();
+});
+
+beforeEach(() => {
+  document.body.innerHTML = '';
+});
+
+describe('the live form ships recipes, not hidden actions', () => {
+  it('renders one idle span and no write buttons', () => {
+    load(String(renderProduct(toolbar)));
+    const line = document.querySelector('.actionline') as HTMLElement;
+    expect(line.querySelectorAll(':scope > span')).toHaveLength(1);
+    expect(line.querySelector('.idle')).not.toBeNull();
+    expect(line.querySelector('button')).toBeNull();
+    expect(line.querySelector('[hidden]')).toBeNull();
+    expect(line.querySelector('.acts, .selection')).toBeNull();
+  });
+
+  it('names the posts the script will turn into buttons', () => {
+    load(String(renderProduct(toolbar)));
+    const form = document.querySelector('form[data-live-values]') as HTMLFormElement;
+    expect(form.getAttribute('data-save-post')).toBe('/p/iam/dev');
+    expect(form.getAttribute('data-promote-post')).toBe('/promote');
+    expect(form.getAttribute('data-promote-label')).toBe('Promote to stage');
+    expect(form.getAttribute('data-delete-post')).toBe('/p/iam/delete-keys');
+  });
+});
 
 describe('a write action issues its own request', () => {
-  beforeEach(() => {
-    document.body.innerHTML = '';
-  });
-
-  it('wires the global publish, though its button is outside the form it submits', () => {
-    load(
-      String(
-        renderProducts({
-          products: [
-            {
-              name: 'iam (1002)',
-              service: 'iam',
-              keys: 'MFA_ENFORCEMENT',
-              environments: [env('dev', 1, pending)],
-            },
-          ],
-          commit: 'a'.repeat(40),
-          fragment: true,
-        }),
-      ),
-    );
-    const publish = actions().find((b) => b.textContent?.includes('Publish'));
-    expect(publish, 'the publish action is rendered').toBeTruthy();
-    expect(publish?.getAttribute('hx-post')).toBe('/publish');
-    // Without this the button posts nothing: the checkboxes live in the form it is outside of.
-    expect(publish?.getAttribute('hx-include')).toBeTruthy();
-  });
+  const activate = () => {
+    load(String(renderProduct(toolbar)));
+    const input = document.querySelector<HTMLInputElement>('[name="key.MFA_ENFORCEMENT"]')!;
+    input.value = 'optional';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const box = document.querySelector<HTMLInputElement>('[name="select"]')!;
+    box.checked = true;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+  };
 
   it('gives two actions in one form separate requests, so one spinner cannot run the other', () => {
-    load(String(renderProduct(toolbar)));
-    const wired = actions().filter((b) => b.getAttribute('hx-post'));
+    activate();
+    const wired = [...document.querySelectorAll('button[hx-post]')];
     expect(wired.length, 'every action carries its own request').toBeGreaterThan(1);
-    const posts = wired.map((b) => b.getAttribute('hx-post'));
-    expect(
-      new Set(posts).size,
-      'they are separate elements, not one shared indicator',
-    ).toBeGreaterThan(0);
+    expect(new Set(wired.map((button) => button.getAttribute('hx-post'))).size).toBeGreaterThan(1);
   });
 
   it('carries the intent on the action rather than relying on the submitter', () => {
-    load(String(renderProduct(toolbar)));
-    // htmx does not send a submit button's name/value when the BUTTON issues the request, so an
-    // intent expressed only as name/value would be lost and the route would guess.
-    // The toolbar's publish, not the header's "Publish all in iam" -- the toolbar is the one
-    // that shares a form with Save, so it is the one whose intent has to travel on the button.
-    const publish = document.querySelector('button[value="publish"]');
-    expect(publish?.getAttribute('hx-vals') ?? '').toContain('publish');
-    const save = document.querySelector('button[value="save"]');
-    expect(save?.getAttribute('hx-vals') ?? '').toContain('save');
+    activate();
+    expect(document.querySelector('button[value="save"]')?.getAttribute('hx-vals') ?? '').toContain(
+      'save',
+    );
+    expect(
+      document.querySelector('button[value="delete"]')?.getAttribute('hx-vals') ?? '',
+    ).toContain('delete');
   });
 
-  it('keeps the drop action wired on the drafts page', () => {
-    load(
-      String(
-        renderDrafts({
-          drafts: [
-            {
-              namespace: 'iam/dev',
-              saves: [{ keys: ['A'], actor: 'me@anudeep.pro', at: Date.now() }],
-            },
-          ],
-          fragment: true,
-        }),
-      ),
-    );
-    const drop = actions().find((b) => b.textContent?.includes('Drop'));
-    expect(drop?.getAttribute('hx-post')).toBe('/drafts/drop');
+  it('includes the form on an action whose checkboxes it must submit', () => {
+    activate();
+    for (const value of ['promote', 'delete']) {
+      expect(document.querySelector(`button[value="${value}"]`)?.getAttribute('hx-include'), value).toBeTruthy();
+    }
+  });
+});
+
+describe('the product toolbar keeps writes on the right', () => {
+  it('inserts Promote, then Delete, then Save into the idle span', () => {
+    load(String(renderProduct(toolbar)));
+    const input = document.querySelector<HTMLInputElement>('[name="key.MFA_ENFORCEMENT"]')!;
+    input.value = 'optional';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const box = document.querySelector<HTMLInputElement>('[name="select"]')!;
+    box.checked = true;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    const idle = document.querySelector('.idle') as HTMLElement;
+    expect([...idle.querySelectorAll('button')].map((button) => button.getAttribute('value'))).toEqual([
+      'promote',
+      'delete',
+      'save',
+    ]);
+    expect(document.querySelector('button[value="delete"]')?.className).toContain('no');
   });
 });

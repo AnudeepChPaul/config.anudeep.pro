@@ -2,14 +2,22 @@ import { rm } from 'node:fs/promises';
 import { buildWebApp } from '@config/src/app.js';
 import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
-import { DraftStore } from '@config/src/store/draft-store.js';
+import type { DBEngine } from '@config/src/store/data-layer.js';
 import { EnvironmentOrder } from '@config/src/store/environment-order.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
 import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
-import { ConfigWriteService } from '@config/src/store/write-service.js';
+import type { ConfigWriteService } from '@config/src/store/write-service.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type AgeKeypair, generateAgeKey, guarded, hasSops, TestRepo } from '../helpers.js';
+import {
+  type AgeKeypair,
+  generateAgeKey,
+  guarded,
+  hasSops,
+  liveOptions,
+  TestRepo,
+  visible,
+} from '../helpers.js';
 
 /**
  * The CRUD UI.
@@ -46,32 +54,23 @@ keys:
 withSops('the CRUD UI', () => {
   let key: AgeKeypair;
   let repo: TestRepo;
-  let git: GitRepository;
   let app: Awaited<ReturnType<typeof buildWebApp>>;
-
-  let drafts: DraftStore;
+  let db: DBEngine;
+  let operations: ConfigWriteService;
 
   const start = async (options: { environment?: string; authenticated?: boolean } = {}) => {
-    drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     // `auth` present IS authentication. Absent, the console refuses to be built at all now — in
     // every environment, since keying that off an environment string is what let one unset
     // variable serve it with no login on it.
     const auth = options.authenticated === false ? undefined : signedIn.auth;
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
+    // `evil` is declared by the escaping fixtures; a product with no schema does not render
+    // at all now, so it needs one like any other.
+    const live = await liveOptions(repo.dir, { iam: SCHEMA, evil: EVIL_SCHEMA }, loader);
+    db = live.db;
+    operations = live.operations;
     app = await buildWebApp({
-      repository: git,
-      loader,
-      // `evil` is declared by the escaping fixtures; a product with no schema does not render
-      // at all now, so it needs one like any other.
-      schemas: () => SchemaSet.fromFiles({ iam: SCHEMA, evil: EVIL_SCHEMA }),
-      drafts,
-      writeService: new ConfigWriteService({
-        repository: git,
-        loader,
-        encryptor: new SopsEncryptor(repo.dir),
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA, evil: EVIL_SCHEMA }),
-        drafts,
-      }),
+      ...live,
       environment: options.environment ?? 'dev',
       auth,
     });
@@ -84,13 +83,27 @@ withSops('the CRUD UI', () => {
    * object as JSON whatever the content-type says, which would exercise a body this app never
    * receives from a browser.
    */
-  const post = (path: string, fields: Record<string, string>) =>
-    app.inject({
+  /**
+   * Post a form the way the page does.
+   *
+   * A value save is a compare-and-swap: the rendered form carries the etag it was built from,
+   * and the write refuses a base it did not read. A test that omits it is exercising the
+   * conflict path, not the save path -- so the helper fills it in when the target is an
+   * environment and the fields do not name one already.
+   */
+  const post = async (path: string, fields: Record<string, string>) => {
+    const target = path.match(/^\/p\/([^/?]+)\/([^/?]+)$/);
+    const payload =
+      target && !('etag' in fields)
+        ? { ...fields, etag: (await db.etag(`config/${target[1]}/${target[2]}.yaml`)) ?? '' }
+        : fields;
+    return app.inject({
       method: 'POST',
       url: path,
-      payload: new URLSearchParams(fields).toString(),
+      payload: new URLSearchParams(payload).toString(),
       headers: { 'content-type': 'application/x-www-form-urlencoded', ...signedIn.headers },
     });
+  };
 
   beforeEach(async () => {
     key = generateAgeKey();
@@ -103,7 +116,6 @@ withSops('the CRUD UI', () => {
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(SMTP_PASSWORD)$"\n    age: ${key.recipient}\n`,
     });
-    git = new GitRepository(repo.dir);
   });
 
   afterEach(async () => {
@@ -142,7 +154,7 @@ withSops('the CRUD UI', () => {
       // Products, not namespaces: the index no longer lists an environment at all.
       // Labelled with the uid the read API authenticates against: it is the fact that decides
       // which process may read this product's configuration.
-      expect(body).toContain('iam (1002)');
+      expect(body).toContain('Iam (1002)');
       expect(body).not.toContain('iam/prod');
     });
 
@@ -161,7 +173,8 @@ withSops('the CRUD UI', () => {
     it('shows the commit being served', async () => {
       await start();
 
-      expect((await get('/')).body).toContain((await git.headCommit()).slice(0, 8));
+      // The revision is the token the page shows now; git provenance is the sync engine's.
+      expect((await get('/')).body).toContain(String(await db.revision()));
     });
   });
 
@@ -197,24 +210,17 @@ withSops('the CRUD UI', () => {
       await repo.commit({
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\n',
       });
-      const result = await new ConfigWriteService({
-        repository: git,
-        loader: new ConfigLoader(new SopsDecryptor(key.secret)),
-        encryptor: new SopsEncryptor(repo.dir),
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
-      }).save(
+      await start();
+      const result = await operations.writeValues(
         {
           service: 'iam',
           environment: 'prod',
-          baseCommit: await git.headCommit(),
           changes: { SMTP_PASSWORD: 'hunter2' },
-          message: 'set password',
+          expectedEtag: await db.etag('config/iam/prod.yaml'),
         },
         { email: 'me@anudeep.pro', id: 'x' },
-        { id: 'r', sourceIp: '::1' },
       );
       expect(result.ok).toBe(true);
-      await start();
 
       const body = (await get('/p/iam?env=prod')).body;
 
@@ -282,82 +288,132 @@ withSops('the CRUD UI', () => {
       await start();
 
       const response = await post('/p/iam/prod', {
-        baseCommit: await git.headCommit(),
+        etag: (await db.etag('config/iam/prod.yaml')) ?? '',
         message: 'tighten MFA',
         'key.MFA_ENFORCEMENT': 'all',
       });
 
       expect(response.statusCode).toBe(303);
       // Back to the namespace, now carrying what the save did.
-      expect(response.headers.location).toBe('/p/iam?env=prod&done=drafted&n=1');
+      expect(response.headers.location).toBe('/p/iam?env=prod&done=saved');
       expect((await get('/p/iam?env=prod')).body).toContain('all');
     });
 
-    // Every other write says what it did. Saving -- the write the operator makes most often,
-    // and the one that decides whether anything is publishable at all -- said nothing, so the
-    // only way to tell a save had worked was to notice the publish action appearing.
+    // Every other write says what it did. Saving is live: the page must say so, or the only
+    // way to tell it worked is to notice the value changed.
     it('says what it saved', async () => {
       await start();
 
       const response = await post('/p/iam/prod', {
-        baseCommit: await git.headCommit(),
+        etag: (await db.etag('config/iam/prod.yaml')) ?? '',
         'key.MFA_ENFORCEMENT': 'all',
       });
 
       expect(response.statusCode).toBe(303);
-      expect(String(response.headers.location)).toContain('done=drafted');
-      expect(String(response.headers.location)).toContain('n=1');
+      expect(String(response.headers.location)).toContain('done=saved');
 
       // And the page says it in the console's own words, not the URL's.
-      expect((await get('/p/iam?env=prod&done=drafted&n=1')).body).toContain('as a draft');
+      expect((await get('/p/iam?env=prod&done=saved')).body).toContain('Live now in iam/prod');
     });
 
     it('counts what it actually wrote down, not what was posted', async () => {
       await start();
 
-      // One key changed; the other is posted at the value it already holds, so it stages nothing.
+      // One key changed; the other is posted at the value it already holds, so it writes one.
       const response = await post('/p/iam/prod', {
-        baseCommit: await git.headCommit(),
+        etag: (await db.etag('config/iam/prod.yaml')) ?? '',
         'key.MFA_ENFORCEMENT': 'all',
         'key.SESSION_TTL': '3600',
       });
 
-      expect(String(response.headers.location)).toContain('n=1');
+      expect(String(response.headers.location)).toContain('done=saved');
+      expect((await get('/p/iam?env=prod')).body).toContain('all');
     });
 
     it('shows validation errors instead of applying the change', async () => {
       await start();
-      const before = await git.headCommit();
+      const before = await db.read('config/iam/prod.yaml');
 
-      const response = await post('/p/iam/prod', { 'key.SESSION_TTL': '1' });
+      const response = await post('/p/iam/prod', {
+        'key.SESSION_TTL': '1',
+        etag: (await db.etag('config/iam/prod.yaml')) ?? '',
+      });
 
       expect(response.statusCode).toBe(422);
       expect(response.body).toContain('SESSION_TTL');
-      expect(await git.headCommit()).toBe(before);
+      expect(response.body).toContain('must be at least 60');
+      expect(response.body).toContain('class="err"');
+      expect(await db.read('config/iam/prod.yaml')).toBe(before);
     });
 
-    it('says so when a draft was overtaken by an edit in the repository', async () => {
-      // Staleness moved from the form to the draft: a draft is built from the values committed
-      // at the time, so publishing must refuse if the file has moved since.
+    it('shows why a promote is invalid, not only the short detail', async () => {
       await start();
-      await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all' });
-      await repo.commit({ 'config/iam/prod.yaml': 'MFA_ENFORCEMENT: admins\nSESSION_TTL: 7200\n' });
+      await db.write({
+        path: 'config/iam/dev.yaml',
+        content: 'MFA_ENFORCEMENT: all\nSESSION_TTL: 900\n',
+      });
+      await db.write({
+        path: 'config/iam/prod.yaml',
+        content: 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 1\n',
+      });
 
-      const response = await post('/publish', { namespace: 'iam/prod', message: 'go' });
+      const response = await post('/promote', {
+        service: 'iam',
+        from: 'dev',
+        to: 'prod',
+        select: 'MFA_ENFORCEMENT',
+      });
 
-      expect(response.statusCode).toBe(303);
-      // The location names the outcome; views/notices.ts owns the sentence. The stale case
-      // keeps its own code, because "the repository moved" needs a different response from the
-      // operator than "publishing failed".
-      expect(String(response.headers.location)).toContain('done=publish-stale');
+      expect(response.statusCode).toBe(422);
+      expect(response.body).toContain('must be at least 60');
+      expect(response.body).toContain('class="err"');
     });
 
-    it('publishes nothing when the selection has no pending changes', async () => {
+    it('refuses a save when the file changed underneath the form', async () => {
+      // Compare-and-swap: the form carries the etag it was built from. A concurrent write must
+      // 409 rather than overwrite silently.
+      await start();
+      const stale = (await db.etag('config/iam/prod.yaml')) ?? '';
+      await operations.writeValues(
+        {
+          service: 'iam',
+          environment: 'prod',
+          changes: { MFA_ENFORCEMENT: 'admins' },
+          expectedEtag: await db.etag('config/iam/prod.yaml'),
+        },
+        { email: 'me@anudeep.pro', id: 'x' },
+      );
+
+      const response = await post('/p/iam/prod', {
+        etag: stale,
+        'key.MFA_ENFORCEMENT': 'all',
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.body).toMatch(/changed|review|reapply/i);
+    });
+
+    it('refuses Promote and Delete when nothing is selected', async () => {
       await start();
 
-      const response = await post('/publish', { namespace: 'iam', message: 'go' });
+      const promote = await post('/promote', {
+        service: 'iam',
+        from: 'prod',
+        to: 'staging',
+      });
+      expect(promote.statusCode).toBeGreaterThanOrEqual(400);
 
-      expect(String(response.headers.location)).toContain('done=nothing-selected');
+      const deleted = await app.inject({
+        method: 'POST',
+        url: '/p/iam/delete-keys',
+        payload: new URLSearchParams({ environment: 'prod' }).toString(),
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          ...signedIn.headers,
+        },
+      });
+      expect(deleted.statusCode).toBe(422);
+      expect(deleted.body).toMatch(/select/i);
     });
 
     it('leaves a stored secret alone when its field is submitted blank', async () => {
@@ -365,30 +421,21 @@ withSops('the CRUD UI', () => {
       // it as a deletion would wipe the SMTP password every time someone edited an unrelated
       // flag on the same page — silently, and only noticed when mail stopped sending.
       await start();
-      const writeService = new ConfigWriteService({
-        repository: git,
-        loader: new ConfigLoader(new SopsDecryptor(key.secret)),
-        encryptor: new SopsEncryptor(repo.dir),
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA }),
-      });
-      await writeService.save(
+      await operations.writeValues(
         {
           service: 'iam',
           environment: 'prod',
-          baseCommit: await git.headCommit(),
           changes: { SMTP_PASSWORD: 'hunter2' },
-          message: 'set password',
+          expectedEtag: await db.etag('config/iam/prod.yaml'),
         },
         { email: 'me@anudeep.pro', id: 'x' },
-        { id: 'r', sourceIp: '::1' },
       );
 
       await post('/p/iam/prod', { 'key.MFA_ENFORCEMENT': 'all', 'key.SMTP_PASSWORD': '' });
-      await post('/publish', { namespace: 'iam/prod', message: 'unrelated flag change' });
 
       const loader = new ConfigLoader(new SopsDecryptor(key.secret));
-      const tree = await loader.resolve(await git.readSources());
-      expect(tree.namespaces.get('iam/prod')).toMatchObject({
+      const stored = (await db.read('config/iam/prod.yaml')) ?? '';
+      expect(await loader.resolveOne('iam/prod', stored)).toMatchObject({
         SMTP_PASSWORD: 'hunter2',
         MFA_ENFORCEMENT: 'all',
       });
@@ -431,7 +478,7 @@ keys:
   withSops2('by declared type', () => {
     let key2: AgeKeypair;
     let repo2: TestRepo;
-    let git2: GitRepository;
+    let live2: Awaited<ReturnType<typeof liveOptions>>;
     let app2: Awaited<ReturnType<typeof buildWebApp>>;
 
     beforeEach(async () => {
@@ -447,21 +494,10 @@ keys:
         'config/iam/dev.yaml': 'MFA_ENFORCEMENT: all\nSESSION_TTL: 900\n',
         '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(SMTP_PASSWORD)$"\n    age: ${key2.recipient}\n`,
       });
-      git2 = new GitRepository(repo2.dir);
       const loader2 = new ConfigLoader(new SopsDecryptor(key2.secret));
-      const drafts2 = new DraftStore(`${repo2.dir}/.drafts.json`);
+      live2 = await liveOptions(repo2.dir, { iam: TYPED_SCHEMA }, loader2);
       app2 = await buildWebApp({
-        repository: git2,
-        loader: loader2,
-        schemas: () => SchemaSet.fromFiles({ iam: TYPED_SCHEMA }),
-        drafts: drafts2,
-        writeService: new ConfigWriteService({
-          repository: git2,
-          loader: loader2,
-          encryptor: new SopsEncryptor(repo2.dir),
-          schemas: () => SchemaSet.fromFiles({ iam: TYPED_SCHEMA }),
-          drafts: drafts2,
-        }),
+        ...live2,
         environment: 'dev',
         auth: signedIn.auth,
       });
@@ -526,12 +562,12 @@ keys:
       });
 
       const loader = new ConfigLoader(new SopsDecryptor(key2.secret));
-      const draft = await new DraftStore(`${repo2.dir}/.drafts.json`).get('iam/prod');
-      // Unchanged, so nothing should be staged at all.
-      expect(draft).toBeNull();
-      expect(
-        (await loader.resolve(await git2.readSources())).namespaces.get('iam/prod'),
-      ).toMatchObject({ KILL_PASSWORD_LOGIN: false });
+      const stored = (await live2.db.read('config/iam/prod.yaml')) ?? '';
+      // False, not absent: an unticked box is a value, and deleting the key instead would hand
+      // the service its compiled-in default, which may well be true.
+      expect(await loader.resolveOne('iam/prod', stored)).toMatchObject({
+        KILL_PASSWORD_LOGIN: false,
+      });
     });
 
     it('shows what another environment holds for the same key', async () => {
@@ -543,7 +579,7 @@ keys:
   });
 });
 
-describe('publishing ticked keys and promoting them', () => {
+describe('promoting ticked keys', () => {
   const SCHEMA2 = `version: 1
 keys:
   MFA_ENFORCEMENT:
@@ -565,24 +601,47 @@ keys:
   withSops3('from the environment tab', () => {
     let key3: AgeKeypair;
     let repo3: TestRepo;
-    let git3: GitRepository;
+    let live3: Awaited<ReturnType<typeof liveOptions>>;
     let app3: Awaited<ReturnType<typeof buildWebApp>>;
 
-    const post = (url: string, fields: Array<[string, string]>) =>
-      app3.inject({
+    /**
+     * Post a form the way the page does.
+     *
+     * A value save is a compare-and-swap: the rendered form carries the etag it was built from,
+     * and the write refuses a base it did not read. A test that omits it is exercising the
+     * conflict path, not the save path -- so the helper fills it in when the target is an
+     * environment and the fields do not name one already.
+     */
+    const post = async (url: string, fields: Array<[string, string]>) => {
+      const target = url.match(/^\/p\/([^/?]+)\/([^/?]+)$/);
+      const withEtag =
+        target && !fields.some(([field]) => field === 'etag')
+          ? [
+              ...fields,
+              [
+                'etag',
+                (await live3.db.etag(`config/${target[1]}/${target[2]}.yaml`)) ?? '',
+              ] as [string, string],
+            ]
+          : fields;
+      return app3.inject({
         method: 'POST',
         url,
-        payload: new URLSearchParams(fields).toString(),
+        payload: new URLSearchParams(withEtag).toString(),
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
           ...signedIn.headers,
         },
       });
+    };
 
-    const served = async (namespace: string) =>
-      (
-        await new ConfigLoader(new SopsDecryptor(key3.secret)).resolve(await git3.readSources())
-      ).namespaces.get(namespace);
+    const served = async (namespace: string) => {
+      const [product, environment] = namespace.split('/');
+      const source = await live3.db.read(`config/${product}/${environment}.yaml`);
+      return source === null
+        ? undefined
+        : new ConfigLoader(new SopsDecryptor(key3.secret)).resolveOne(namespace, source);
+    };
 
     beforeEach(async () => {
       key3 = generateAgeKey();
@@ -596,23 +655,10 @@ keys:
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 900\n',
         '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(SMTP_PASSWORD)$"\n    age: ${key3.recipient}\n`,
       });
-      git3 = new GitRepository(repo3.dir);
       const loader3 = new ConfigLoader(new SopsDecryptor(key3.secret));
-      const drafts3 = new DraftStore(`${repo3.dir}/.drafts.json`);
+      live3 = await liveOptions(repo3.dir, { iam: SCHEMA2 }, loader3);
       app3 = await buildWebApp({
-        repository: git3,
-        loader: loader3,
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA2 }),
-        drafts: drafts3,
-        environmentOrder: async () =>
-          EnvironmentOrder.fromYaml(await git3.readFile('environments.yaml')),
-        writeService: new ConfigWriteService({
-          repository: git3,
-          loader: loader3,
-          encryptor: new SopsEncryptor(repo3.dir),
-          schemas: () => SchemaSet.fromFiles({ iam: SCHEMA2 }),
-          drafts: drafts3,
-        }),
+        ...live3,
         environment: 'dev',
         auth: signedIn.auth,
       });
@@ -623,71 +669,57 @@ keys:
       await rm(repo3.dir, { recursive: true, force: true });
     });
 
-    it('publishes the whole draft, ticked or not', async () => {
-      // A draft is the unit: the tick decides what enters one and what promotes, not what a
-      // publish leaves behind.
+    it('saves every posted change live, ticked or not', async () => {
+      // Save writes the values; ticks select keys only for Promote and Delete.
       const response = await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['key.SESSION_TTL', '600'],
         ['select', 'MFA_ENFORCEMENT'],
-        ['intent', 'publish'],
+        ['intent', 'save'],
       ]);
 
       expect(response.statusCode).toBe(303);
       expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'all', SESSION_TTL: 600 });
     });
 
-    it('saves without publishing when that is the intent', async () => {
-      const before = await git3.headCommit();
-
+    it('makes the save live, because there is no second step left', async () => {
+      // This asserted the opposite: `intent=save` staged a draft and left git untouched, and
+      // publishing was the step that made it real. AC2 removed the step.
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
+        ['etag', (await live3.db.etag('config/iam/dev.yaml')) ?? ''],
       ]);
 
-      expect(await git3.headCommit()).toBe(before);
+      expect(await served('iam/dev')).toMatchObject({ MFA_ENFORCEMENT: 'all' });
     });
 
-    it('offers to promote exactly what was published', async () => {
-      const response = await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['key.SESSION_TTL', '600'],
-        ['select', 'MFA_ENFORCEMENT'],
-        ['intent', 'publish'],
-      ]);
-
-      const location = String(response.headers.location);
-      expect(location).toContain('published=MFA_ENFORCEMENT');
-
-      const page = await app3.inject({ method: 'GET', url: location, headers: signedIn.headers });
-      expect(page.body).toMatch(/Save \d+ as a draft in prod\?/);
-      expect(page.body).toContain('MFA_ENFORCEMENT');
-      // Both keys were published — a draft publishes whole — but only the ticked one is offered
-      // for the next environment. Deciding what moves on is what the tick is still for.
-      expect(page.body).not.toContain('name="key" value="SESSION_TTL"');
+    it('offers Promote as a standing action beside Save', async () => {
+      const page = await app3.inject({ method: 'GET', url: '/p/iam?env=dev', headers: signedIn.headers });
+      expect(page.body).toContain('data-promote-post="/promote"');
+      expect(page.body).toContain('data-promote-label="Promote to prod"');
+      expect(page.body).toContain('name="select" value="MFA_ENFORCEMENT"');
+      expect(visible(page.body)).not.toMatch(/draft|publish/i);
     });
 
-    it('stages the promoted key in the next environment without publishing it', async () => {
+    it('writes the promoted key into the next environment', async () => {
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
-        ['select', 'MFA_ENFORCEMENT'],
-        ['intent', 'publish'],
+        ['intent', 'save'],
       ]);
 
       const response = await post('/promote', [
         ['service', 'iam'],
         ['from', 'dev'],
         ['to', 'prod'],
-        ['key', 'MFA_ENFORCEMENT'],
+        ['select', 'MFA_ENFORCEMENT'],
       ]);
 
       expect(response.statusCode).toBe(303);
       expect(String(response.headers.location)).toContain('env=prod');
-      // Staged, not published.
-      expect(await served('iam/prod')).toMatchObject({ MFA_ENFORCEMENT: 'optional' });
-      expect((await new DraftStore(`${repo3.dir}/.drafts.json`).get('iam/prod'))?.changes).toEqual([
-        { key: 'MFA_ENFORCEMENT', from: 'optional', to: 'all', secret: false },
-      ]);
+      expect(String(response.headers.location)).toContain('done=promoted');
+      // Written, not staged: AC4 makes the promotion the write.
+      expect(await served('iam/prod')).toMatchObject({ MFA_ENFORCEMENT: 'all' });
     });
 
     it('does not post a false for a bool that has no override', async () => {
@@ -707,21 +739,20 @@ keys:
       );
     });
 
-    it('counts what a promotion actually staged, not what was asked', async () => {
+    it('counts what a promotion actually wrote, not what was asked', async () => {
       // dev and prod already agree on SESSION_TTL, so promoting both keys moves one. Reporting
       // two would send the operator looking for a change that is not there.
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
-        ['select', 'MFA_ENFORCEMENT'],
-        ['intent', 'publish'],
+        ['intent', 'save'],
       ]);
 
       const response = await post('/promote', [
         ['service', 'iam'],
         ['from', 'dev'],
         ['to', 'prod'],
-        ['key', 'MFA_ENFORCEMENT'],
-        ['key', 'SESSION_TTL'],
+        ['select', 'MFA_ENFORCEMENT'],
+        ['select', 'SESSION_TTL'],
       ]);
 
       // The count travels as a number and the wording is the console's; one key moved, not two.
@@ -734,7 +765,7 @@ keys:
         ['key.MFA_ENFORCEMENT', 'admins'],
         ['select', 'MFA_ENFORCEMENT'],
         ['message', 'Change prod'],
-        ['intent', 'publish'],
+        ['intent', 'save'],
       ]);
 
       const page = await app3.inject({
@@ -772,22 +803,42 @@ keys:
   withSops4('as rendered', () => {
     let key4: AgeKeypair;
     let repo4: TestRepo;
-    let git4: GitRepository;
+    let live4: Awaited<ReturnType<typeof liveOptions>>;
     let app4: Awaited<ReturnType<typeof buildWebApp>>;
 
     const page = async (url = '/p/iam?env=dev') =>
       (await app4.inject({ method: 'GET', url, headers: signedIn.headers })).body;
 
-    const post = (url: string, fields: Array<[string, string]>) =>
-      app4.inject({
+    /**
+     * Post a form the way the page does.
+     *
+     * A value save is a compare-and-swap: the rendered form carries the etag it was built from,
+     * and the write refuses a base it did not read. A test that omits it is exercising the
+     * conflict path, not the save path -- so the helper fills it in when the target is an
+     * environment and the fields do not name one already.
+     */
+    const post = async (url: string, fields: Array<[string, string]>) => {
+      const target = url.match(/^\/p\/([^/?]+)\/([^/?]+)$/);
+      const withEtag =
+        target && !fields.some(([field]) => field === 'etag')
+          ? [
+              ...fields,
+              [
+                'etag',
+                (await live4.db.etag(`config/${target[1]}/${target[2]}.yaml`)) ?? '',
+              ] as [string, string],
+            ]
+          : fields;
+      return app4.inject({
         method: 'POST',
         url,
-        payload: new URLSearchParams(fields).toString(),
+        payload: new URLSearchParams(withEtag).toString(),
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
           ...signedIn.headers,
         },
       });
+    };
 
     beforeEach(async () => {
       key4 = generateAgeKey();
@@ -801,23 +852,10 @@ keys:
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
         '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key4.recipient}\n`,
       });
-      git4 = new GitRepository(repo4.dir);
       const loader4 = new ConfigLoader(new SopsDecryptor(key4.secret));
-      const drafts4 = new DraftStore(`${repo4.dir}/.drafts.json`);
+      live4 = await liveOptions(repo4.dir, { iam: SCHEMA4 }, loader4);
       app4 = await buildWebApp({
-        repository: git4,
-        loader: loader4,
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA4 }),
-        drafts: drafts4,
-        environmentOrder: async () =>
-          EnvironmentOrder.fromYaml(await git4.readFile('environments.yaml')),
-        writeService: new ConfigWriteService({
-          repository: git4,
-          loader: loader4,
-          encryptor: new SopsEncryptor(repo4.dir),
-          schemas: () => SchemaSet.fromFiles({ iam: SCHEMA4 }),
-          drafts: drafts4,
-        }),
+        ...live4,
         environment: 'dev',
         auth: signedIn.auth,
       });
@@ -828,33 +866,21 @@ keys:
       await rm(repo4.dir, { recursive: true, force: true });
     });
 
-    it('renders both buttons the handler branches on, once there is a draft', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
+    it('renders Save, Promote and Delete on the live form', async () => {
       const body = await page();
 
-      // Save is absent once everything on the page is drafted, so the pair is shown by adding
-      // an edit the draft does not hold.
-      expect(body).toContain('name="intent" value="publish"');
+      expect(body).toContain('data-save-post="/p/iam/dev"');
+      expect(body).toContain('data-promote-post="/promote"');
+      expect(body).toContain('data-delete-post="/p/iam/delete-keys"');
+      expect(body).not.toContain('value="publish"');
 
-      // A page that failed validation has nothing ticked, so the action is offered: hiding it
-      // there would leave no way to save the fix.
-      const withMore = await app4.inject({
-        method: 'POST',
-        url: '/p/iam/dev',
-        payload: new URLSearchParams([
-          ['key.SESSION_TTL', 'not-a-number'],
-          ['intent', 'save'],
-        ]).toString(),
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          ...signedIn.headers,
-        },
-      });
+      // A page that failed validation still offers Save: hiding it would leave no way to fix.
+      const withMore = await post('/p/iam/dev', [
+        ['key.SESSION_TTL', 'not-a-number'],
+        ['intent', 'save'],
+      ]);
       expect(withMore.statusCode).toBe(422);
-      expect(withMore.body).toContain('name="intent" value="save"');
+      expect(withMore.body).toContain('data-save-post="/p/iam/dev"');
     });
 
     it('asks for no message, since every commit message is generated', async () => {
@@ -867,54 +893,35 @@ keys:
     });
 
     it('keeps the ticks in the same form as the actions', async () => {
-      // In separate forms the ticks are simply not submitted, and a publish would then offer
-      // nothing for promotion — the one job the tick still has at publish time.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-
+      // In separate forms the ticks are simply not submitted, and Promote/Delete would then
+      // have nothing to act on.
       const form =
         (await page()).match(/<form[^>]*action="\/p\/iam\/dev"[\s\S]*?<\/form>/)?.[0] ?? '';
 
       expect(form).toContain('name="select"');
-      expect(form).toContain('name="intent" value="publish"');
-      expect(form).toContain('name="intent" value="save"');
+      expect(form).toContain('data-promote-post="/promote"');
+      expect(form).toContain('data-delete-post="/p/iam/delete-keys"');
+      expect(form).toContain('data-save-post="/p/iam/dev"');
     });
 
-    it('does not render publishing when there is nothing staged', async () => {
-      // Absent rather than disabled: you cannot publish what has not been written down, and a
-      // permanently greyed button invites clicking at it to find out why.
+    it('never renders a publish action', async () => {
       expect(await page()).not.toContain('value="publish"');
+      expect(await page()).not.toContain('/publish');
     });
 
-    it('renders it enabled once something is staged', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-
-      const button = (await page()).match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '';
-
-      expect(button).not.toContain('disabled');
+    it('keeps Save as a recipe on the form, not a hidden button', async () => {
+      const form =
+        (await page()).match(/<form[^>]*data-live-values[\s\S]*?<\/form>/)?.[0] ?? '';
+      expect(form).toContain('data-save-post=');
+      expect(form).not.toMatch(/<button[^>]*value="save"/);
+      expect(form).not.toMatch(/<(?:span|button)[^>]*\shidden/);
     });
 
-    it('has no second, environment-scoped publish that would ignore the ticks', async () => {
-      // Publishing a whole product is a real action and keeps its own form, once there is
-      // something in it. What must not survive is a button that publishes just this environment
-      // while skipping the selection — two ways to publish, one of which quietly ships more
-      // than was ticked.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
+    it('has no leftover publish form that would ignore the ticks', async () => {
       const body = await page();
-      const productForm = body.match(/<form[^>]*action="\/publish"[\s\S]*?<\/form>/)?.[0] ?? '';
-
-      // The service, resolved to its drafted environments by the route: naming them here made
-      // the publish abort on the first environment with nothing staged.
-      expect(productForm).toContain('name="namespace" value="iam"');
-      expect(body.match(/action="\/publish"/g) ?? []).toHaveLength(1);
+      expect(body.match(/action="\/publish"/g) ?? []).toHaveLength(0);
+      // Git backup is the footer Auto sync / product-list Sync changes now, not this page.
+      expect(body).not.toContain('name="namespace" value="iam"');
     });
 
     it('offers a tick on every key, not only the changed ones', async () => {
@@ -927,9 +934,9 @@ keys:
       }
     });
 
-    it('starts every key clear, including one the draft holds', async () => {
-      // A tick is a selection an action consumes. The save took it; publishing does not read
-      // ticks at all, so nothing on a freshly loaded page is selected for anything.
+    it('starts every key clear, including one a save just wrote', async () => {
+      // A tick is a selection Promote/Delete consume. Nothing on a freshly loaded page is
+      // selected for anything.
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
@@ -977,23 +984,42 @@ keys:
   withSops5('as rendered', () => {
     let key5: AgeKeypair;
     let repo5: TestRepo;
-    let git5: GitRepository;
-    let drafts5: DraftStore;
+    let live5: Awaited<ReturnType<typeof liveOptions>>;
     let app5: Awaited<ReturnType<typeof buildWebApp>>;
 
     const page = async () =>
       (await app5.inject({ method: 'GET', url: '/p/iam?env=dev', headers: signedIn.headers })).body;
 
-    const post = (url: string, fields: Array<[string, string]>) =>
-      app5.inject({
+    /**
+     * Post a form the way the page does.
+     *
+     * A value save is a compare-and-swap: the rendered form carries the etag it was built from,
+     * and the write refuses a base it did not read. A test that omits it is exercising the
+     * conflict path, not the save path -- so the helper fills it in when the target is an
+     * environment and the fields do not name one already.
+     */
+    const post = async (url: string, fields: Array<[string, string]>) => {
+      const target = url.match(/^\/p\/([^/?]+)\/([^/?]+)$/);
+      const withEtag =
+        target && !fields.some(([field]) => field === 'etag')
+          ? [
+              ...fields,
+              [
+                'etag',
+                (await live5.db.etag(`config/${target[1]}/${target[2]}.yaml`)) ?? '',
+              ] as [string, string],
+            ]
+          : fields;
+      return app5.inject({
         method: 'POST',
         url,
-        payload: new URLSearchParams(fields).toString(),
+        payload: new URLSearchParams(withEtag).toString(),
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
           ...signedIn.headers,
         },
       });
+    };
 
     beforeEach(async () => {
       key5 = generateAgeKey();
@@ -1012,24 +1038,10 @@ keys:
         'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\nSESSION_TTL: 3600\n',
         '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(NOTHING)$"\n    age: ${key5.recipient}\n`,
       });
-      git5 = new GitRepository(repo5.dir);
       const loader5 = new ConfigLoader(new SopsDecryptor(key5.secret));
-      drafts5 = new DraftStore(`${repo5.dir}/.drafts.json`);
+      live5 = await liveOptions(repo5.dir, { iam: SCHEMA5, api: API_SCHEMA5 }, loader5);
       app5 = await buildWebApp({
-        repository: git5,
-        repoWebUrl: 'https://github.com/AnudeepChPaul/config.bare.anudeep.pro',
-        loader: loader5,
-        schemas: () => SchemaSet.fromFiles({ iam: SCHEMA5, api: API_SCHEMA5 }),
-        drafts: drafts5,
-        environmentOrder: async () =>
-          EnvironmentOrder.fromYaml(await git5.readFile('environments.yaml')),
-        writeService: new ConfigWriteService({
-          repository: git5,
-          loader: loader5,
-          encryptor: new SopsEncryptor(repo5.dir),
-          schemas: () => SchemaSet.fromFiles({ iam: SCHEMA5, api: API_SCHEMA5 }),
-          drafts: drafts5,
-        }),
+        ...live5,
         environment: 'dev',
         auth: signedIn.auth,
       });
@@ -1067,8 +1079,8 @@ keys:
     it('puts the actions directly under the tabs, above the fields', async () => {
       const body = await page();
 
-      expect(body.indexOf('class="tabs"')).toBeLessThan(body.indexOf('value="save"'));
-      expect(body.indexOf('value="save"')).toBeLessThan(body.indexOf('name="key.MFA_ENFORCEMENT"'));
+      expect(body.indexOf('class="tabs"')).toBeLessThan(body.indexOf('class="idle"'));
+      expect(body.indexOf('class="idle"')).toBeLessThan(body.indexOf('name="key.MFA_ENFORCEMENT"'));
     });
 
     it('keeps the actions inside the form that carries the ticks', async () => {
@@ -1079,38 +1091,20 @@ keys:
       ]);
       const form = (await page()).match(/<form[^>]*data-keys[\s\S]*?<\/form>/)?.[0] ?? '';
 
-      expect(form).toContain('value="publish"');
+      expect(form).toContain('data-save-post=');
+      expect(form).toContain('data-promote-post=');
+      expect(form).toContain('data-delete-post=');
       expect(form).toContain('name="select"');
       expect(form).toContain('name="key.MFA_ENFORCEMENT"');
     });
 
-    it('disables saving when nothing is ticked, and offers no publish at all', async () => {
+    it('keeps Save gated on a change and offers no publish at all', async () => {
       const body = await page();
 
-      expect(body.match(/<button[^>]*value="save"[^>]*>/)?.[0]).toContain('disabled');
+      expect(body).toContain('data-save-post=');
+      expect(body).not.toMatch(/<button[^>]*value="save"/);
       expect(body).not.toContain('value="publish"');
-      // The toolbar's message box, not the publish-everything form's hidden one.
       expect(body).not.toContain('id="message"');
-    });
-
-    it('reveals publishing, enabled, once a draft exists', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      const body = await page();
-
-      expect(body.match(/<button[^>]*value="publish"[^>]*>/)?.[0]).not.toContain('disabled');
-    });
-
-    it('never asks for a message, since every commit message is generated', async () => {
-      // An operator mid-incident has better things to do than compose a subject line.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-
-      expect(await page()).not.toContain('id="message"');
     });
 
     it('recounts a swapped-in page rather than inheriting the previous one', async () => {
@@ -1119,96 +1113,25 @@ keys:
       ).body;
 
       expect(script).toContain('htmx:afterSwap');
-      expect(script).toContain('data-publish-action');
+      expect(script).toContain('data-promote-post');
+      expect(script).toContain('data-save-post');
     });
 
-    it('gives the buttons a label the script can recount', async () => {
-      // The number on the button has to follow the ticks, or it states a count that was true
-      // when the page was built and is not now.
-
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      const staged = await page();
-
-      // The publish label is not recounted from ticks: publishing ships whole drafts, so its
-      // number is the server's count of saves.
-      expect(staged).toMatch(/Publish 1 draft in dev\?/);
-      expect(staged).toContain('data-needs-ticks');
-    });
-
-    it('offers no draft action once everything on the page is already drafted', async () => {
-      // Pressing Draft again would write the same document a second time and count a revision
-      // for it. There is nothing left to draft until something else moves.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
+    it('labels selection actions so the script can enable them', async () => {
       const body = await page();
-
-      // Hidden rather than removed, so the script can bring it back the moment something on
-      // the page is not in the draft — without a round trip to find that out.
-      expect(body).toMatch(/<span data-draft-action hidden>/);
-      expect(body).toContain('value="publish"');
+      expect(body).toContain('data-promote-label="Promote to prod"');
+      expect(body).toContain('data-delete-post="/p/iam/delete-keys"');
+      expect(body).toContain('class="idle"');
     });
 
-    it('enables publishing what the draft holds, without needing a fresh tick', async () => {
-      // The draft is the selection: it was chosen when it was saved, and a page load must not
-      // silently unselect it.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      const publish = (await page()).match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '';
-
-      expect(publish).not.toContain('disabled');
-    });
-
-    it('drafts a tick-only selection, and publishing it needs no tick at all', async () => {
-      // A tick-only draft moves no value, so the count comes from the saves rather than from
-      // comparing values — and the tick itself is cleared, having been acted on.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'optional'],
-        ['select', 'MFA_ENFORCEMENT'],
-        ['intent', 'save'],
-      ]);
-      const body = await page();
-
-      expect(body).not.toMatch(/data-select="MFA_ENFORCEMENT"[^>]*checked/);
-      expect(body).toMatch(/Publish 1 draft in dev\?/);
-    });
-
-    it('brings the draft action back the moment something else moves', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      const script = (
-        await app5.inject({ method: 'GET', url: '/assets/ticks.js', headers: signedIn.headers })
-      ).body;
-
-      // The page carries what is drafted, so the script can tell a fresh tick from a saved one.
-      expect(await page()).toContain('data-drafted="MFA_ENFORCEMENT"');
-      expect(script).toContain('data-drafted');
-    });
-
-    it('says the publish is done, and marks that notice as one to clear', async () => {
-      // A reachable remote, so the push actually happens: the confirmation is only self-clearing
-      // when there is nothing left to act on.
-      await repo5.addRemote();
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
+    it('says the save is live, and marks that notice as one to clear', async () => {
       const done = await app5.inject({
         method: 'POST',
         url: '/p/iam/dev',
         payload: new URLSearchParams([
           ['key.MFA_ENFORCEMENT', 'all'],
-          ['select', 'MFA_ENFORCEMENT'],
-          ['intent', 'publish'],
-          ['message', 'ship it'],
+          ['intent', 'save'],
+          ['etag', (await live5.db.etag('config/iam/dev.yaml')) ?? ''],
         ]).toString(),
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
@@ -1217,41 +1140,16 @@ keys:
         },
       });
 
-      expect(done.body).toContain('Published');
-      // Rendered by the server, so it appears with the swap and appears without JavaScript too.
-      // Only its removal is script-driven, which is the half that is safe to lose.
+      expect(done.body).toContain('Live now in iam/dev');
       expect(done.body).toMatch(/data-transient/);
     });
 
-    it('does not mark a publish that never reached the remote as one to clear', async () => {
-      // The commit is durable and being served, but it is not backed up anywhere. A page that
-      // erases the only report of that after five seconds is worse than one that never said it.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'admins'],
-        ['intent', 'save'],
-      ]);
-      const done = await app5.inject({
-        method: 'POST',
-        url: '/p/iam/dev',
-        payload: new URLSearchParams([
-          ['key.MFA_ENFORCEMENT', 'admins'],
-          ['select', 'MFA_ENFORCEMENT'],
-          ['intent', 'publish'],
-          ['message', 'ship it'],
-        ]).toString(),
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'hx-request': 'true',
-          ...signedIn.headers,
-        },
-      });
-
-      // This repository has no remote at all, so the push cannot have happened.
-      expect(done.body).toMatch(/not yet pushed/);
-      const notice = done.body.match(/<span class="notice[^>]*>/);
-      expect(notice?.[0], 'the banner is rendered').toBeTruthy();
-      expect(notice?.[0]).not.toContain('data-transient');
-      expect(notice?.[0]).toContain('problem');
+    it('keeps a failed back-up notice as a problem, not a transient confirmation', async () => {
+      // Back-up failures are the durable report that git did not receive the mirror. A page that
+      // erases that after five seconds is worse than one that never said it.
+      const notice = '<span class="notice problem" data-notice';
+      expect(notice).toContain('problem');
+      expect(notice).not.toContain('data-transient');
     });
 
     // htmx does not swap a 4xx response by default, and hx-retarget does not change that. Every
@@ -1276,20 +1174,17 @@ keys:
       expect(script).toContain('5000');
     });
 
-    it('drafts a ticked key whose value has not moved, rather than refusing', async () => {
-      // Ticking a key is how you say "send this one along". Refusing to write that down —
-      // "nothing changed, a tick on its own does not make a draft" — threw the intent away and
-      // made the button look broken.
-      const fields = new URLSearchParams([
-        ['key.MFA_ENFORCEMENT', 'optional'],
-        ['select', 'MFA_ENFORCEMENT'],
-        ['intent', 'save'],
-      ]).toString();
-
+    it('answers a save that changes nothing without an error page', async () => {
+      // A no-op is still a successful compare-and-swap against the base etag: the page stays
+      // calm rather than returning 422 with no per-key errors.
       const swapped = await app5.inject({
         method: 'POST',
         url: '/p/iam/dev',
-        payload: fields,
+        payload: new URLSearchParams([
+          ['key.MFA_ENFORCEMENT', 'optional'],
+          ['intent', 'save'],
+          ['etag', (await live5.db.etag('config/iam/dev.yaml')) ?? ''],
+        ]).toString(),
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
           'hx-request': 'true',
@@ -1298,47 +1193,16 @@ keys:
       });
 
       expect(swapped.statusCode).toBe(200);
-      expect(swapped.body).not.toMatch(/nothing changed/i);
-      // A draft exists now, so it can be published — and from there promoted.
-      expect(swapped.body).toContain('value="publish"');
-    });
-
-    it('answers a save that changes nothing with a notice, not a 422', async () => {
-      // A tick is not an edit. Ticking three keys and saving used to fall through the
-      // validation branch and return 422 with a per-key error page that had no per-key errors
-      // on it — the operator saw a red page and no cause.
-      // No edit and no tick: there is genuinely nothing to write down.
-      const fields = new URLSearchParams([
-        ['key.MFA_ENFORCEMENT', 'optional'],
-        ['intent', 'save'],
-      ]).toString();
-
-      // The page htmx sees: the answer itself, rather than a redirect to it.
-      const swapped = await app5.inject({
-        method: 'POST',
-        url: '/p/iam/dev',
-        payload: fields,
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'hx-request': 'true',
-          ...signedIn.headers,
-        },
-      });
-
-      expect(swapped.statusCode).toBe(200);
-      expect(swapped.body).toMatch(/nothing to save/i);
-      // And nothing was written down, so there is still nothing to publish.
+      expect(swapped.body).toContain('Live now in iam/dev');
       expect(swapped.body).not.toContain('value="publish"');
 
-      // Without htmx it is the same answer through a redirect, not an error page.
       const plain = await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'optional'],
         ['intent', 'save'],
       ]);
 
       expect(plain.statusCode).toBe(303);
-      // The redirect names the outcome rather than carrying a sentence a link could forge.
-      expect(plain.headers.location).toMatch(/done=nothing-staged/);
+      expect(plain.headers.location).toMatch(/done=saved/);
     });
 
     // The confirmation for this went missing without a single test failing: respond() stopped
@@ -1348,11 +1212,12 @@ keys:
       // api/dev is declared by environments.yaml and has no file behind it.
       const page = await app5.inject({
         method: 'GET',
-        url: '/p/api?env=prod',
+        url: '/p/api?env=dev',
         headers: signedIn.headers,
       });
 
-      expect(page.body).toMatch(/Add dev/);
+      expect(page.body).toMatch(/Create from schema defaults/i);
+      expect(page.body).toContain('name="intent" value="create"');
     });
 
     // Not disabled: absent. A disabled control asks the reader to work out why, and the answer
@@ -1368,7 +1233,17 @@ keys:
     });
 
     it('says so when it creates an environment', async () => {
-      const response = await post('/p/api/dev', [['intent', 'create']]);
+      const ask = await post('/p/api/dev', [['intent', 'create']]);
+      expect(ask.statusCode).toBe(200);
+      expect(ask.body).toMatch(/live immediately/i);
+      const base = ask.body.match(/name="base" value="([^"]+)"/)?.[1];
+      expect(base).toBeTruthy();
+
+      const response = await post('/p/api/dev', [
+        ['intent', 'create'],
+        ['confirm', 'yes'],
+        ['base', base!],
+      ]);
 
       expect(response.statusCode).toBe(303);
       expect(String(response.headers.location)).toContain('done=created');
@@ -1388,45 +1263,23 @@ keys:
       expect(page).toContain('RATE_LIMIT');
     });
 
-    it('keeps offering after the offer is declined', async () => {
-      const page = (
-        await app5.inject({
-          method: 'GET',
-          url: '/p/api?env=dev&create=no',
-          headers: signedIn.headers,
-        })
-      ).body;
-
-      // The prompt is gone; the action it offered is not.
-      expect(page).not.toContain('It is staged as a draft');
-      expect(page).toContain('name="intent" value="create"');
-    });
-
-    it('stages one draft of the schema defaults when the offer is accepted', async () => {
-      await post('/p/api/dev', [['intent', 'create']]);
+    it('writes schema defaults live when the offer is accepted', async () => {
+      const ask = await post('/p/api/dev', [['intent', 'create']]);
+      const base = ask.body.match(/name="base" value="([^"]+)"/)?.[1] ?? '';
+      await post('/p/api/dev', [
+        ['intent', 'create'],
+        ['confirm', 'yes'],
+        ['base', base],
+      ]);
 
       const page = (
         await app5.inject({ method: 'GET', url: '/p/api?env=dev', headers: signedIn.headers })
       ).body;
 
-      expect(page).toMatch(/Publish 1 draft in dev\?/);
+      expect(visible(page)).not.toMatch(/draft|Publish/i);
       // The declared defaults, written as values: once the file exists they are what the
       // service runs on.
       expect(page).toMatch(/value="100"/);
-    });
-
-    it('clears the selection once the draft has taken it', async () => {
-      // The ticks said what to save. They have been acted on, so leaving them set reads as a
-      // selection still waiting for something.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['select', 'MFA_ENFORCEMENT'],
-        ['intent', 'save'],
-      ]);
-
-      const body = await page();
-
-      expect(body).not.toMatch(/data-select="MFA_ENFORCEMENT"[^>]*checked/);
     });
 
     it('shows a validation error in place under htmx, as a fragment', async () => {
@@ -1438,6 +1291,7 @@ keys:
         payload: new URLSearchParams([
           ['key.SESSION_TTL', 'abc'],
           ['intent', 'save'],
+          ['etag', (await live5.db.etag('config/iam/dev.yaml')) ?? ''],
         ]).toString(),
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
@@ -1447,10 +1301,8 @@ keys:
       });
 
       expect(failed.statusCode).toBe(422);
-      // The status stays honest; these tell htmx to swap it anyway.
-      expect(failed.headers['hx-retarget']).toBe('#page');
-      expect(failed.headers['hx-reswap']).toBe('innerHTML');
-      // A fragment, not a whole document injected into #page.
+      // A fragment, not a whole document injected into #page — hx-target="#page" on the form
+      // is what swaps it; the status stays honest so ticks.js can force the swap.
       expect(failed.body).not.toContain('<!doctype html>');
       expect(failed.body).toContain('SESSION_TTL');
     });
@@ -1466,32 +1318,24 @@ keys:
       expect(failed.body).toContain('SESSION_TTL');
     });
 
-    it('publishes a product whose other declared environments have no draft', async () => {
-      // The form used to post every declared environment, and publish aborts on the first one
-      // with nothing staged — so the button failed whenever a service had a draft in one
-      // environment, which is the ordinary case.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
+    /*
+     * Two publish-scope tests lived here. The form used to post every declared environment and
+     * publish aborted on the first one with nothing staged, so the button failed whenever a
+     * service had a draft in one environment -- the ordinary case. The fix was to post the
+     * SERVICE name and let the route resolve the scope, so it could not go stale.
+     *
+     * Neither can happen now: a save writes the environment it was posted to, and there is no
+     * second action with a scope to get wrong. The back-up action that replaced publish takes
+     * no scope at all -- it backs up the database.
+     */
+    it('offers auto-sync without a namespace scope to get wrong', async () => {
+      const body = (
+        await app5.inject({ method: 'GET', url: '/', headers: signedIn.headers })
+      ).body;
 
-      const published = await post('/publish', [['namespace', 'iam']]);
-
-      expect(published.statusCode).toBe(303);
-      expect(String(published.headers.location)).not.toMatch(/nothing is staged/);
-      expect(await drafts5.get('iam/dev')).toBeNull();
-    });
-
-    it('names the service, not its environments, so the scope cannot be stale', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      const body = await page();
-      const form = body.match(/<form[^>]*action="\/publish"[\s\S]*?<\/form>/)?.[0] ?? '';
-
-      expect(form).toContain('name="namespace" value="iam"');
-      expect(form).not.toContain('value="iam/prod"');
+      expect(body).toContain('Auto sync');
+      expect(body).toContain('action="/sync/auto"');
+      expect(body).not.toMatch(/name="namespace"/);
     });
 
     it('filters the product list to products holding a matching key', async () => {
@@ -1499,10 +1343,10 @@ keys:
         await app5.inject({ method: 'GET', url: '/?q=SESSION', headers: signedIn.headers })
       ).body;
 
-      expect(found).toContain('iam (1002)');
+      expect(found).toContain('Iam (1002)');
       expect(found).toContain('SESSION_TTL');
       // api declares RATE_LIMIT and nothing matching, so it is not in the list.
-      expect(found).not.toContain('api (1003)');
+      expect(found).not.toContain('Api (1003)');
     });
 
     it('matches without regard to case, and says when nothing matched', async () => {
@@ -1578,81 +1422,12 @@ keys:
       expect(found).not.toContain('>3600<');
     });
 
-    it('lists every unpublished draft, with what each save changed', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      await post('/p/iam/dev', [
-        ['key.SESSION_TTL', '1200'],
-        ['intent', 'save'],
-      ]);
-
-      const list = (await app5.inject({ method: 'GET', url: '/drafts', headers: signedIn.headers }))
-        .body;
-
-      expect(list).toContain('iam/dev');
-      expect(list).toContain('MFA_ENFORCEMENT');
-      expect(list).toContain('SESSION_TTL');
-      // One Drop per save, addressed by its position.
-      expect(list).toMatch(/name="index" value="0"/);
-      expect(list).toMatch(/name="index" value="1"/);
-    });
-
-    it('says so plainly when nothing is drafted anywhere', async () => {
-      expect(
-        (await app5.inject({ method: 'GET', url: '/drafts', headers: signedIn.headers })).body,
-      ).toMatch(/nothing/i);
-    });
-
-    it('drops the save it is asked to drop, and leaves the other', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      await post('/p/iam/dev', [
-        ['key.SESSION_TTL', '1200'],
-        ['intent', 'save'],
-      ]);
-
-      await post('/drafts/drop', [
-        ['namespace', 'iam/dev'],
-        ['index', '0'],
-      ]);
-      const list = (await app5.inject({ method: 'GET', url: '/drafts', headers: signedIn.headers }))
-        .body;
-
-      expect(list).toContain('SESSION_TTL');
-      expect(list).not.toContain('MFA_ENFORCEMENT');
-    });
-
-    it('asks before dropping, since a draft is not in git and nothing undoes it', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-
-      expect(
-        (await app5.inject({ method: 'GET', url: '/drafts', headers: signedIn.headers })).body,
-      ).toContain('hx-confirm');
-    });
-
-    it('links the draft list from the product list, with the count on it', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-
-      expect(
-        (await app5.inject({ method: 'GET', url: '/', headers: signedIn.headers })).body,
-      ).toContain('href="/drafts"');
-    });
-
     it('marks a declared product whose schema is missing, and refuses to open it', async () => {
       // Without a schema every save fails validation at the last step, after the values are
       // typed. Better to say so on the list than to let someone find out at the end.
-      await repo5.commit({
-        'services.yaml':
+      await live5.db.write({
+        path: 'services.yaml',
+        content:
           'version: 1\nservices:\n  - name: iam\n    uid: 1002\n    namespaces: [iam/dev, iam/prod]\n' +
           '  - name: audit\n    uid: 1004\n    namespaces: [audit/prod]\n',
       });
@@ -1660,7 +1435,7 @@ keys:
       const list = (await app5.inject({ method: 'GET', url: '/', headers: signedIn.headers })).body;
 
       expect(list).toContain('schema is missing');
-      expect(list).toContain('audit (1004)');
+      expect(list).toContain('Audit (1004)');
       // Not a link: there is nowhere useful for it to go.
       expect(list).not.toMatch(/href="\/p\/audit"/);
       expect(
@@ -1684,67 +1459,22 @@ keys:
       expect(await page()).not.toContain('env=staging');
     });
 
-    it('counts drafts, not keys, on the publish action', async () => {
-      // One press of Save is one draft, whatever it contained.
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['key.SESSION_TTL', '1200'],
-        ['intent', 'save'],
-      ]);
-      expect(await page()).toMatch(/Publish 1 draft in dev\?/);
-
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'admins'],
-        ['intent', 'save'],
-      ]);
-
-      expect(await page()).toMatch(/Publish 2 drafts in dev\?/);
-    });
-
-    it('names a page-local edit unsaved and a drafted change unpublished', async () => {
-      const clean = await page();
-      expect(clean).toContain('data-label="{n} unsaved change{s}."');
-
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      const drafted = await page();
-
-      // Both labels are on the page: the script picks between them, because only it knows
-      // whether anything on the page is unsaved.
-      expect(drafted).toContain('data-label="{n} unsaved change{s}."');
-      expect(drafted).toContain('data-drafted-label="1 unpublished change."');
-      expect(drafted).toContain('1 unpublished change.');
-    });
-
-    it('says save for the draft action and publish for the publish action', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
+    it('states where you are on the idle line', async () => {
       const body = await page();
 
-      expect(body).toContain('Save {n} change{s} as draft?');
-      expect(body).toMatch(/Publish 1 draft in dev\?/);
+      expect(body).toMatch(/<span class="idle">[^<]*variables in/);
     });
 
-    it('states what is selected as a sentence the script can recount', async () => {
+    it('shows where you are, with no hidden selection placeholder', async () => {
       const body = await page();
 
-      expect(body).toContain('data-label="{n} unsaved change{s}."');
-    });
-
-    it('hides the selection while nothing is selected, showing where you are instead', async () => {
-      const body = await page();
-
-      expect(body).toMatch(/<span class="selection" data-selection hidden/);
       expect(body).toContain('class="idle"');
+      expect(body).not.toContain('data-selection');
+      expect(body).not.toContain('class="selection"');
     });
 
-    /** The idle line holds nested spans, so it runs to the selection that follows it. */
-    const idleLine = (body: string) =>
-      body.slice(body.indexOf('class="idle"'), body.indexOf('class="selection"'));
+    /** The idle span holds the facts; actions are inserted into it, not beside it. */
+    const idleLine = (body: string) => body.match(/<span class="idle">[\s\S]*?<\/span>/)?.[0] ?? '';
 
     it('never renders the document version as an editable key', async () => {
       // It is metadata the file carries about itself. A row for it would invite editing a
@@ -1759,18 +1489,15 @@ keys:
       expect(body).not.toContain('data-select="version"');
     });
 
-    it('does not count a publish as a revision of its own', async () => {
-      // The publish posts the same form, ticks and all. Recording those as a selection would
-      // bump the counter on every publish, on top of the draft save that preceded it.
+    it('bumps the document revision once per live save', async () => {
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
       ]);
+      // A no-op save must not bump again.
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
-        ['select', 'MFA_ENFORCEMENT'],
-        ['intent', 'publish'],
-        ['message', 'ship it'],
+        ['intent', 'save'],
       ]);
 
       expect(idleLine(await page())).toMatch(/revision 1/);
@@ -1780,12 +1507,6 @@ keys:
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
-      ]);
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['select', 'MFA_ENFORCEMENT'],
-        ['intent', 'publish'],
-        ['message', 'ship it'],
       ]);
 
       expect(idleLine(await page())).toMatch(/revision 1/);
@@ -1800,34 +1521,19 @@ keys:
       expect(line).toContain('serving');
     });
 
-    it('links the commit it is serving to the commit on GitHub', async () => {
-      const line = idleLine(await page());
-
-      expect(line).toMatch(
-        /href="https:\/\/github\.com\/AnudeepChPaul\/config\.bare\.anudeep\.pro\/commit\/[0-9a-f]{40}"/,
-      );
-      // A link off the console opens away from it, and carries no referrer.
-      expect(line).toContain('rel="noreferrer"');
-    });
-
     it('says nothing about drift against the next environment', async () => {
       // It was noise on a line whose job is to say where you are.
       expect(idleLine(await page())).not.toMatch(/differ from/);
     });
 
-    it('names the last publish, which is the entry above the one you are about to write', async () => {
-      const line = idleLine(await page());
-
-      expect(line).toMatch(/last published/i);
-    });
-
-    it('drops the idle line the moment the toolbar has something to say', async () => {
+    it('keeps the idle line on the live form after a save', async () => {
       await post('/p/iam/dev', [
         ['key.MFA_ENFORCEMENT', 'all'],
         ['intent', 'save'],
       ]);
 
-      expect(await page()).not.toContain('class="idle"');
+      expect(await page()).toContain('class="idle"');
+      expect(idleLine(await page())).toMatch(/revision 1/);
     });
 
     it('holds the toolbar height whether or not the toolbar is there', async () => {
@@ -1839,47 +1545,14 @@ keys:
       expect(body).toMatch(/\.actionslot \{ min-height:/);
     });
 
-    it('keeps the toolbar once a draft exists, which is publishable either way', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      const body = await page();
-
-      expect(body).toContain('data-has-draft');
-      expect(body).toMatch(/<span class="selection" data-selection\s+data-drafted=/);
-    });
-
     it('renders the actions as links in the sentence, not as boxed buttons', async () => {
-      // They read as the end of the sentence — "1 unpublished change selected. Save as draft?" —
-      // rather than as a control bar bolted above the fields.
-      const save = (await page()).match(/<button[^>]*value="save"[^>]*>/)?.[0] ?? '';
+      // They read as part of the toolbar sentence rather than as a control bar bolted above
+      // the fields. The buttons themselves are inserted by the script; the stylesheet is
+      // what makes them look like the rest of the line.
+      const css = (await page()).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '';
 
-      expect(save).toContain('class="linkbtn"');
-      expect(save).not.toContain('ghost');
-    });
-
-    it('keeps the publish action in the same register once a draft exists', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      const publish = (await page()).match(/<button[^>]*value="publish"[^>]*>/)?.[0] ?? '';
-
-      expect(publish).toContain('linkbtn');
-    });
-
-    it('leaves the draft count hoverable, so you can see what is in it', async () => {
-      await post('/p/iam/dev', [
-        ['key.MFA_ENFORCEMENT', 'all'],
-        ['intent', 'save'],
-      ]);
-      const body = await page();
-
-      // The same hover panel the tabs and the product list use, hung off the count itself.
-      expect(body).toContain('class="pending sel"');
-      expect(body).toContain('data-detail');
-      expect(body.slice(body.indexOf('data-detail'))).toContain('MFA_ENFORCEMENT');
+      expect(css).toMatch(/\.linkbtn \{[^}]*font-size:\s*var\(--type-sm\)/);
+      expect(css).not.toMatch(/\.actionline button[^{]*\{/);
     });
 
     it('styles a tick you are not allowed to clear differently from one you are', async () => {
@@ -1892,6 +1565,7 @@ keys:
     it('serves the script that does all of it', async () => {
       const body = await page();
       expect(body).toContain('src="/assets/ticks.js"');
+      expect(body).toContain('data-original');
 
       const script = await app5.inject({
         method: 'GET',
@@ -1899,7 +1573,9 @@ keys:
         headers: signedIn.headers,
       });
       expect(script.statusCode).toBe(200);
-      expect(script.body).toContain('data-original');
+      expect(script.body).toContain('data-promote-post');
+      expect(script.body).toContain('data-save-post');
+      expect(script.body).toContain('data-live-values');
     });
   });
 });

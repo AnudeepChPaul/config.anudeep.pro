@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { renderNewProduct, renderRetiring } from '@config/src/views/pages.js';
+import { renderNewProduct } from '@config/src/views/pages.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 /**
@@ -301,86 +301,62 @@ describe('the action line', () => {
   });
 });
 
+describe('adding another variable', () => {
+  it('starts with one key row and no add control', () => {
+    expect(document.querySelectorAll('[data-key-row]')).toHaveLength(1);
+    expect((document.querySelector('[data-add-key-line]') as HTMLElement).hidden).toBe(true);
+  });
+
+  it('offers Add a variable once a key name is typed', () => {
+    const name = document.querySelector('[name="key.0.name"]') as HTMLInputElement;
+    name.value = 'SESSION_TTL';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    expect((document.querySelector('[data-add-key-line]') as HTMLElement).hidden).toBe(false);
+    expect(document.querySelector('[data-add-key]')?.textContent).toMatch(/Add a variable/);
+  });
+
+  it('appends a blank row with the next index, without posting', () => {
+    const name = document.querySelector('[name="key.0.name"]') as HTMLInputElement;
+    name.value = 'SESSION_TTL';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    const form = document.querySelector('#new-product') as HTMLFormElement;
+    const add = document.querySelector('[data-add-key]') as HTMLButtonElement;
+    const event = new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: add });
+    form.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.querySelectorAll('[data-key-row]')).toHaveLength(2);
+    expect(document.querySelector('[name="key.1.name"]')).not.toBeNull();
+    expect((document.querySelector('[name="key.0.name"]') as HTMLInputElement).value).toBe(
+      'SESSION_TTL',
+    );
+    expect((document.querySelector('[name="key.1.name"]') as HTMLInputElement).value).toBe('');
+  });
+
+  it('renders every row the server sent back, with Add a variable', () => {
+    document.body.innerHTML = String(
+      renderNewProduct({
+        environments: ['dev'],
+        fragment: true,
+        typed: { keys: [{ name: 'SESSION_TTL', type: 'int' }, { name: 'REGION', type: 'string' }, {}] },
+      }),
+    );
+    expect(document.querySelectorAll('[data-key-row]')).toHaveLength(3);
+    expect((document.querySelector('[name="key.1.name"]') as HTMLInputElement).value).toBe('REGION');
+    expect((document.querySelector('[data-add-key-line]') as HTMLElement).hidden).toBe(false);
+  });
+});
+
 describe('the secret checkbox', () => {
   it('says what ticking it means', () => {
     expect(secretBox().closest('label')?.textContent).toMatch(/treated as secret/i);
   });
 });
 
-/**
- * Acting on a staged retirement.
- *
- * One action on the row rather than several: a staged retirement has exactly one thing worth
- * doing to it, and the question of whether to do it belongs beside the product, not in a browser
- * dialog answering from somewhere else.
+/*
+ * "Acting on a staged retirement" lived here: a retirement waited as a draft, and the row
+ * offered Retire, Revert and Stop, one of which published it. AC3 made retirement a direct
+ * schema write, so there is no staged state to act on -- marking a product retiring IS the
+ * change. The retiring list and its Cancel retirement / Archive actions are covered in
+ * every-page-state.test.ts and products-dom.test.ts.
  */
-describe('acting on a retirement', () => {
-  const staged = String(
-    renderRetiring({
-      products: [{ service: 'iam', name: 'iam (1002)', published: false }],
-      fragment: true,
-    }),
-  );
-
-  const load = (markup: string) => {
-    document.body.innerHTML = markup;
-    new Function(source)();
-  };
-
-  const row = () => document.querySelector('[data-retiring-row]') as HTMLElement;
-  const act = () => row().querySelector('[data-act]') as HTMLElement;
-  const ask = () => row().querySelector('[data-act-confirm]') as HTMLElement;
-
-  beforeEach(() => load(staged));
-
-  it('offers one action, not a publish sitting in the open', () => {
-    expect(act()).toBeTruthy();
-    expect(act().textContent).toMatch(/Act on it/);
-    expect(row().textContent).not.toMatch(/Publish this retirement/);
-  });
-
-  it('shows Retire, Revert and Stop once it is clicked', () => {
-    expect(ask().hidden).toBe(true);
-
-    act().click();
-
-    expect(ask().hidden).toBe(false);
-    expect(ask().textContent).toMatch(/Retire/);
-    expect(ask().textContent).toMatch(/Revert/);
-    expect(ask().textContent).toMatch(/Stop/);
-  });
-
-  // Three buttons, three different things: one publishes, one undoes, one closes.
-  it('sends Revert to the route that unmarks it', () => {
-    act().click();
-    const revert = [...ask().querySelectorAll('button')].find((button) =>
-      /Revert/.test(button.textContent ?? ''),
-    );
-
-    expect(revert?.getAttribute('hx-post')).toBe('/p/iam/retire');
-    expect(revert?.getAttribute('hx-vals')).toContain('false');
-  });
-
-  it('closes again on Stop, changing nothing', () => {
-    act().click();
-    (row().querySelector('[data-act-stop]') as HTMLElement).click();
-
-    expect(ask().hidden).toBe(true);
-    expect(act().hidden).toBe(false);
-  });
-
-  // Retire is the act: it publishes the staged retirement, which is what tells consumers.
-  it('publishes the retirement when Retire is chosen', () => {
-    act().click();
-    const retire = ask().querySelector('button');
-
-    expect(retire?.getAttribute('hx-post')).toBe('/publish');
-    expect(ask().querySelector('input[name="namespace"]')?.getAttribute('value')).toBe(
-      'iam/retiring',
-    );
-  });
-
-  it('raises no browser dialog', () => {
-    expect(act().getAttribute('hx-confirm')).toBeNull();
-  });
-});

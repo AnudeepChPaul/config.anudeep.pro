@@ -1,23 +1,23 @@
 import { rm } from 'node:fs/promises';
-import { GitRepository } from '@config/src/git/repository.js';
 import { SchemaSet } from '@config/src/schema/validator.js';
-import { DraftStore } from '@config/src/store/draft-store.js';
+import type { DBEngine } from '@config/src/store/data-layer.js';
 import { ConfigLoader } from '@config/src/store/loader.js';
 import { SopsDecryptor } from '@config/src/store/sops.js';
-import { SopsEncryptor } from '@config/src/store/sops-encryptor.js';
-import { ConfigWriteService } from '@config/src/store/write-service.js';
+import type { ConfigWriteService } from '@config/src/store/write-service.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { type AgeKeypair, generateAgeKey, hasSops, TestRepo } from '../helpers.js';
+import { type AgeKeypair, generateAgeKey, hasSops, liveOptions, TestRepo } from '../helpers.js';
 
 /**
  * Declaring a product from the console.
  *
  * A product is three kinds of file at once: an entry in services.yaml, which is the grant table;
  * a schema, without which the console refuses to render a page at all; and one environment file
- * per environment it is declared in. They belong in ONE draft, because a registry entry without
- * its schema is a product nobody can open, and a schema without its entry is a file nothing
- * reads. Publishing them separately would leave the registry in either of those states.
+ * per environment it is declared in. They are written in ONE transaction, because a registry
+ * entry without its schema is a product nobody can open, and a schema without its entry is a
+ * file nothing reads. Writing them separately would leave the registry in either of those
+ * states -- and AC1 fixes the ORDER too: services.yaml goes last, so an interrupted create
+ * leaves a product that is invisible rather than one that is visible and broken.
  *
  * The environment file it creates has to validate against a schema that exists only inside the
  * draft — the whole point is that the schema is not committed yet.
@@ -44,8 +44,7 @@ const withSops = hasSops() ? describe : describe.skip;
 withSops('adding a product', () => {
   let key: AgeKeypair;
   let repo: TestRepo;
-  let git: GitRepository;
-  let drafts: DraftStore;
+  let db: DBEngine;
   let service: ConfigWriteService;
 
   const NEW_SCHEMA = `version: 1
@@ -70,16 +69,10 @@ keys:
       'config/iam/prod.yaml': 'MFA_ENFORCEMENT: optional\n',
       '.sops.yaml': `creation_rules:\n  - path_regex: config/.*\\.yaml$\n    encrypted_regex: "^(TOKEN|SMTP_PASSWORD)$"\n    age: ${key.recipient}\n`,
     });
-    git = new GitRepository(repo.dir);
-    drafts = new DraftStore(`${repo.dir}/.drafts.json`);
     const loader = new ConfigLoader(new SopsDecryptor(key.secret));
-    service = new ConfigWriteService({
-      repository: git,
-      loader,
-      encryptor: new SopsEncryptor(repo.dir),
-      schemas: () => SchemaSet.fromFiles({ iam: IAM_SCHEMA }),
-      drafts,
-    });
+    const live = await liveOptions(repo.dir, { iam: IAM_SCHEMA }, loader);
+    db = live.db;
+    service = live.operations;
   });
 
   afterEach(async () => {
@@ -87,7 +80,7 @@ keys:
   });
 
   const addAudit = () =>
-    service.stageProduct(
+    service.createProduct(
       {
         service: 'audit',
         uid: 1004,
@@ -107,104 +100,55 @@ keys:
    * something new here" about a file that is byte-identical.
    */
   describe('marking a product retiring', () => {
-    const retire = (retiring: boolean) =>
-      service.stageSchemaFlag({ service: 'iam', retiring }, ACTOR);
+    const retire = (retiring: boolean) => service.setRetiring('iam', retiring, ACTOR);
 
-    // A retirement is not an environment update and must not ride along with one. Kept in its
-    // own draft, under a reserved environment name, so publishing a value change cannot ship a
-    // retirement nobody chose to publish — and so the products screen, which counts drafts per
-    // declared environment, does not count it as work waiting there.
-    it('keeps the retirement in its own draft, away from the values', async () => {
-      await service.stage(
-        { service: 'iam', environment: 'prod', changes: { MFA_ENFORCEMENT: 'all' } },
-        ACTOR,
-      );
-      await retire(true);
-
-      const all = await drafts.all();
-      const namespaces = all.map((draft) => draft.namespace).sort();
-
-      expect(namespaces).toEqual(['iam/prod', 'iam/retiring']);
-      // The value draft is untouched: no schema rode along with it.
-      expect(all.find((draft) => draft.namespace === 'iam/prod')?.files ?? {}).toEqual({});
-    });
-
-    it('publishes the values without publishing the retirement', async () => {
-      await service.stage(
-        { service: 'iam', environment: 'prod', changes: { MFA_ENFORCEMENT: 'all' } },
-        ACTOR,
-      );
-      await retire(true);
-
-      await service.publish(['iam/prod'], ACTOR, REQUEST);
-
-      expect(await git.readFile('schema/iam.yaml')).not.toMatch(/retiring: true/);
-      expect(await git.readFile('config/iam/prod.yaml')).toMatch(/MFA_ENFORCEMENT: all/);
-    });
-
-    it('stages a draft rather than writing the schema', async () => {
-      const before = await git.readFile('schema/iam.yaml');
+    // A retirement used to be staged in its own draft under a reserved environment name, so
+    // that publishing a value change could not ship a retirement nobody chose to publish. AC3
+    // removed the staging: retiring IS a schema write. The separation it protected still holds,
+    // because the schema and the environment files are different documents -- which is what
+    // these assert.
+    it('writes the schema flag and nothing else', async () => {
+      const before = await db.read('config/iam/prod.yaml');
 
       expect((await retire(true)).ok).toBe(true);
-      expect(await git.readFile('schema/iam.yaml')).toBe(before);
-      expect((await drafts.all()).length).toBe(1);
-    });
-
-    it('carries the schema with the flag set', async () => {
-      await retire(true);
-      const draft = (await drafts.all())[0];
-
-      expect(String(draft?.files?.['schema/iam.yaml'])).toMatch(/retiring: true/);
-    });
-
-    it('publishes it without touching the values or their revision', async () => {
-      const before = await git.readFile('config/iam/prod.yaml');
-      await retire(true);
-      await service.publish(['iam/retiring'], ACTOR, REQUEST);
-
-      expect(await git.readFile('schema/iam.yaml')).toMatch(/retiring: true/);
+      expect(await db.read('schema/iam.yaml')).toMatch(/retiring: true/);
       // Byte-identical: the revision counter did not move for a change nobody made.
-      expect(await git.readFile('config/iam/prod.yaml')).toBe(before);
+      expect(await db.read('config/iam/prod.yaml')).toBe(before);
+    });
+
+    it('leaves a value save alone, and is left alone by one', async () => {
+      await service.writeValues(
+        { service: 'iam', environment: 'prod', changes: { MFA_ENFORCEMENT: 'all' } },
+        ACTOR,
+      );
+
+      await retire(true);
+
+      expect(await db.read('config/iam/prod.yaml')).toMatch(/MFA_ENFORCEMENT/);
+      expect(await db.read('schema/iam.yaml')).toMatch(/retiring: true/);
     });
 
     it('takes the flag off again, which is how a retirement is cancelled', async () => {
       await retire(true);
-      await service.publish(['iam/retiring'], ACTOR, REQUEST);
-      await retire(false);
-      await service.publish(['iam/retiring'], ACTOR, REQUEST);
 
-      expect(await git.readFile('schema/iam.yaml')).not.toMatch(/retiring: true/);
+      await retire(false);
+
+      expect(await db.read('schema/iam.yaml')).not.toMatch(/retiring: true/);
     });
 
-    // Reverting a retirement nobody published has nothing to undo: the mark never left this
-    // console. Staging "not retiring" on top of it would leave a draft that changes nothing and
-    // still has to be published to make the change nobody made go away.
-    it('drops the draft when a staged retirement is reverted', async () => {
-      await retire(true);
-      expect((await drafts.all()).length).toBe(1);
+    it('changes nothing when it is asked for the state it is already in', async () => {
+      // Reverting a retirement nobody made has nothing to undo. It used to leave a draft that
+      // changed nothing and still had to be published to make the change nobody made go away.
+      const before = await db.read('schema/iam.yaml');
 
       const reverted = await retire(false);
 
       expect(reverted.ok).toBe(true);
-      expect(await drafts.all()).toEqual([]);
-    });
-
-    it('stages the undo when a published retirement is reverted', async () => {
-      await retire(true);
-      await service.publish(['iam/retiring'], ACTOR, REQUEST);
-
-      await retire(false);
-
-      // Published, so there IS something to undo, and it goes through the usual path.
-      const staged = await drafts.all();
-      expect(staged.length).toBe(1);
-      expect(String(staged[0]?.files?.['schema/iam.yaml'])).not.toMatch(/retiring: true/);
+      expect(await db.read('schema/iam.yaml')).toBe(before);
     });
 
     it('refuses a product with no schema to mark', async () => {
-      expect(
-        (await service.stageSchemaFlag({ service: 'nothing', retiring: true }, ACTOR)).ok,
-      ).toBe(false);
+      expect((await service.setRetiring('nothing', true, ACTOR)).ok).toBe(false);
     });
   });
 
@@ -217,7 +161,7 @@ keys:
    * arrived declared, schema and all, with one environment missing.
    */
   it('creates every environment file even when nothing has a default', async () => {
-    const staged = await service.stageProduct(
+    const staged = await service.createProduct(
       {
         service: 'audit',
         uid: 1004,
@@ -229,34 +173,33 @@ keys:
     );
     expect(staged.ok).toBe(true);
 
-    await service.publish(['audit/dev'], ACTOR, REQUEST);
-
-    expect(await git.readFile('config/audit/dev.yaml')).toBeTruthy();
-    expect(await git.readFile('config/audit/prod.yaml')).toBeTruthy();
+    expect(await db.read('config/audit/dev.yaml')).toBeTruthy();
+    expect(await db.read('config/audit/prod.yaml')).toBeTruthy();
   });
 
-  it('stages one draft, not one per file', async () => {
-    const staged = await addAudit();
+  it('writes the registry entry, the schema and every environment file', async () => {
+    const created = await addAudit();
 
-    expect(staged.ok).toBe(true);
-    expect((await drafts.all()).length).toBe(1);
+    expect(created.ok).toBe(true);
+    expect(await db.read('services.yaml')).toMatch(/audit/);
+    expect(await db.read('schema/audit.yaml')).toMatch(/RETENTION_DAYS/);
+    expect(await db.read('config/audit/dev.yaml')).toBeTruthy();
+    expect(await db.read('config/audit/prod.yaml')).toBeTruthy();
   });
 
-  it('carries the registry entry, the schema and every environment file', async () => {
+  it('advances the revision exactly once for the whole product', async () => {
+    // AC1: all of it is one transaction, so a consumer sees the product appear in a single
+    // step rather than watching it assemble itself file by file.
+    const before = Number(await db.revision());
+
     await addAudit();
-    const draft = (await drafts.all())[0];
-    const paths = Object.keys(draft?.files ?? {}).concat(`config/${draft?.namespace}.yaml`);
 
-    expect(paths).toContain('services.yaml');
-    expect(paths).toContain('schema/audit.yaml');
-    expect(paths).toContain('config/audit/dev.yaml');
-    expect(paths).toContain('config/audit/prod.yaml');
+    expect(Number(await db.revision())).toBe(before + 1);
   });
 
   it('appends to the grant table rather than replacing it', async () => {
     await addAudit();
-    const draft = (await drafts.all())[0];
-    const registry = parseYaml(String(draft?.files?.['services.yaml'])) as {
+    const registry = parseYaml((await db.read('services.yaml')) ?? '') as {
       version: number;
       services: Array<{ name: string; uid: number; namespaces: string[] }>;
     };
@@ -274,7 +217,7 @@ keys:
   });
 
   it('refuses a uid another service already claims, naming that service', async () => {
-    const staged = await service.stageProduct(
+    const staged = await service.createProduct(
       { service: 'audit', uid: 1002, environments: ['dev'], schema: NEW_SCHEMA, defaults: {} },
       ACTOR,
     );
@@ -284,7 +227,7 @@ keys:
   });
 
   it('refuses a name the registry already declares', async () => {
-    const staged = await service.stageProduct(
+    const staged = await service.createProduct(
       { service: 'iam', uid: 9999, environments: ['dev'], schema: NEW_SCHEMA, defaults: {} },
       ACTOR,
     );
@@ -294,7 +237,7 @@ keys:
   });
 
   it('refuses a product declared in no environment at all', async () => {
-    const staged = await service.stageProduct(
+    const staged = await service.createProduct(
       { service: 'audit', uid: 1004, environments: [], schema: NEW_SCHEMA, defaults: {} },
       ACTOR,
     );
@@ -302,50 +245,31 @@ keys:
     expect(staged.ok).toBe(false);
   });
 
-  // The point of the whole slice: publishing must land every file in one commit.
-  it('publishes every file as a single commit', async () => {
-    await addAudit();
-    const published = await service.publish(['audit/dev'], ACTOR, REQUEST);
-
-    expect(published.ok).toBe(true);
-    // Every file is in the tree, and one commit put them there.
-    expect(await git.readFile('schema/audit.yaml')).toContain('RETENTION_DAYS');
-    expect(await git.readFile('config/audit/dev.yaml')).toBeTruthy();
-    expect(await git.readFile('config/audit/prod.yaml')).toBeTruthy();
-    // One commit added all of it: the root, the fixture, and this publish.
-    const history = (await repo.git('log', '--oneline')).split('\n');
-    expect(history.length).toBe(3);
-  });
-
   it('writes the declared defaults into every environment file', async () => {
     await addAudit();
-    await service.publish(['audit/dev'], ACTOR, REQUEST);
 
-    const written = await git.readFile('config/audit/dev.yaml');
-    expect(written).toContain('RETENTION_DAYS: 30');
+    expect(await db.read('config/audit/dev.yaml')).toContain('RETENTION_DAYS: 30');
+    expect(await db.read('config/audit/prod.yaml')).toContain('RETENTION_DAYS: 30');
   });
 
-  // A secret is declared and never given a value here; writing one would put plaintext in a
-  // draft snapshot, and the product page is where secrets are set and encrypted.
+  // A secret is declared and never given a value here; the product page is where secrets are
+  // set and encrypted.
   it('leaves a declared secret unset', async () => {
     await addAudit();
-    await service.publish(['audit/dev'], ACTOR, REQUEST);
 
     // Not a bare `toContain`: the sops metadata block names TOKEN in its encrypted_regex, which
     // is the file describing what it WOULD encrypt, not the key being set.
-    const written = await git.readFile('config/audit/dev.yaml');
+    const written = (await db.read('config/audit/dev.yaml')) ?? '';
     const values = written.split('\nsops:')[0] ?? '';
     expect(values).not.toMatch(/^TOKEN:/m);
   });
 
   it('leaves the new product readable by the console it was added from', async () => {
     await addAudit();
-    await service.publish(['audit/dev'], ACTOR, REQUEST);
 
-    const registry = await git.readFile('services.yaml');
-    expect(registry).toContain('audit');
-    expect(
-      SchemaSet.fromFiles({ audit: await git.readFile('schema/audit.yaml') }).has('audit'),
-    ).toBe(true);
+    expect(await db.read('services.yaml')).toContain('audit');
+    expect(SchemaSet.fromFiles({ audit: (await db.read('schema/audit.yaml')) ?? '' }).has('audit')).toBe(
+      true,
+    );
   });
 });

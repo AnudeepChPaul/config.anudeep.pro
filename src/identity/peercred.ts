@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import type { Socket } from 'node:net';
+import { logCaught } from '@config/src/logging.js';
 import type { PeerCredentials } from './types.js';
 
 /**
@@ -32,6 +33,7 @@ export class PeerCredentialResolver {
     try {
       creds = this.read(socket);
     } catch (cause) {
+      logCaught(cause, 'config.peercred.read.failed', { logger: 'identity.peercred' });
       throw new PeerCredentialError('could not read peer credentials from the socket', { cause });
     }
 

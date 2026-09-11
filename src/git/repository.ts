@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { logCaught, logged } from '@config/src/logging.js';
 import type { Namespace } from '../identity/types.js';
 import { isNamespace } from '../namespace.js';
 import type { ConfigSources, Sha } from '../store/types.js';
@@ -91,7 +92,8 @@ export function webUrlFor(remote: string | null | undefined): string | null {
         try {
           const parsed = new URL(remote);
           return { host: parsed.hostname, path: parsed.pathname.replace(/^\//, '') };
-        } catch {
+        } catch (error) {
+          logCaught(error, 'config.git.web-url.failed', { logger: 'git.repository' });
           return null;
         }
       })()
@@ -123,6 +125,10 @@ export class GitRepository {
       });
       return stdout;
     } catch (cause) {
+      logCaught(cause, 'config.git.exec.failed', {
+        logger: 'git.repository',
+        cmd: args[0] ?? '',
+      });
       throw new GitRepositoryError(`git ${args[0]} failed in ${this.dir}`, { cause });
     }
   }
@@ -132,7 +138,8 @@ export class GitRepository {
     try {
       const remotes = (await this.git('remote')).trim();
       return remotes ? (remotes.split('\n')[0] ?? null) : null;
-    } catch {
+    } catch (error) {
+      logCaught(error, 'config.git.remote.failed', { logger: 'git.repository' });
       return null;
     }
   }
@@ -144,18 +151,21 @@ export class GitRepository {
    * as a file, and that is not an error.
    */
   async lastChange(path: string): Promise<LastChange | null> {
-    try {
-      const out = (
-        await this.git('log', '-1', '--format=%H%x00%s%x00%an%x00%aI', '--', path)
-      ).trim();
-      if (!out) return null;
+    return logged(undefined, 'config.git.last-change', { logger: 'git.repository' }, async () => {
+      try {
+        const out = (
+          await this.git('log', '-1', '--format=%H%x00%s%x00%an%x00%aI', '--', path)
+        ).trim();
+        if (!out) return null;
 
-      const [sha, subject, author, at] = out.split('\0');
-      if (!sha || !at) return null;
-      return { sha: sha as Sha, subject: subject ?? '', author: author ?? '', at };
-    } catch {
-      return null;
-    }
+        const [sha, subject, author, at] = out.split('\0');
+        if (!sha || !at) return null;
+        return { sha: sha as Sha, subject: subject ?? '', author: author ?? '', at };
+      } catch (error) {
+        logCaught(error, 'config.git.last-change.failed', { logger: 'git.repository' });
+        return null;
+      }
+    });
   }
 
   /**
@@ -169,19 +179,25 @@ export class GitRepository {
    * A null url is a deliberately local registry and must stay one.
    */
   async ensureRemote(url: string | null): Promise<void> {
-    if (!url) return;
+    return logged(undefined, 'config.git.ensure-remote', { logger: 'git.repository' }, async () => {
+      if (!url) return;
 
-    try {
-      const current = (await this.git('remote', 'get-url', 'origin').catch(() => '')).trim();
-      if (current === url) return;
-      // set-url on a remote that does not exist fails, and add on one that does; which applies
-      // depends on how this host was brought up, so both are tried.
-      if (current) await this.git('remote', 'set-url', 'origin', url);
-      else await this.git('remote', 'add', 'origin', url);
-    } catch {
-      // Boot must not depend on this. A push will report the real reason soon enough, on a
-      // page an operator is actually looking at.
-    }
+      try {
+        const current = (
+          await this.git('remote', 'get-url', 'origin').catch((error: unknown) => {
+            logCaught(error, 'config.git.remote-url.failed', { logger: 'git.repository' });
+            return '';
+          })
+        ).trim();
+        if (current === url) return;
+        // set-url on a remote that does not exist fails, and add on one that does; which applies
+        // depends on how this host was brought up, so both are tried.
+        if (current) await this.git('remote', 'set-url', 'origin', url);
+        else await this.git('remote', 'add', 'origin', url);
+      } catch (error) {
+        logCaught(error, 'config.git.ensure-remote.failed', { logger: 'git.repository' });
+      }
+    });
   }
 
   /**
@@ -191,19 +207,22 @@ export class GitRepository {
    * failure is returned and the caller decides what to show.
    */
   async push(): Promise<PushResult> {
-    const remote = await this.remoteName();
-    if (!remote) {
-      // Saying "pushed" here would be a lie the UI would render as published, on a repository
-      // that has no off-host copy at all.
-      return { pushed: false, reason: 'no remote is configured' };
-    }
+    return logged(undefined, 'config.git.push', { logger: 'git.repository' }, async () => {
+      const remote = await this.remoteName();
+      if (!remote) {
+        // Saying "pushed" here would be a lie the UI would render as published, on a repository
+        // that has no off-host copy at all.
+        return { pushed: false, reason: 'no remote is configured' };
+      }
 
-    try {
-      await this.git('push', remote, 'HEAD:main');
-      return { pushed: true };
-    } catch (cause) {
-      return this.rebaseAndPush(remote, cause as Error);
-    }
+      try {
+        await this.git('push', remote, 'HEAD:main');
+        return { pushed: true };
+      } catch (cause) {
+        logCaught(cause, 'config.git.push.failed', { logger: 'git.repository' });
+        return this.rebaseAndPush(remote, cause as Error);
+      }
+    });
   }
 
   /**
@@ -220,18 +239,18 @@ export class GitRepository {
   private async rebaseAndPush(remote: string, first: Error): Promise<PushResult> {
     try {
       await this.git('fetch', remote, 'main');
-    } catch {
-      // Not a divergence: the remote is unreachable. Report the original push failure, which
-      // says so more precisely than a fetch error would.
+    } catch (error) {
+      logCaught(error, 'config.git.fetch.failed', { logger: 'git.repository' });
       return { pushed: false, reason: first.message };
     }
 
     try {
       await this.git('rebase', 'FETCH_HEAD');
     } catch (cause) {
-      // A half-finished rebase leaves a detached HEAD and a dirty tree, and the next read is
-      // served from HEAD. Abandoning it puts the branch back exactly as it was.
-      await this.git('rebase', '--abort').catch(() => {});
+      logCaught(cause, 'config.git.rebase.failed', { logger: 'git.repository' });
+      await this.git('rebase', '--abort').catch((error: unknown) => {
+        logCaught(error, 'config.git.rebase-abort.failed', { logger: 'git.repository' });
+      });
       return { pushed: false, reason: `remote has diverged: ${(cause as Error).message}` };
     }
 
@@ -239,6 +258,7 @@ export class GitRepository {
       await this.git('push', remote, 'HEAD:main');
       return { pushed: true };
     } catch (cause) {
+      logCaught(cause, 'config.git.push-after-rebase.failed', { logger: 'git.repository' });
       return { pushed: false, reason: (cause as Error).message };
     }
   }
@@ -250,28 +270,32 @@ export class GitRepository {
    * history as unpushed would leave a permanent warning on a deliberately local repository.
    */
   async unpushedCommits(): Promise<UnpushedCommit[]> {
-    const remote = await this.remoteName();
-    if (!remote) return [];
+    return logged(undefined, 'config.git.unpushed', { logger: 'git.repository' }, async () => {
+      const remote = await this.remoteName();
+      if (!remote) return [];
 
-    let output: string;
-    try {
-      output = await this.git('log', `${remote}/main..HEAD`, '--format=%H%x00%s');
-    } catch {
-      // No remote-tracking ref yet — nothing has ever been fetched or pushed.
-      return [];
-    }
+      let output: string;
+      try {
+        output = await this.git('log', `${remote}/main..HEAD`, '--format=%H%x00%s');
+      } catch (error) {
+        logCaught(error, 'config.git.unpushed.failed', { logger: 'git.repository' });
+        return [];
+      }
 
-    return output
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const [sha = '', subject = ''] = line.split('\0');
-        return { sha, subject };
-      });
+      return output
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [sha = '', subject = ''] = line.split('\0');
+          return { sha, subject };
+        });
+    });
   }
 
   async headCommit(): Promise<Sha> {
-    return (await this.git('rev-parse', 'HEAD')).trim();
+    return logged(undefined, 'config.git.head', { logger: 'git.repository' }, async () =>
+      (await this.git('rev-parse', 'HEAD')).trim(),
+    );
   }
 
   /**
@@ -285,14 +309,16 @@ export class GitRepository {
    * the one the values came from, which is what slice 7's stale check depends on.
    */
   async readSources(): Promise<ConfigSources> {
-    const commit = await this.headCommit();
-    const sources = new Map<Namespace, string>();
+    return logged(undefined, 'config.git.read-sources', { logger: 'git.repository' }, async () => {
+      const commit = await this.headCommit();
+      const sources = new Map<Namespace, string>();
 
-    for (const path of await this.listYamlFiles(commit, CONFIG_DIR)) {
-      sources.set(this.namespaceOf(path), await this.git('show', `${commit}:${path}`));
-    }
+      for (const path of await this.listYamlFiles(commit, CONFIG_DIR)) {
+        sources.set(this.namespaceOf(path), await this.git('show', `${commit}:${path}`));
+      }
 
-    return { commit, sources };
+      return { commit, sources };
+    });
   }
 
   /**
@@ -302,20 +328,22 @@ export class GitRepository {
    * the validator, which is where the reader of an error will look for them.
    */
   async readSchemas(): Promise<Record<string, string>> {
-    const commit = await this.headCommit();
-    const schemas: Record<string, string> = {};
+    return logged(undefined, 'config.git.read-schemas', { logger: 'git.repository' }, async () => {
+      const commit = await this.headCommit();
+      const schemas: Record<string, string> = {};
 
-    for (const path of await this.listYamlFiles(commit, SCHEMA_DIR)) {
-      const service = path.slice(SCHEMA_DIR.length + 1, -'.yaml'.length);
-      if (service.includes('/')) {
-        throw new GitRepositoryError(
-          `${path} is not a schema file: expected ${SCHEMA_DIR}/<service>.yaml`,
-        );
+      for (const path of await this.listYamlFiles(commit, SCHEMA_DIR)) {
+        const service = path.slice(SCHEMA_DIR.length + 1, -'.yaml'.length);
+        if (service.includes('/')) {
+          throw new GitRepositoryError(
+            `${path} is not a schema file: expected ${SCHEMA_DIR}/<service>.yaml`,
+          );
+        }
+        schemas[service] = await this.git('show', `${commit}:${path}`);
       }
-      schemas[service] = await this.git('show', `${commit}:${path}`);
-    }
 
-    return schemas;
+      return schemas;
+    });
   }
 
   /**
@@ -329,37 +357,53 @@ export class GitRepository {
    * anything else in it survive exactly as built — the message is the audit record.
    */
   async writeAndCommit(files: Record<string, string | null>, message: string): Promise<Sha> {
-    for (const [path, contents] of Object.entries(files)) {
-      const full = join(this.dir, path);
-      if (contents === null) {
-        await rm(full, { force: true });
-      } else {
-        await mkdir(dirname(full), { recursive: true });
-        await writeFile(full, contents, 'utf8');
+    return logged(undefined, 'config.git.write-commit', { logger: 'git.repository' }, async () => {
+      for (const [path, contents] of Object.entries(files)) {
+        const full = join(this.dir, path);
+        if (contents === null) {
+          await rm(full, { force: true });
+        } else {
+          await mkdir(dirname(full), { recursive: true });
+          await writeFile(full, contents, 'utf8');
+        }
       }
-    }
 
-    const paths = Object.keys(files);
-    await this.git('add', '--', ...paths);
+      const paths = Object.keys(files);
+      await this.git('add', '--', ...paths);
 
-    // Saving a value identical to the current one is not an error, but it is not history
-    // either: an empty commit is something a reviewer has to read and rule out. Scoped to the
-    // paths this call wrote, so a leftover from an earlier failure does not make an unrelated
-    // commit look non-empty.
-    const staged = await this.git('diff', '--cached', '--name-only', '--', ...paths);
-    if (!staged.trim()) return this.headCommit();
+      // Saving a value identical to the current one is not an error, but it is not history
+      // either: an empty commit is something a reviewer has to read and rule out. Scoped to the
+      // paths this call wrote, so a leftover from an earlier failure does not make an unrelated
+      // commit look non-empty.
+      const staged = await this.git('diff', '--cached', '--name-only', '--', ...paths);
+      if (!staged.trim()) return this.headCommit();
 
-    try {
-      await this.commitStaged(message, paths);
-    } catch (cause) {
-      // Leaving them staged is how a refused commit contaminated the next one: the following
-      // publish committed its own file and swept these along, under its message, its trailers
-      // and its actor. The audit trail is the record here, so a commit that says the wrong
-      // thing about who changed what is worse than no commit at all.
-      await this.discard(paths);
-      throw cause;
-    }
-    return this.headCommit();
+      try {
+        await this.commitStaged(message, paths);
+      } catch (cause) {
+        logCaught(cause, 'config.git.commit.failed', { logger: 'git.repository' });
+        await this.discard(paths);
+        throw cause;
+      }
+      return this.headCommit();
+    });
+  }
+
+  /** Stages the complete working tree and commits it when the mirror changed anything. */
+  async commitWorkingTree(message: string): Promise<Sha | null> {
+    return logged(undefined, 'config.git.commit-tree', { logger: 'git.repository' }, async () => {
+      await this.git('add', '-A');
+      const staged = await this.git('diff', '--cached', '--name-only');
+      if (!staged.trim()) return null;
+      await this.commitStaged(message, []);
+      return this.headCommit();
+    });
+  }
+
+  async hasWorkingTreeChanges(): Promise<boolean> {
+    return logged(undefined, 'config.git.status', { logger: 'git.repository' }, async () =>
+      Boolean((await this.git('status', '--porcelain')).trim()),
+    );
   }
 
   /**
@@ -375,13 +419,17 @@ export class GitRepository {
       // A path HEAD does not have cannot be checked out; removing it is what "back to HEAD"
       // means for a file this call created.
       for (const path of paths) {
-        const known = await this.git('ls-tree', '--name-only', 'HEAD', '--', path).catch(() => '');
+        const known = await this.git('ls-tree', '--name-only', 'HEAD', '--', path).catch(
+          (error: unknown) => {
+            logCaught(error, 'config.git.ls-tree.failed', { logger: 'git.repository' });
+            return '';
+          },
+        );
         if (known.trim()) await this.git('checkout', '--', path);
         else await rm(join(this.dir, path), { force: true });
       }
-    } catch {
-      // The commit failure is the interesting one and is about to be rethrown; a rollback that
-      // also fails must not replace it with a message about cleaning up.
+    } catch (error) {
+      logCaught(error, 'config.git.discard.failed', { logger: 'git.repository' });
     }
   }
 
@@ -407,17 +455,21 @@ export class GitRepository {
    * is a human's decision, so this fails instead.
    */
   async pull(): Promise<Sha> {
-    const remote = await this.remoteName();
-    if (!remote) return this.headCommit();
+    return logged(undefined, 'config.git.pull', { logger: 'git.repository' }, async () => {
+      const remote = await this.remoteName();
+      if (!remote) return this.headCommit();
 
-    await this.git('fetch', remote, 'main');
-    await this.git('merge', '--ff-only', `${remote}/main`);
-    return this.headCommit();
+      await this.git('fetch', remote, 'main');
+      await this.git('merge', '--ff-only', `${remote}/main`);
+      return this.headCommit();
+    });
   }
 
   /** One file's contents as committed at HEAD. */
   async readFile(path: string): Promise<string> {
-    return this.git('show', `${await this.headCommit()}:${path}`);
+    return logged(undefined, 'config.git.read-file', { logger: 'git.repository' }, async () =>
+      this.git('show', `${await this.headCommit()}:${path}`),
+    );
   }
 
   private async listYamlFiles(commit: Sha, dir: string): Promise<string[]> {

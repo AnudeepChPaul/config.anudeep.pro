@@ -2,7 +2,7 @@
 import {
   type KeyRow,
   type ProductSummary,
-  renderDrafts,
+  renderFeatures,
   renderProduct,
   renderProducts,
 } from '@config/src/views/pages.js';
@@ -12,18 +12,21 @@ import { describe, expect, it } from 'vitest';
  * One page header, in one place, on every page.
  *
  * Each page grew its own: the product list had an h1 in a flex row, a product page had a
- * breadcrumb and a separate facts line inside the toolbar slot, and /drafts had a breadcrumb and
- * an h1 and no facts at all. Navigating moved the title both down the page and across it, which
- * is what made the console feel like several applications.
+ * breadcrumb and a separate facts line inside the toolbar slot, and a third page had a breadcrumb
+ * and an h1 and no facts at all. Navigating moved the title both down the page and across it,
+ * which is what made the console feel like several applications.
+ *
+ * The third page was /drafts, which the direct-write cutover removed. Features took its place:
+ * what matters is that a THIRD page is checked, so the header cannot quietly become a
+ * two-page convention that the next screen is free to ignore.
  *
  * These assert the SHAPE — same containers, same order, same rows present whether or not they
  * hold anything — because that is what stops the header moving.
  */
 const product = (over: Partial<ProductSummary> = {}): ProductSummary => ({
-  name: 'iam (1002)',
-  service: 'iam',
-  keys: 'MFA_ENFORCEMENT',
-  environments: [{ name: 'dev', namespace: 'iam/dev', drafts: 1, pending: [] }],
+  name: 'iam',
+  environments: ['dev'],
+  retiring: false,
   ...over,
 });
 
@@ -36,19 +39,25 @@ const rows: KeyRow[] = [
 ];
 
 const pages = () => ({
-  products: String(renderProducts({ products: [product()], commit: 'a'.repeat(40) })),
+  products: String(renderProducts({ products: [product()] })),
   product: String(
     renderProduct({
       service: 'iam',
-      environments: [{ name: 'dev', namespace: 'iam/dev', drafts: 0, pending: [] }],
-      active: 'dev',
+      environment: 'dev',
+      environments: ['dev'],
+      etag: 'e',
       rows,
-      commit: 'a'.repeat(40),
+      version: 1,
+      next: null,
+      retiring: false,
+      missing: false,
     }),
   ),
-  drafts: String(
-    renderDrafts({
-      drafts: [{ namespace: 'iam/dev', saves: [{ keys: ['A'], actor: 'me', at: Date.now() }] }],
+  features: String(
+    renderFeatures({
+      flags: { NEW_CHECKOUT: { dev: true } },
+      environment: 'dev',
+      environments: ['dev'],
     }),
   ),
 });
@@ -94,11 +103,11 @@ describe('every page has the same header', () => {
   });
 
   it('makes the heading itself the trail', () => {
-    // Inside a product the heading reads "Products › iam", where Products is the link back.
+    // Inside a product the heading reads "Products › Iam", where Products is the link back.
     document.body.innerHTML = pages().product;
     const h1 = document.querySelector('.pagehead h1') as HTMLElement;
 
-    expect([...h1.children].map((child) => child.textContent)).toEqual(['Products', '›', 'iam']);
+    expect([...h1.children].map((child) => child.textContent)).toEqual(['Products', '›', 'Iam']);
     expect(h1.querySelector('a')?.getAttribute('href')).toBe('/');
   });
 
@@ -110,48 +119,64 @@ describe('every page has the same header', () => {
     expect(h1.querySelector('a')).toBeNull();
   });
 
-  it('names where you are on the drafts page too', () => {
-    document.body.innerHTML = pages().drafts;
+  it('puts each key in a list row, not a spaced field', () => {
+    document.body.innerHTML = pages().product;
+    const key = document.querySelector('[data-key="MFA_ENFORCEMENT"]')?.closest('.keyrow') as HTMLElement;
+    expect(key.classList.contains('row')).toBe(true);
+    expect(key.classList.contains('field')).toBe(false);
+  });
+
+  it('lists keys for a missing environment as chips in the same row language', () => {
+    document.body.innerHTML = String(
+      renderProduct({
+        service: 'iam',
+        environment: 'dev',
+        environments: ['dev'],
+        etag: null,
+        rows,
+        version: 0,
+        next: null,
+        retiring: false,
+        missing: true,
+      }),
+    );
+    expect(document.querySelector('ul.hint')).toBeNull();
+    expect(document.querySelector('.row-keys .chip-item')?.textContent).toBe('MFA_ENFORCEMENT');
+    expect(document.querySelector('.actionline button')?.textContent).toMatch(/Create from schema/);
+  });
+
+  it('names where you are on the third page too', () => {
+    document.body.innerHTML = pages().features;
     const h1 = document.querySelector('.pagehead h1') as HTMLElement;
 
-    expect([...h1.children].map((child) => child.textContent)).toEqual([
-      'Products',
-      '›',
-      'Unpublished drafts',
-    ]);
+    expect(h1.textContent).toContain('Features');
   });
 
   it('right-aligns page actions on the title row, not below it', () => {
     const busy = String(
       renderProduct({
         service: 'iam',
-        environments: [
-          {
-            name: 'dev',
-            namespace: 'iam/dev',
-            drafts: 2,
-            pending: [{ key: 'A', from: '1', to: '2', secret: false }],
-          },
-        ],
-        active: 'dev',
+        environment: 'dev',
+        environments: ['dev'],
+        etag: 'e',
         rows,
-        commit: 'a'.repeat(40),
+        version: 2,
+        next: null,
+        retiring: false,
+        missing: false,
       }),
     );
     const head = headerOf(busy);
 
-    // More than one action lives here now, so this asks whether the actions are IN the title
-    // row rather than which one comes first.
+    // This asks whether the page actions are IN the title row rather than which one comes
+    // first. Publish all is gone with the draft model; Retire is the action that survived, and
+    // the placement rule it was asserting is unchanged.
     const actions = [...head.querySelectorAll('.titlerow .actions-right button')].map(
       (button) => button.textContent ?? '',
     );
 
     expect(
-      actions.some((label) => /Publish all/.test(label)),
-      'publish',
-    ).toBe(true);
-    expect(
-      actions.some((label) => /Mark as retiring/.test(label)),
+      actions.some((label) => /Retire/.test(label)),
       'retire',
     ).toBe(true);
     expect(head.querySelector('.facts .actions-right'), 'not below the title').toBeNull();

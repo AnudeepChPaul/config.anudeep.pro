@@ -15,6 +15,8 @@ const required = (name: string, env: NodeJS.ProcessEnv = process.env): string =>
 export interface ServiceConfig {
   readonly environment: string;
   readonly repoDir: string;
+  readonly dbPath: string;
+  readonly syncIntervalMs: number;
   /** Where published commits go. Null is a deliberately local registry with no off-host copy. */
   readonly gitRemote: string | null;
   /**
@@ -52,6 +54,8 @@ export interface ServiceConfig {
   readonly enableSettings: boolean;
   /** Addresses admitted to it beside a break-glass session. Lowercased; empty admits nobody. */
   readonly settingsAllow: readonly string[];
+  /** Optional Postgres for application and access logs. Null keeps stdout only. */
+  readonly logDatabaseUrl: string | null;
 }
 
 /** The environments this service knows how to be. Anything else is a misconfiguration. */
@@ -73,6 +77,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
   return {
     environment,
     repoDir: env.CONFIG_REPO_DIR ?? '/var/lib/config/repo',
+    dbPath: env.CONFIG_DB_PATH ?? '/var/lib/config/db',
+    syncIntervalMs: Number(env.CONFIG_SYNC_INTERVAL_MS ?? 600_000),
     // The repository is created locally, by the seed script or a first boot, and nothing in git
     // carries a remote across that. Unset, every publish is durable and pushed nowhere.
     gitRemote: env.CONFIG_GIT_REMOTE ?? null,
@@ -142,5 +148,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
       .split(',')
       .map((entry) => entry.trim().toLowerCase())
       .filter((entry) => entry.length > 0),
+    logDatabaseUrl: env.CONFIG_LOG_DATABASE_URL?.trim() || null,
   };
 }

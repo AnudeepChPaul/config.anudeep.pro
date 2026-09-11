@@ -48,6 +48,12 @@ services:
       # inside the container, however carefully .env sets it.
       CONFIG_ENABLE_SETTINGS: ${CONFIG_ENABLE_SETTINGS:-}
       CONFIG_SETTINGS_ALLOW: ${CONFIG_SETTINGS_ALLOW:-}
+      # This service's log Postgres, not IAM's. Hostname `log-db` is the compose service below.
+      # From the host the same database is postgresql://config:config@127.0.0.1:5435/log.
+      CONFIG_LOG_DATABASE_URL: postgresql://config:config@log-db:5432/log
+    depends_on:
+      log-db:
+        condition: service_healthy
     volumes:
       - ./src:/app/src:ro
       - ./deploy:/app/deploy:ro
@@ -88,7 +94,25 @@ services:
       CONFIG_ENVIRONMENT: test
       CONFIG_LOG_LEVEL: silent
 
+  # Application and access logs only. Config values stay on the file database.
+  log-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: config
+      POSTGRES_PASSWORD: config
+      POSTGRES_DB: log
+    ports: ["127.0.0.1:5435:5432"]
+    volumes:
+      - config_log_pgdata:/var/lib/postgresql/data
+      - ./sql/log/0001_log_schema.sql:/docker-entrypoint-initdb.d/0001_log_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U config -d log"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   config_repo:
+  config_log_pgdata:
   # Shared with consuming services, which reach the read API at /run/config/config.sock.
   config_socket:

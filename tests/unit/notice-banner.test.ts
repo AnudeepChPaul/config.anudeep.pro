@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { renderDrafts, renderProducts } from '@config/src/views/pages.js';
+import { renderProduct, renderProducts } from '@config/src/views/pages.js';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -22,7 +22,6 @@ const products = (over: Record<string, unknown> = {}) =>
   String(
     renderProducts({
       products: [],
-      commit: 'a'.repeat(40),
       fragment: true,
       ...over,
     } as Parameters<typeof renderProducts>[0]),
@@ -81,12 +80,23 @@ describe('the notice banner', () => {
     expect(slot()?.querySelector('[data-notice]')).toBeTruthy();
   });
 
-  it('appears on the drafts page too, in the same shape', () => {
+  it('appears on the product page too, in the same shape', () => {
+    // The drafts page this used to check is gone with the draft model. The assertion was never
+    // about drafts: it is that the notice slot is the same shape on a SECOND page, so a notice
+    // cannot grow its own local variant on one screen. The product page is that second page now.
     const banner = load(
       String(
-        renderDrafts({
-          drafts: [],
-          notice: { tone: 'done', text: 'Draft dropped.' },
+        renderProduct({
+          service: 'iam',
+          environment: 'dev',
+          environments: ['dev'],
+          etag: 'e',
+          rows: [],
+          version: 1,
+          next: null,
+          retiring: false,
+          missing: false,
+          notice: { tone: 'done', text: 'Saved.' },
           fragment: true,
         }),
       ),

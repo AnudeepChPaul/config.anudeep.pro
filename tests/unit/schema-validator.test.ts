@@ -70,6 +70,24 @@ describe('SchemaSet.fromFiles', () => {
     // A service that is known but overrides nothing yet.
     expect(() => schemas({ iam: 'version: 1\nkeys: {}\n' })).not.toThrow();
   });
+
+  it('treats a file with no keys mapping as an empty schema, so a retiring product can have none', () => {
+    const set = schemas({ iam: 'version: 1\nretiring: true\n' });
+    expect(set.has('iam')).toBe(true);
+    expect(set.definitionsFor('iam').size).toBe(0);
+    expect(set.isRetiring('iam')).toBe(true);
+  });
+
+  it('loads each product from schema/<name>.yaml in a file tree, not from schema.yaml', () => {
+    const set = SchemaSet.fromTree([
+      ['schema.yaml', 'version: 1\nservices:\n  ignored: { keys: {} }\n'],
+      ['schema/iam.yaml', 'version: 1\nkeys:\n  SESSION_TTL: { type: int }\n'],
+      ['config/iam/dev.yaml', 'SESSION_TTL: 1\n'],
+    ]);
+    expect(set.has('iam')).toBe(true);
+    expect(set.has('ignored')).toBe(false);
+    expect(set.definitionsFor('iam').has('SESSION_TTL')).toBe(true);
+  });
 });
 
 describe('SchemaSet.validate — accepting', () => {

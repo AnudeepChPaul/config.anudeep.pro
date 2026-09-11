@@ -2,6 +2,15 @@ import { readFileSync } from 'node:fs';
 import { stat, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import net from 'node:net';
+import { attachAccessLog } from '@config/src/logging/access-log.js';
+import type { LogDbSink } from '@config/src/logging/db-sink.js';
+import {
+  bindLogIdentity,
+  bindRequestSid,
+  requestSidLoggerOptions,
+} from '@config/src/logging/request-context.js';
+import { QuietRequestLogging } from '@config/src/logging/request-logging.js';
+import { logCaught, logged } from '@config/src/logging.js';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -22,7 +31,7 @@ import { registerWebhookRoutes, type WebhookOptions } from './routes/webhook.js'
 /** How long to wait for a connect attempt before calling a socket abandoned. */
 const LIVENESS_TIMEOUT_MS = 1_000;
 
-export class SocketInUseError extends Error {}
+export class SocketInUseError extends Error { }
 
 /**
  * Whether anything is actually accepting connections on `path`.
@@ -62,7 +71,8 @@ async function clearAbandonedSocket(path: string): Promise<void> {
   let stats: Awaited<ReturnType<typeof stat>>;
   try {
     stats = await stat(path);
-  } catch {
+  } catch (error) {
+    logCaught(error, 'config.socket.stat.failed', { logger: 'app' });
     return;
   }
 
@@ -87,10 +97,24 @@ export interface ReadApiOptions extends InternalRouteOptions {
   /** Overrides how long a current caller is held open. Tests use a short one. */
   /** A pino instance. Fastify 5 takes an existing logger as `loggerInstance`, not `logger`. */
   readonly logger?: FastifyInstance['log'];
+  readonly logSink?: LogDbSink;
+}
+
+function fastifyWithRequestSid(logger?: FastifyInstance['log'], sink?: LogDbSink) {
+  return Fastify({
+    ...requestSidLoggerOptions(logger),
+    ...(logger && sink ? { logController: new QuietRequestLogging({}) } : {}),
+  });
+}
+
+async function attachRequestLogging(app: FastifyInstance, sink?: LogDbSink): Promise<void> {
+  bindRequestSid(app);
+  if (sink) attachAccessLog(app, sink);
 }
 
 export async function buildReadApi(options: ReadApiOptions): Promise<ReadApi> {
-  const app = Fastify(options.logger ? { loggerInstance: options.logger } : { logger: false });
+  const app = fastifyWithRequestSid(options.logger, options.logSink);
+  await attachRequestLogging(app, options.logSink);
   registerInternalRoutes(app, options);
   await app.ready();
 
@@ -100,17 +124,24 @@ export async function buildReadApi(options: ReadApiOptions): Promise<ReadApi> {
     server: app.server,
 
     async listen(socketPath: string): Promise<void> {
-      await clearAbandonedSocket(socketPath);
-      await app.listen({ path: socketPath });
-      listeningOn = socketPath;
+      return logged(undefined, 'config.app.listen', { logger: 'app' }, async () => {
+        await clearAbandonedSocket(socketPath);
+        await app.listen({ path: socketPath });
+        listeningOn = socketPath;
+      });
     },
 
     async close(): Promise<void> {
-      await app.close();
-      // Node does not unlink the socket on close, so without this every restart would be an
-      // unclean one from the next process's point of view.
-      if (listeningOn) await unlink(listeningOn).catch(() => {});
-      listeningOn = null;
+      return logged(undefined, 'config.app.close', { logger: 'app' }, async () => {
+        await app.close();
+        // Node does not unlink the socket on close, so without this every restart would be an
+        // unclean one from the next process's point of view.
+        if (listeningOn)
+          await unlink(listeningOn).catch((error: unknown) => {
+            logCaught(error, 'config.socket.unlink.failed', { logger: 'app' });
+          });
+        listeningOn = null;
+      });
     },
   };
 }
@@ -127,9 +158,10 @@ export interface WebAppOptions extends UiRouteOptions {
   /** Passed to the cookie: secure unless this says otherwise. Never set in prod. */
   readonly insecureCookie?: boolean;
   readonly logger?: FastifyInstance['log'];
+  readonly logSink?: LogDbSink;
 }
 
-export class UnprotectedUiError extends Error {}
+export class UnprotectedUiError extends Error { }
 
 /**
  * The CRUD UI, over HTTP.
@@ -148,12 +180,14 @@ export async function buildWebApp(options: WebAppOptions): Promise<FastifyInstan
     throw new UnprotectedUiError('refusing to serve the configuration UI without authentication');
   }
 
-  const app = Fastify(options.logger ? { loggerInstance: options.logger } : { logger: false });
+  const app = fastifyWithRequestSid(options.logger, options.logSink);
+  await attachRequestLogging(app, options.logSink);
   await app.register(cookie);
   await app.register(formbody);
   registerAssetRoutes(app);
   // Before the UI routes, so its onRequest guard runs ahead of every handler they add.
   if (options.auth) registerAuthRoutes(app, options.auth, options.insecureCookie ?? false);
+  bindLogIdentity(app);
   registerUiRoutes(app, options);
   await app.ready();
   return app;
@@ -167,9 +201,10 @@ export async function buildWebApp(options: WebAppOptions): Promise<FastifyInstan
  * middleware ordering mistake puts a session guard in front of GitHub.
  */
 export async function buildWebhookApp(
-  options: WebhookOptions & { logger?: FastifyInstance['log'] },
+  options: WebhookOptions & { logger?: FastifyInstance['log']; logSink?: LogDbSink },
 ): Promise<FastifyInstance> {
-  const app = Fastify(options.logger ? { loggerInstance: options.logger } : { logger: false });
+  const app = fastifyWithRequestSid(options.logger, options.logSink);
+  await attachRequestLogging(app, options.logSink);
   registerWebhookRoutes(app, options);
   await app.ready();
   return app;
@@ -186,10 +221,6 @@ export async function buildWebhookApp(
 function registerAssetRoutes(app: FastifyInstance): void {
   const require = createRequire(import.meta.url);
   const script = readFileSync(require.resolve('htmx.org/dist/htmx.min.js'), 'utf8');
-  // Our own, beside it: the tick behaviour a server render cannot express.
-  const ticks = readFileSync(new URL('./views/assets/ticks.js', import.meta.url).pathname, 'utf8');
-  // Which fields a key row shows, for the add-product form.
-  const keys = readFileSync(new URL('./views/assets/keys.js', import.meta.url).pathname, 'utf8');
 
   app.get('/assets/htmx.js', async (_request, reply) =>
     reply
@@ -203,15 +234,21 @@ function registerAssetRoutes(app: FastifyInstance): void {
   app.get('/assets/ticks.js', async (_request, reply) =>
     reply
       .type('application/javascript; charset=utf-8')
-      // Ours changes with a deploy, so it is revalidated rather than held for a year.
       .header('cache-control', 'no-cache')
-      .send(ticks),
+      .send(readFileSync(new URL('./views/assets/ticks.js', import.meta.url).pathname, 'utf8')),
   );
 
   app.get('/assets/keys.js', async (_request, reply) =>
     reply
       .type('application/javascript; charset=utf-8')
       .header('cache-control', 'no-cache')
-      .send(keys),
+      .send(readFileSync(new URL('./views/assets/keys.js', import.meta.url).pathname, 'utf8')),
+  );
+
+  app.get('/assets/base.css', async (_request, reply) =>
+    reply
+      .type('text/css; charset=utf-8')
+      .header('cache-control', 'no-cache')
+      .send(readFileSync(new URL('./views/assets/base.css', import.meta.url).pathname, 'utf8')),
   );
 }

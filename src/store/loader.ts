@@ -1,4 +1,5 @@
 import { parse as parseYaml } from 'yaml';
+import { logCaught, logged } from '@config/src/logging.js';
 import type { Namespace } from '../identity/types.js';
 import type { SopsDecryptor } from './sops.js';
 import type { ConfigSources, ConfigTree, RawConfig } from './types.js';
@@ -18,11 +19,14 @@ export class ConfigLoader {
 
   /** One namespace's document, decrypted and parsed — for reading back a staged draft. */
   async resolveOne(namespace: Namespace, source: string): Promise<RawConfig> {
-    const path = `config/${namespace}.yaml`;
-    return parseConfig(path, await this.decryptor.decrypt(path, source));
+    return logged(undefined, 'config.load.one', { logger: 'store.loader', namespace }, async () => {
+      const path = `config/${namespace}.yaml`;
+      return parseConfig(path, await this.decryptor.decrypt(path, source));
+    });
   }
 
   async resolve(sources: ConfigSources): Promise<ConfigTree> {
+    return logged(undefined, 'config.load', { logger: 'store.loader' }, async () => {
     const namespaces = new Map<Namespace, RawConfig>();
 
     for (const [namespace, source] of sources.sources) {
@@ -37,6 +41,7 @@ export class ConfigLoader {
     }
 
     return { commit: sources.commit, namespaces };
+    });
   }
 }
 
@@ -45,6 +50,7 @@ function parseConfig(path: string, source: string): RawConfig {
   try {
     parsed = parseYaml(source);
   } catch (cause) {
+    logCaught(cause, 'config.load.yaml.failed', { logger: 'store.loader' });
     throw new ConfigLoadError(`${path} is not valid YAML`, { cause });
   }
 

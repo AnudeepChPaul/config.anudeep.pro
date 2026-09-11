@@ -1,5 +1,6 @@
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { err, ok, type Result } from '../identity/types.js';
+import { logCaught } from '../logging.js';
 import { isMetadataKey } from '../store/metadata.js';
 import type { RawConfig } from '../store/types.js';
 
@@ -96,6 +97,63 @@ export class SchemaSet {
       if (parseRetiring(service, source)) retiring.add(service);
     }
     return new SchemaSet(services, versions, retiring);
+  }
+
+  /** Every `schema/<product>.yaml` in a snapshot. The global `schema.yaml` is not a product schema. */
+  static fromTree(files: Iterable<readonly [string, string]>): SchemaSet {
+    const sources: Record<string, string> = {};
+    for (const [path, source] of files) {
+      const name = path.match(/^schema\/([^/]+)\.yaml$/)?.[1];
+      if (name) sources[name] = source;
+    }
+    return SchemaSet.fromFiles(sources);
+  }
+
+  /** Reads the global schema document introduced by the file-based data engine. */
+  static fromDocument(source: string): SchemaSet {
+    let parsed: unknown;
+    try {
+      parsed = parseYaml(source);
+    } catch (cause) {
+      logCaught(cause, 'config.schema.yaml.failed', { logger: 'schema.validator' });
+      throw new SchemaError('schema.yaml is not valid YAML', { cause });
+    }
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed) ||
+      (parsed as Record<string, unknown>).version !== 1 ||
+      typeof (parsed as Record<string, unknown>).services !== 'object' ||
+      (parsed as Record<string, unknown>).services === null
+    ) {
+      throw new SchemaError('schema.yaml must contain version: 1 and a services mapping');
+    }
+
+    const services = (parsed as { services: Record<string, unknown> }).services;
+    const files: Record<string, string> = {};
+    for (const [service, value] of Object.entries(services)) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new SchemaError(`schema.yaml service '${service}' must be a mapping`);
+      }
+      const definition = value as Record<string, unknown>;
+      files[service] = stringifyYaml({ version: 1, keys: definition.keys });
+    }
+    const result = SchemaSet.fromFiles(files);
+    const retiring = new Set(
+      Object.entries(services)
+        .filter(
+          ([, value]) =>
+            typeof value === 'object' &&
+            value !== null &&
+            (value as Record<string, unknown>).retiring === true,
+        )
+        .map(([service]) => service),
+    );
+    return new SchemaSet(
+      result.services,
+      new Map([...result.services.keys()].map((service) => [service, 1])),
+      retiring,
+    );
   }
 
   /**
@@ -218,7 +276,8 @@ function checkValue(
       let parsed: URL;
       try {
         parsed = new URL(value);
-      } catch {
+      } catch (error) {
+        logCaught(error, 'config.schema.url.failed', { logger: 'schema.validator' });
         return fail(key, `'${key}' must be a valid URL`);
       }
       return URL_SCHEMES.has(parsed.protocol)
@@ -282,18 +341,16 @@ function parseSchema(service: string, source: string): ReadonlyMap<string, KeyDe
   try {
     parsed = parseYaml(source);
   } catch (cause) {
+    logCaught(cause, 'config.schema.product-yaml.failed', { logger: 'schema.validator' });
     throw new SchemaError(`schema/${service}.yaml is not valid YAML`, { cause });
   }
 
   const keys = (parsed as { keys?: unknown } | null)?.keys;
-  if (
-    typeof parsed !== 'object' ||
-    parsed === null ||
-    Array.isArray(parsed) ||
-    typeof keys !== 'object' ||
-    keys === null ||
-    Array.isArray(keys)
-  ) {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new SchemaError(`schema/${service}.yaml must be a mapping with a 'keys' mapping`);
+  }
+  if (keys === undefined) return new Map();
+  if (typeof keys !== 'object' || keys === null || Array.isArray(keys)) {
     throw new SchemaError(`schema/${service}.yaml must be a mapping with a 'keys' mapping`);
   }
 

@@ -70,7 +70,6 @@ describe('the footer', () => {
     const page = String(
       renderProducts({
         products: [],
-        commit: 'a'.repeat(40),
         build: '0.1.0+abc1234 · deadbeef',
       }),
     );
@@ -82,7 +81,7 @@ describe('the footer', () => {
 
   it('renders the footer for the build alone, with no settings link', () => {
     const page = String(
-      renderProducts({ products: [], commit: 'a'.repeat(40), build: '0.1.0 · deadbeef' }),
+      renderProducts({ products: [], build: '0.1.0 · deadbeef' }),
     );
 
     expect(page).toContain('0.1.0');
@@ -90,7 +89,7 @@ describe('the footer', () => {
   });
 
   it('renders no footer at all when there is nothing to put in it', () => {
-    const page = String(renderProducts({ products: [], commit: 'a'.repeat(40) }));
+    const page = String(renderProducts({ products: [] }));
 
     expect(page).not.toContain('class="pagefoot"');
   });

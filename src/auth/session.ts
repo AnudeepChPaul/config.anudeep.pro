@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { logCaught } from '@config/src/logging.js';
 
 /**
  * The session cookie.
@@ -65,7 +66,8 @@ export class SessionCodec {
 
     try {
       return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as T;
-    } catch {
+    } catch (error) {
+      logCaught(error, 'config.session.value.failed', { logger: 'auth.session' });
       return null;
     }
   }
@@ -79,7 +81,8 @@ export class SessionCodec {
     let parsed: Partial<Session>;
     try {
       parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Partial<Session>;
-    } catch {
+    } catch (error) {
+      logCaught(error, 'config.session.cookie.failed', { logger: 'auth.session' });
       return null;
     }
 
