@@ -1,0 +1,67 @@
+<div class="row">
+  <div class="product-info">
+    <% if (it.missingSchema) { %>
+    <span class="pname"><%= it.label %></span><span class="chip wait">schema is missing</span>
+    <% } else { %>
+    <a class="pname" href="/p/<%= it.name %>" hx-get="/p/<%= it.name %>" hx-target="#page"
+       hx-swap="innerHTML" hx-push-url="true"><%= it.label %></a>
+    <% } %>
+    <%~ include("partials/unsynced-badge", { count: it.unsynced, changelog: it.changelog, changes: undefined }) %>
+    <span class="hint"><%= it.environmentsLabel %></span>
+  </div>
+  <% if (!it.archiveAsk) { %>
+  <span class="row-keys">
+    <% for (const key of it.shownKeys) { %>
+    <a class="chip-item" href="<%= key.dest %>#found" hx-get="<%= key.dest %>" hx-target="#page"
+       hx-swap="innerHTML show:none" hx-push-url="true"><%= key.name %></a>
+    <% } %>
+    <% if (it.moreKeys > 0) { %><span class="hint">(& <%= it.moreKeys %> more.)</span><% } %>
+  </span>
+  <% } %>
+  <% if (it.archiveAsk === 'confirm') { %>
+  <span class="row-end">
+    <span class="archive-ask">
+      <span>This removes all live configuration and grants.</span>
+      <form method="post" action="/p/<%= it.name %>/archive" hx-post="/p/<%= it.name %>/archive"
+            hx-target="#page" hx-swap="innerHTML" hx-push-url="/p/retiring">
+        <input type="hidden" name="base" value="<%= it.archiveBase ?? '' %>">
+        <%~ include("partials/write-action", { className: "linkbtn no", resting: "Yes, continue", running: "Archiving", post: undefined, attrName: "confirm", attrValue: "yes", vals: undefined }) %>
+      </form>
+      <a class="linkbtn" href="/p/retiring" hx-get="/p/retiring" hx-target="#page"
+         hx-swap="innerHTML" hx-push-url="true">Cancel</a>
+    </span>
+  </span>
+  <% } else if (it.archiveAsk === 'force') { %>
+  <span class="row-end">
+    <span class="archive-ask">
+      <span>an archive already exists for this product</span>
+      <form method="post" action="/p/<%= it.name %>/archive" hx-post="/p/<%= it.name %>/archive"
+            hx-target="#page" hx-swap="innerHTML" hx-push-url="/p/retiring">
+        <input type="hidden" name="base" value="<%= it.archiveBase ?? '' %>">
+        <input type="hidden" name="force" value="yes">
+        <%~ include("partials/write-action", { className: "linkbtn no", resting: "Force retire anyway?", running: "Archiving", post: undefined, attrName: "confirm", attrValue: "yes", vals: undefined }) %>
+      </form>
+      <form method="post" action="/p/<%= it.name %>/retire" hx-post="/p/<%= it.name %>/retire"
+            hx-target="#page" hx-swap="innerHTML" hx-push-url="/p/retiring">
+        <input type="hidden" name="retiring" value="false">
+        <input type="hidden" name="next" value="/p/retiring">
+        <%~ include("partials/write-action", { resting: "Cancel", running: "Cancelling", className: "linkbtn", post: undefined, attrName: undefined, vals: undefined }) %>
+      </form>
+    </span>
+  </span>
+  <% } else if (it.retiring) { %>
+  <span class="row-end">
+    <span class="chip">retiring</span>
+    <form method="post" action="/p/<%= it.name %>/retire" hx-post="/p/<%= it.name %>/retire"
+          hx-target="#page" hx-swap="innerHTML" hx-push-url="/p/retiring">
+      <input type="hidden" name="retiring" value="false">
+      <input type="hidden" name="next" value="/p/retiring">
+      <%~ include("partials/write-action", { resting: "Cancel retirement", running: "Cancelling", className: "linkbtn", post: undefined, attrName: undefined, vals: undefined }) %>
+    </form>
+    <form method="post" action="/p/<%= it.name %>/archive" hx-post="/p/<%= it.name %>/archive"
+          hx-target="#page" hx-swap="innerHTML" hx-push-url="/p/retiring">
+      <%~ include("partials/write-action", { className: "linkbtn no", resting: "Archive", running: "Archiving", post: undefined, attrName: undefined, vals: undefined }) %>
+    </form>
+  </span>
+  <% } %>
+</div>

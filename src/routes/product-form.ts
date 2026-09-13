@@ -5,7 +5,9 @@ export function keyBodies(body: Record<string, string | string[]>): Array<Record
 
 /** Every posted key row, including blanks. The add-variable control has to round-trip empty
  *  rows or a second click would drop the line the operator is still filling in. */
-export function allKeyBodies(body: Record<string, string | string[]>): Array<Record<string, string>> {
+export function allKeyBodies(
+  body: Record<string, string | string[]>,
+): Array<Record<string, string>> {
   const rows = new Map<number, Record<string, string>>();
   for (const [field, value] of Object.entries(body)) {
     const match = /^key\.(\d+)\.(\w+)$/.exec(field);
@@ -15,9 +17,7 @@ export function allKeyBodies(body: Record<string, string | string[]>): Array<Rec
     row[String(match[2])] = Array.isArray(value) ? String(value[0]) : String(value);
     rows.set(index, row);
   }
-  return [...rows.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([, row]) => row);
+  return [...rows.entries()].sort(([a], [b]) => a - b).map(([, row]) => row);
 }
 
 /** Those rows as definitions the builder can check. Everything arrives as text and is parsed here. */
@@ -80,4 +80,29 @@ export function defaultsOf(keys: readonly KeyDraft[]): Record<string, unknown> {
     defaults[key.name.trim()] = key.default;
   }
   return defaults;
+}
+
+export const KEY_DRAFT_TYPES = ['string', 'int', 'bool', 'url', 'string[]'] as const;
+
+/** View models for the shared key-draft rows on Add a product and Add a variable. */
+export function keyDraftModels(
+  rows: ReadonlyArray<Record<string, string>> | undefined,
+  problems: ReadonlyArray<{ key: string; message: string }> = [],
+) {
+  const about = (key: string) => problems.filter((problem) => problem.key === key);
+  const list = rows && rows.length > 0 ? rows : [{}];
+  return list.map((row, index) => ({
+    index,
+    name: row.name ?? '',
+    type: row.type ?? '',
+    types: KEY_DRAFT_TYPES,
+    secret: Boolean(row.secret),
+    values: row.values ?? '',
+    min: row.min ?? '',
+    max: row.max ?? '',
+    default: row.default ?? '',
+    defaultBool: row.defaultBool ?? '',
+    description: row.description ?? '',
+    problems: about(row.name ?? ''),
+  }));
 }

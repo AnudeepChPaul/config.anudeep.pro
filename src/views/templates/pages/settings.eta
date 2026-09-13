@@ -1,0 +1,9 @@
+<% if (!it.fragment) { layout("layouts/document") } %>
+    <%~ include("partials/page-header", { heading: it.heading, trail: it.trail, facts: it.facts, search: it.search, compact: false, actionsHtml: "" }) %>
+      <div class="rows"><% for (const row of it.rows) { %>
+      <div class="keyrow settings-row">
+      <span class="keyname"><%= row.name %></span>
+      <span class="<%= row.set ? 'settings-value' : 'settings-unset' %>"><%= row.shown %></span>
+      <% if (row.secret) { %><span class="chip">secret</span><% } %>
+    </div>
+      <% } %></div>

@@ -124,6 +124,38 @@ flowchart TD
   Sink -->|Postgres down| Drop[drop buffered rows; console still serves]
 ```
 
+## Console HTML render
+
+```mermaid
+flowchart TD
+    Req["HTTP console GET or POST"] --> Handler["route builds domain data"]
+    Handler --> Render["renderProduct or peer"]
+    Render --> Model["plain view-model object"]
+    Render --> RT["compiled template function"]
+    RT --> Esc["auto-escaped interpolations"]
+    Esc --> Html["HTML string"]
+    Html --> Send["reply type text/html"]
+    CompileFail["eta compile syntax or missing include"] --> Block["build test and start blocked"]
+    MissingGen["generated registry missing"] --> Throw["throw run pnpm eta:compile"]
+```
+
+## Console sign-in (IAM SSO)
+
+```mermaid
+flowchart TD
+    U[Operator no session] --> G[onRequest guard]
+    G -->|IAM up and OIDC| I["302 /login/iam?next="]
+    G -->|IAM down| L["302 /login?next="]
+    G -->|IAM up OIDC missing| L
+    L --> Page[Login HTML]
+    Page -->|IAM down| BG[break-glass form]
+    Page -->|OIDC missing| NC[not configured]
+    I --> A["https://iam.anudeep.pro/authorize via host Caddy"]
+    A -->|code| CB["GET /login/callback"]
+    CB -->|valid flow| Sess["config_session plus 303 next"]
+    CB -->|bad flow| Err[400 login HTML with error]
+```
+
 # Direct-write safety checkpoint — 2026-09-10
 
 Direct-save flow refinement: read ciphertext and ETag → decrypt → validate → compare semantic values → encrypt changed values with incremented version → verify each secret field → compare-and-swap. A concurrent write returns conflict without installing the candidate. A no-op verifies its base without re-encryption.

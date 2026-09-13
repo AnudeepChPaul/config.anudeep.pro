@@ -10,6 +10,7 @@ export default defineConfig({
     fileParallelism: false,
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],
+    globalSetup: ['tests/eta-global-setup.ts'],
     testTimeout: 30_000,
     hookTimeout: 30_000,
   },

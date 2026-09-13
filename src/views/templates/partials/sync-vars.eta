@@ -1,0 +1,20 @@
+<ul class="sync-vars">
+  <% if (it.changelog.length) { %>
+    <% for (const change of it.changelog) { %>
+    <li class="wasnow">
+      <span class="diffkey"><%= change.key %></span>
+      <% if (change.kind === 'added') { %>
+      <span class="sync-added"> ( Added )</span>
+      <% } else if (change.kind === 'removed') { %>
+      <span class="sync-archived"> ( Removed )</span>
+      <% } else { %>
+      <span class="was"><%= change.from %></span><span class="arrow">→</span><span class="is"><%= change.to %></span>
+      <% } %>
+    </li>
+    <% } %>
+  <% } else { %>
+    <% for (const key of it.keys) { %>
+    <li class="wasnow"><span class="diffkey"><%= key %></span></li>
+    <% } %>
+  <% } %>
+</ul>

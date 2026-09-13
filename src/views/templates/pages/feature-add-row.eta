@@ -1,0 +1,12 @@
+<li class="row feature-row">
+    <form method="post" action="/features" hx-post="/features" hx-target="#page"
+          hx-swap="innerHTML" class="fieldrow feature-add">
+      <% if (it.environment) { %><input type="hidden" name="environment" value="<%= it.environment %>"><% } %>
+      <label class="field">Feature name
+        <input type="text" name="name" required pattern="[A-Z][A-Za-z0-9]*" autofocus>
+      </label>
+      <button type="submit">Save</button>
+      <a class="linkbtn no" href="/features?env=<%= it.environmentEncoded %>" hx-get="/features?env=<%= it.environmentEncoded %>" hx-target="#page"
+         hx-swap="innerHTML" hx-push-url="true">Cancel</a>
+    </form>
+  </li>

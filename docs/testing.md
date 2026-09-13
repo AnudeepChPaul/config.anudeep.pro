@@ -29,15 +29,25 @@ their source.
 
 ## Commands
 
+Host:
+
 ```sh
+pnpm eta:compile                            # compile .eta → src/views/generated/registry.ts
+pnpm eta:watch                              # recompile on .eta change
+pnpm dev                                    # compile, watch templates, tsx watch the server
 make test                                   # the whole suite in the container
 docker compose run --rm test pnpm vitest run tests/unit/schema-builder.test.ts
-pnpm lint && pnpm typecheck                 # on the host
+pnpm lint && pnpm typecheck                 # on the host (typecheck compiles templates first)
 make check                                  # both, then the suite
 ```
 
 The suite runs in Docker because two things it asserts do not exist on macOS: `SO_PEERCRED` and
 `sops`. Tests needing them skip themselves elsewhere rather than pretending to pass.
+
+`pnpm test`, `pnpm typecheck`, and `pnpm build` run `pnpm eta:compile` first. Vitest `globalSetup`
+also compiles templates so a direct `vitest run` still has `src/views/generated/registry.ts`.
+Compiler coverage is `tests/unit/compile-eta.test.ts` (escape, include, unknown include, syntax
+failure). Page DOM tests keep calling `render*` from `@config/src/views/pages.js`.
 
 ## Fixtures
 
@@ -51,9 +61,15 @@ because every interesting bug in this project lived exactly there.
   that stops a click navigating before its confirmation appears passes every test while broken.
   It was caught in Chrome and is verified there.
 - **Rendered pixels.** CSS assertions pin mechanisms (a font-size is declared, a row has a fixed
-  height); alignment and spacing are checked in a browser.
+  height); alignment and spacing are checked in a browser. Compiled Eta output may differ in
+  insignificant whitespace from the old tagged templates; DOM tests assert structure and text.
+- **Generated registry on a clean tree.** `src/views/generated/registry.ts` is gitignored. Tests
+  and typecheck compile it first; a process that imports `render.ts` without that step fails
+  rather than reading `.eta` files.
 - **The webhook path** is covered for signature handling, not against GitHub itself.
 - **Logging Postgres inserts** are unit-tested against a fake pool (redaction, fail-open flush). A live log database is not started in CI.
+- **IAM SSO redirects** are asserted in `tests/integration/auth-ui.test.ts` (guard → `/login/iam?next=`, login auto-redirect, flow-cookie `next`, callback location). That file skips without `sops`; run it in `docker compose run --rm test`.
+- **Local Caddy for `iam.anudeep.pro`** is pinned as files in `tests/unit/local-iam-caddy.test.ts` (Compose `extra_hosts`, Caddyfile bind/proxy). Live TLS and `/etc/hosts` are not started in CI.
 - **Archiving** is covered by integration tests; the only end-to-end archive against a real remote
   was performed by the operator.
 

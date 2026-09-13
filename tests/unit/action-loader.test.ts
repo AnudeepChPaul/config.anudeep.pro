@@ -56,8 +56,9 @@ describe('the live form ships recipes, not hidden actions', () => {
     const line = document.querySelector('.actionline') as HTMLElement;
     expect(line.querySelectorAll(':scope > span')).toHaveLength(1);
     expect(line.querySelector('.idle')).not.toBeNull();
-    expect(line.querySelector('button')).toBeNull();
-    expect(line.querySelector('[hidden]')).toBeNull();
+    expect(line.querySelector('button[value="save"]')).toBeNull();
+    expect(line.querySelector('button[value="promote"]')).toBeNull();
+    expect(line.querySelector('[data-open-add-keys]')?.textContent).toMatch(/\+ Add variable/);
     expect(line.querySelector('.acts, .selection')).toBeNull();
   });
 
@@ -117,11 +118,9 @@ describe('the product toolbar keeps writes on the right', () => {
     box.checked = true;
     box.dispatchEvent(new Event('change', { bubbles: true }));
     const idle = document.querySelector('.idle') as HTMLElement;
-    expect([...idle.querySelectorAll('button')].map((button) => button.getAttribute('value'))).toEqual([
-      'promote',
-      'delete',
-      'save',
-    ]);
+    expect(
+      [...idle.querySelectorAll(':scope > button')].map((button) => button.getAttribute('value')),
+    ).toEqual(['promote', 'delete', 'save']);
     expect(document.querySelector('button[value="delete"]')?.className).toContain('no');
   });
 });

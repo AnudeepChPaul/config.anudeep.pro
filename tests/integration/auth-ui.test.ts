@@ -177,11 +177,37 @@ withSops('the editor behind authentication', () => {
   });
 
   describe('refusing anonymous access', () => {
-    it('sends an unauthenticated visitor to the sign-in page', async () => {
+    it('sends an unauthenticated visitor to iam when iam sign-in is configured', async () => {
       const response = await get('/');
 
       expect(response.statusCode).toBe(302);
-      expect(response.headers.location).toBe('/login');
+      expect(response.headers.location).toBe('/login/iam?next=%2F');
+    });
+
+    it('remembers the page they asked for across the iam round-trip', async () => {
+      const response = await get('/p/iam?env=prod');
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login/iam?next=%2Fp%2Fiam%3Fenv%3Dprod');
+    });
+
+    it('sends them to the sign-in page when iam is up but OIDC is not configured', async () => {
+      await app.close();
+      await start(false);
+
+      const response = await get('/');
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login?next=%2F');
+    });
+
+    it('sends them to the sign-in page when iam is unreachable', async () => {
+      iamReachable = false;
+
+      const response = await get('/');
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login?next=%2F');
     });
 
     it('refuses an unauthenticated namespace view', async () => {
@@ -214,21 +240,32 @@ withSops('the editor behind authentication', () => {
       expect((await get('/', signedInCookie())).statusCode).toBe(200);
     });
 
-    it('serves the sign-in page without a session', async () => {
+    it('serves the sign-in page without a session when iam cannot take them', async () => {
+      iamReachable = false;
       expect((await get('/login')).statusCode).toBe(200);
     });
   });
 
   describe('the sign-in page', () => {
-    it('offers iam while iam is reachable', async () => {
-      const body = (await get('/login')).body;
+    it('sends the browser to iam without an extra click while iam is reachable', async () => {
+      const response = await get('/login');
 
-      expect(body).toMatch(/sign in with iam/i);
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login/iam?next=%2F');
+    });
+
+    it('forwards a safe next path into the iam start', async () => {
+      const response = await get('/login?next=/p/iam');
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login/iam?next=%2Fp%2Fiam');
     });
 
     it('does not offer break-glass while iam is reachable', async () => {
-      // Showing a form that will always refuse invites people to burn codes against it.
-      expect((await get('/login')).body).not.toMatch(/authenticator code/i);
+      iamReachable = false;
+      expect((await get('/login')).body).toMatch(/authenticator code/i);
+      iamReachable = true;
+      expect((await get('/login')).statusCode).toBe(302);
     });
 
     it('offers break-glass once iam is unreachable', async () => {
@@ -350,6 +387,14 @@ withSops('the editor behind authentication', () => {
       );
     });
 
+    it('stores the next path on the flow cookie', async () => {
+      const response = await get('/login/iam?next=/p/iam');
+      const cookie = String(response.headers['set-cookie']).match(/config_login=([^;]+)/)?.[1];
+      const flow = codec.verifyValue<{ next: string }>(decodeURIComponent(cookie ?? ''));
+
+      expect(flow?.next).toBe('/p/iam');
+    });
+
     it('completes a sign-in when the flow matches', async () => {
       // The control for every case below: with a valid flow this callback really does sign in,
       // so a rejection in the other cases is the guard doing its job and not iam being absent.
@@ -357,6 +402,26 @@ withSops('the editor behind authentication', () => {
 
       expect(response.statusCode).toBe(303);
       expect(String(response.headers['set-cookie'])).toContain('config_session=');
+      expect(response.headers.location).toBe('/');
+    });
+
+    it('returns them to the page they were headed for', async () => {
+      const response = await get(
+        '/login/callback?code=abc&state=the-state',
+        flowCookie({ next: '/p/iam?env=prod' }),
+      );
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe('/p/iam?env=prod');
+    });
+
+    it('ignores an unsafe next path on the flow', async () => {
+      const response = await get(
+        '/login/callback?code=abc&state=the-state',
+        flowCookie({ next: 'https://evil.example/' }),
+      );
+
+      expect(response.headers.location).toBe('/');
     });
 
     it('refuses a callback with no flow cookie', async () => {

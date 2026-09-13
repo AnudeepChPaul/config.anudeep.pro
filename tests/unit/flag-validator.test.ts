@@ -9,16 +9,18 @@ describe('FlagValidator', () => {
     const result = validator.validateFile(`
 version: 1
 flags:
-  NEW_CHECKOUT:
+  NewCheckout:
     dev: true
     prod: false
+  Checkout2:
+    prod: true
 `);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const flags = new FlagSet(result.value);
-    expect(flags.valueOf('NEW_CHECKOUT', 'dev')).toBe(true);
-    expect(flags.valueOf('NEW_CHECKOUT', 'staging')).toBe(false);
-    expect(flags.resolveFor('prod')).toEqual({ NEW_CHECKOUT: false });
+    expect(flags.valueOf('NewCheckout', 'dev')).toBe(true);
+    expect(flags.valueOf('NewCheckout', 'staging')).toBe(false);
+    expect(flags.resolveFor('prod')).toEqual({ NewCheckout: false, Checkout2: true });
   });
 
   it('reports malformed names, values, and environments together', () => {
@@ -32,9 +34,29 @@ flags:
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toEqual([
-      { key: 'bad-name', message: 'flag name must be UPPER_SNAKE_CASE' },
+      { key: 'bad-name', message: 'flag name must be TitleCase' },
       { key: 'bad-name.dev', message: 'flag value must be true or false' },
       { key: 'bad-name.qa', message: "unknown environment 'qa'" },
+    ]);
+  });
+
+  it('refuses snake_case, camelCase, and names that start with a digit', () => {
+    const result = validator.validateFile(`
+version: 1
+flags:
+  NEW_CHECKOUT:
+    dev: true
+  newCheckout:
+    dev: true
+  2Checkout:
+    dev: true
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toEqual([
+      { key: 'NEW_CHECKOUT', message: 'flag name must be TitleCase' },
+      { key: 'newCheckout', message: 'flag name must be TitleCase' },
+      { key: '2Checkout', message: 'flag name must be TitleCase' },
     ]);
   });
 

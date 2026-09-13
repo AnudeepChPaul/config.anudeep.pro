@@ -30,6 +30,13 @@ describe('turning an outcome code into a notice', () => {
     expect(notice?.text).not.toMatch(/draft|publish/i);
   });
 
+  it('describes variables added to a product', () => {
+    const notice = noticeFor('keys-added', { n: 2 });
+    expect(notice?.tone).toBe('done');
+    expect(notice?.text).toContain('2');
+    expect(notice?.text).toMatch(/live now/i);
+  });
+
   it('describes a successful back-up', () => {
     expect(noticeFor('backed-up', { n: 3 })?.text).toMatch(/back/i);
     expect(noticeFor('backed-up', { n: 3 })?.text).not.toMatch(/publish/i);

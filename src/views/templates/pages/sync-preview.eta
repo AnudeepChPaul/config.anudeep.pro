@@ -1,0 +1,77 @@
+<% if (!it.fragment) { layout("layouts/document") } %>
+<% const actionsHtml = capture(function () { %>
+<form method="post" action="/sync" hx-post="/sync" hx-target="#page" hx-swap="innerHTML">
+  <%~ include("partials/write-action", { resting: "Confirm", running: "Syncing", attrName: "confirm", attrValue: "yes", className: "linkbtn", post: undefined, vals: undefined }) %>
+</form>
+<a class="linkbtn no" href="/" hx-get="/" hx-target="#sync-preview" hx-select="#sync-preview">Cancel</a>
+<% }) %>
+<% const detailOf = (when, environments) => ({
+  when,
+  environments: environments.map((env) => ({
+    name: env.environment ?? env.name ?? '',
+    changelog: env.changelog,
+    keys: env.keys,
+  })),
+}) %>
+<div class="card" id="sync-card">
+    <%~ include("partials/page-header", { heading: "Sync changes now", facts: it.facts, compact: true, search: undefined, trail: undefined, actionsHtml: actionsHtml }) %>
+    <% if (it.registry.added.length > 0 || it.registry.archived.length > 0 || it.gists.length > 0) { %>
+    <section class="sync-group">
+      <div class="facts">Unsynced writes</div>
+      <ul class="sync-actions">
+        <% if (it.registry.added.length > 0 || it.registry.archived.length > 0) { %>
+        <li class="sync-set">
+          <span class="sync-heading">Registry</span>
+          <ul class="sync-tree">
+            <% for (const product of it.registry.added) { %>
+            <li>
+              <span class="sync-item sync-added peek" tabindex="0">
+                <%= product.name %> ( Added )
+                <%~ include("partials/sync-detail", detailOf(product.when, product.environments)) %>
+              </span>
+              <ul class="sync-tree">
+                <% for (const gist of product.environments) { %>
+                <li>
+                  <span class="sync-env"><span class="sync-env-name"><%= gist.environment %></span></span>
+                  <%~ include("partials/sync-vars", gist) %>
+                </li>
+                <% } %>
+              </ul>
+            </li>
+            <% } %>
+            <% for (const name of it.registry.archived) { %>
+            <li><span class="sync-item sync-archived"><%= name %> ( Archived )</span></li>
+            <% } %>
+          </ul>
+        </li>
+        <% } %>
+        <% for (const gist of it.gists) { %>
+        <li class="sync-set">
+          <span class="sync-heading peek" tabindex="0">
+            <span class="sync-product"><%= gist.product %></span>
+            <%~ include("partials/sync-detail", detailOf(gist.when, gist.environments)) %>
+          </span>
+          <ul class="sync-tree">
+            <% for (const env of gist.environments) { %>
+            <li>
+              <% if (env.environment) { %><span class="sync-env"><span class="sync-env-name"><%= env.environment %></span></span><% } %>
+              <%~ include("partials/sync-vars", env) %>
+            </li>
+            <% } %>
+          </ul>
+        </li>
+        <% } %>
+      </ul>
+    </section>
+    <% } %>
+    <% if (it.unpushed.length > 0) { %>
+    <section class="sync-group">
+      <div class="facts">Not yet pushed</div>
+      <ul class="sync-actions">
+        <% for (const commit of it.unpushed) { %>
+        <li><%= commit.subject %></li>
+        <% } %>
+      </ul>
+    </section>
+    <% } %>
+  </div>

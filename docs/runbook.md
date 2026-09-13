@@ -8,11 +8,43 @@ make code    # print the current six-digit break-glass code
 make test    # the suite, on Linux, where SO_PEERCRED and sops exist
 make check   # lint and typecheck on the host, then the suite in the container
 make reset   # throw away the volumes; .env is left alone
+make iam-caddy  # local https://iam.anudeep.pro (Caddy + mkcert); needed for IAM SSO from Docker
 ```
 
 `make dev` **clones** the configured remote. It never seeds a sample: a generated history shares
 no ancestor with the remote, so nothing published from it could ever be pushed. With no remote,
 or no age key, it stops and says which.
+
+### Console templates
+
+`pnpm dev` compiles Eta templates, watches `.eta` files, and starts the server. If you change a
+template and the page does not update, run `pnpm eta:compile` and restart. Missing generated
+output fails with "Run pnpm eta:compile" rather than serving an empty page. Production images
+run `pnpm build` (`eta:compile` then `tsc`); `node dist/server.js` uses compiled JavaScript only.
+To roll back the template compiler, revert the view-layer commit and redeploy an image that
+does not require `src/views/generated/`. There is no data migration.
+
+### Local HTTPS (`iam.anudeep.pro` and `config.anudeep.pro`)
+
+One mkcert certificate (two Subject Alternative Names) and one Caddy process on **127.0.0.1:443**.
+IAM remains HTTP `:8000`; the console remains HTTP `:8200`; Caddy is the TLS terminator.
+Health stays `http://host.docker.internal:8000/healthz`.
+
+```sh
+make iam-caddy
+# if printed, add to /etc/hosts:
+#   127.0.0.1 iam.anudeep.pro config.anudeep.pro
+# if 443 is denied:
+#   sudo env IAM_CADDY_DIR="$PWD/deploy/local-iam-caddy" caddy start --config "$PWD/deploy/local-iam-caddy/Caddyfile"
+# if Caddy is already running an old config:
+#   sudo caddy stop
+#   sudo env IAM_CADDY_DIR="$PWD/deploy/local-iam-caddy" caddy start --config "$PWD/deploy/local-iam-caddy/Caddyfile"
+curl -I https://iam.anudeep.pro/.well-known/openid-configuration
+curl -I https://config.anudeep.pro/login
+```
+
+Open the console at `https://config.anudeep.pro/` (not `:8200`) so OIDC `redirect_uri` matches.
+`CONFIG_IAM_REDIRECT_URI` is `https://config.anudeep.pro/login/callback`. Stop: `sudo caddy stop`.
 
 ## Configuration
 
@@ -26,7 +58,12 @@ container.
 | `CONFIG_GIT_SSH_KEY` | Deploy key path, write-scoped to one repository | ssh uses whatever the host offers |
 | `CONFIG_AGE_KEY` | The **secret** half (`AGE-SECRET-KEY-1…`) of the recipient in `.sops.yaml` | Refuses to start |
 | `CONFIG_SESSION_SECRET` | Signs the session cookie; at least 32 characters | Refuses to start |
-| `CONFIG_IAM_HEALTH_URL` | IAM health endpoint checked for login availability | `http://127.0.0.1:8000/healthz` |
+| `CONFIG_IAM_HEALTH_URL` | IAM health endpoint checked for login availability | Process default `http://127.0.0.1:8000/healthz`. Compose `app` defaults to `http://host.docker.internal:8000/healthz` (host IAM). |
+| `CONFIG_IAM_ISSUER` | OIDC issuer (discovery `{issuer}/.well-known/openid-configuration`) | IAM sign-in is not configured |
+| `CONFIG_IAM_CLIENT_ID` | Confidential OIDC client id | IAM sign-in is not configured |
+| `CONFIG_IAM_CLIENT_SECRET` | Confidential OIDC client secret | IAM sign-in is not configured |
+| `CONFIG_IAM_REDIRECT_URI` | Registered callback | `https://config.anudeep.pro/login/callback` |
+| `CONFIG_IAM_TLS_CA` | Host path to mkcert root CA (`make iam-caddy`) | `NODE_EXTRA_CA_CERTS` unset; HTTPS to `iam.anudeep.pro` untrusted |
 | `CONFIG_IAM_CHECK_INTERVAL_MS` | How often IAM availability is refreshed after startup | 10s |
 | `CONFIG_ENABLE_SETTINGS` | Whether `/settings` exists at all | It does not exist (404) |
 | `CONFIG_SETTINGS_ALLOW` | Addresses admitted beside a break-glass session | Nobody, never everybody |
@@ -42,7 +79,10 @@ the symptom is a console that starts and cannot read a value.
 ## Health checks
 
 ```sh
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8200/login   # 200
+curl -sI http://127.0.0.1:8200/login | head -n 5
+# IAM up + OIDC: 302 /login/iam?next=…
+# IAM down: 200 HTML with break-glass
+# IAM up, no OIDC: 200 HTML saying sign-in is not configured
 docker compose exec app sh -c 'cd /var/lib/config/repo && git status -sb | head -1'
 docker compose logs --since 5m app | grep -iE 'error|could not reload'
 ```
@@ -57,7 +97,12 @@ which is the question two of this project's longest outages turned on.
 | `Permission denied (publickey)` on push | `CONFIG_DEPLOY_KEY` empty, so compose created a **directory** at the mount point and ssh was handed a folder |
 | Auto sync / Sync changes now reports not on the remote | No remote configured, or a local history that shares no ancestor with it (`git merge-base` empty). Problem banner uses `backup-deferred` / `backup-no-remote`. |
 | A saved change does not appear in the console | Cache/`onCommitted` refresh failed; check logs |
-| Secrets will not decrypt | `CONFIG_AGE_KEY` holds the public recipient rather than the secret key |
+| Break-glass form while IAM is running | `CONFIG_IAM_HEALTH_URL` is unreachable from **inside** `app` (`127.0.0.1` is the container). Use `host.docker.internal:8000/healthz`, or a dead URL only if you want break-glass. |
+| Sign-in page says not configured | `CONFIG_IAM_ISSUER`, `CONFIG_IAM_CLIENT_ID`, and `CONFIG_IAM_CLIENT_SECRET` must all be set and passed by Compose. Register `CONFIG_IAM_REDIRECT_URI` (local: `http://127.0.0.1:8200/login/callback`) on the IAM client. |
+| Bounce loop on `/login` | Health cache still true while IAM authorize fails. Open `/login?error=1` to see HTML instead of auto-redirect. |
+| `GET /login/iam` is 500, logs `ENOTFOUND iam.anudeep.pro` | No `/etc/hosts` line, or Compose missing `extra_hosts` for `iam.anudeep.pro`. Run `make iam-caddy`. |
+| `GET /login/iam` is 500, certificate error | `CONFIG_IAM_TLS_CA` unset or Caddy using a CA Node does not trust. Recreate `app` after `make iam-caddy`. |
+| `GET /login/iam` is 500, connection refused on 443 | Caddy not running or not bound to loopback 443. |
 | Save says `secret values were not encrypted: KEY` | A **filled** secret was stored as plaintext — `.sops.yaml` missing, wrong directory, or `encrypted_regex` does not include that key. An **empty** secret (iam's `SMTP_PASSWORD: ""`) is allowed. |
 | Delete returns `would_orphan` | Removing those keys would leave an environment document invalid; adjust data first |
 | Process refuses to start after a crash mid-write | Transaction journal needs recovery; do not delete `db/.journal` during the incident |

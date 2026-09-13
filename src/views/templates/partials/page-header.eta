@@ -1,0 +1,10 @@
+<div class="pagehead">
+    <% if (!it.compact) { %><div class="searchrow"><% if (it.search) { %><form class="search" method="get" action="<%= it.search.action %>"><% for (const field of it.search.hidden ?? []) { %><input type="hidden" name="<%= field.name %>" value="<%= field.value %>"><% } %><input type="search" name="q" value="<%= it.search.query %>" placeholder="<%= it.search.placeholder %>" aria-label="<%= it.search.placeholder %>"><%~ include("partials/write-action", { resting: "Search", running: "Searching", className: "linkbtn", post: undefined, attrName: undefined, vals: undefined }) %><% if (it.search.query) { %><a class="linkbtn no" href="<%= it.search.clearHref %>">Clear</a><% } %></form><% } %></div>
+    <div class="noticerow"><%~ include("partials/notice") %></div>
+    <% } %><div class="titlerow">
+      <h1><% if (it.trail !== undefined) { %><a href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML"
+      hx-push-url="true">Products</a><span class="crumb-sep">›</span><span><%= it.trail %></span><% } else { %><%= it.heading %><% } %></h1>
+      <div class="actions-right"><%~ it.actionsHtml ?? "" %></div>
+    </div>
+    <div class="facts"><%= it.facts ?? "" %></div>
+  </div>

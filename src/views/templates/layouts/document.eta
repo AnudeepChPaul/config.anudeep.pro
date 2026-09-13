@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title><%= it.title %></title>
+<link rel="stylesheet" href="/assets/base.css" defer/>
+</head>
+<body>
+<%~ include("header") %>
+<main id="page"><%~ it.body %></main>
+<%~ include("footer") %>
+<script src="/assets/htmx.js" defer></script>
+<script src="/assets/ticks.js" defer></script>
+<script src="/assets/keys.js" defer></script>
+</body>
+</html>

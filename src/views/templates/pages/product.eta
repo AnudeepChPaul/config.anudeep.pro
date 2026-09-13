@@ -1,0 +1,94 @@
+<% if (!it.fragment) { layout("layouts/document") } %>
+    <% const actionsHtml = capture(function () { %>
+    <% if (it.retireAsk === 'confirm') { %>
+    <span class="retire-ask">
+      <span>Consumers will see the retirement mark immediately.</span>
+      <form method="post" action="/p/<%= it.service %>/retire" hx-post="/p/<%= it.service %>/retire"
+            hx-target="#page" hx-swap="innerHTML">
+        <input type="hidden" name="retiring" value="true">
+        <input type="hidden" name="environment" value="<%= it.environment %>">
+        <%~ include("partials/write-action", { className: "linkbtn no", resting: "Yes, continue", running: "Retiring", post: undefined, attrName: "confirm", attrValue: "yes", vals: undefined }) %>
+      </form>
+      <a class="linkbtn" href="/p/<%= it.service %>?env=<%= it.environment %>" hx-get="/p/<%= it.service %>?env=<%= it.environment %>"
+         hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Cancel</a>
+    </span>
+    <% } else if (it.retireAsk === 'force') { %>
+    <span class="retire-ask">
+      <span>an archive already exists for this product</span>
+      <form method="post" action="/p/<%= it.service %>/retire" hx-post="/p/<%= it.service %>/retire"
+            hx-target="#page" hx-swap="innerHTML">
+        <input type="hidden" name="retiring" value="true">
+        <input type="hidden" name="force" value="yes">
+        <input type="hidden" name="environment" value="<%= it.environment %>">
+        <%~ include("partials/write-action", { className: "linkbtn no", resting: "Force retire anyway?", running: "Retiring", post: undefined, attrName: "confirm", attrValue: "yes", vals: undefined }) %>
+      </form>
+      <a class="linkbtn" href="/p/<%= it.service %>?env=<%= it.environment %>" hx-get="/p/<%= it.service %>?env=<%= it.environment %>"
+         hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Cancel</a>
+    </span>
+    <% } else { %>
+    <form method="post" action="/p/<%= it.service %>/retire" hx-post="/p/<%= it.service %>/retire"
+          hx-target="#page" hx-swap="innerHTML">
+      <input type="hidden" name="retiring" value="<%= it.retiring ? 'false' : 'true' %>">
+      <input type="hidden" name="environment" value="<%= it.environment %>">
+      <%~ include("partials/write-action", { className: it.retiring ? "linkbtn" : "linkbtn no", resting: it.retiring ? "Cancel retirement" : "Retire", running: it.retiring ? "Cancelling" : "Retiring", post: undefined, attrName: undefined, vals: undefined }) %>
+    </form>
+    <% } %>
+    <% }) %>
+    <%~ include("partials/page-header", { heading: it.heading, trail: it.trail, facts: it.facts, search: it.search, compact: false, actionsHtml: actionsHtml }) %>
+    <%~ include("partials/env-tabs") %>
+    <% if (it.missing) { %>
+    <p class="hint">No file for <%= it.environment %> yet.</p>
+    <form method="post" action="<%= it.action %>" class="actionslot"><div class="actionline"><input type="hidden" name="intent" value="create"><%~ include("partials/write-action", { resting: "Create from schema defaults", running: "Creating", className: "linkbtn", post: undefined, attrName: undefined, vals: undefined }) %></div></form>
+    <div class="rows"><div class="row"><span class="row-keys"><% for (const row of it.rows) { %><span class="chip-item"><%= row.key %></span><% } %></span></div></div>
+    <% } else { %>
+    <div class="product-live">
+    <form id="config-form" method="post" action="<%= it.action %>" hx-post="<%= it.action %>" hx-target="#page" hx-swap="innerHTML" data-live-values data-keys data-save-post="<%= it.action %>" data-delete-post="/p/<%= it.service %>/delete-keys"<% if (it.next) { %> data-promote-post="/promote" data-promote-label="Promote to <%= it.next %>"<% } %>>
+      <div class="actionslot">
+        <input type="hidden" name="etag" value="<%= it.etag ?? '' %>">
+        <input type="hidden" name="environment" value="<%= it.environment %>">
+        <input type="hidden" name="service" value="<%= it.service %>">
+        <input type="hidden" name="from" value="<%= it.environment %>">
+        <input type="hidden" name="to" value="<%= it.next ?? '' %>">
+        <div class="actionline">
+          <span class="idle">
+            <span data-idle-facts>
+            <%= it.rows.length %> variables in <%= it.environment %> · serving revision <%= it.version %>
+            <%~ include("partials/unsynced-badge", { count: it.unsyncedCount, changelog: it.changelog, changes: true }) %>
+            </span>
+            <% if (it.canAddKeys) { %>
+            <span data-open-add-keys-line data-open-add-keys<% if (it.addKeysOpen) { %> hidden<% } %>>
+              <%~ include("partials/write-action", { className: "linkbtn", formId: "add-keys", resting: "+ Add variable", running: "Opening", post: undefined, attrName: "intent", attrValue: "open-add-keys", vals: undefined }) %>
+            </span>
+            <% } %>
+          </span>
+        </div>
+      </div>
+      <div class="rows"><% for (const row of it.rows) { %><%~ include("partials/key-field", row) %><% } %></div>
+    </form>
+    <% if (it.canAddKeys) { %>
+    <form id="add-keys" class="add-keys" method="post" action="/p/<%= it.service %>/add-keys"
+          hx-post="/p/<%= it.service %>/add-keys" hx-target="#page" hx-swap="innerHTML">
+      <div data-add-keys-panel<% if (!it.addKeysOpen) { %> hidden<% } %>>
+        <div class="actionline end" data-add-keys-confirm>
+          <input type="hidden" name="etag" value="<%= it.etag ?? '' %>">
+          <input type="hidden" name="environment" value="<%= it.environment %>">
+          <span data-add-keys-submit<% if (!it.named) { %> hidden<% } %>>
+            <%~ include("partials/write-action", { className: "linkbtn go", post: "/p/" + it.service + "/add-keys", include: "#add-keys", resting: "Confirm", running: "Adding", attrName: undefined, vals: undefined }) %>
+          </span>
+          <a class="linkbtn no" href="/p/<%= it.service %>?env=<%= it.environment %>" data-cancel-add-keys
+             hx-get="/p/<%= it.service %>?env=<%= it.environment %>" hx-target="#page" hx-swap="innerHTML"
+             hx-push-url="true">Cancel</a>
+        </div>
+        <div id="key-rows" class="key-drafts">
+          <% for (const problem of it.keyFormProblems) { %><div class="card error"><%= problem.message %></div><% } %>
+          <% for (const row of it.keyRows) { %><%~ include("partials/key-draft", row) %>
+          <% } %>
+        </div>
+        <div class="actionline" data-add-key-line data-add-key<% if (!it.named) { %> hidden<% } %>>
+          <%~ include("partials/write-action", { className: "linkbtn", resting: "Add a variable", running: "Adding", post: undefined, attrName: "intent", attrValue: "add-key", vals: undefined }) %>
+        </div>
+      </div>
+    </form>
+    <% } %>
+    </div>
+    <% } %>

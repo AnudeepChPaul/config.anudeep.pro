@@ -1,0 +1,16 @@
+<span class="detail">
+  <h3>Changelog</h3>
+  <% if (it.when) { %>
+  <div class="hint"><%= it.when %></div>
+  <% } %>
+  <ul class="sync-tree">
+    <% for (const env of it.environments) { %>
+    <li>
+      <% if (env.name) { %>
+      <span class="sync-env"><span class="sync-env-name"><%= env.name %></span></span>
+      <% } %>
+      <%~ include("partials/sync-vars", env) %>
+    </li>
+    <% } %>
+  </ul>
+</span>

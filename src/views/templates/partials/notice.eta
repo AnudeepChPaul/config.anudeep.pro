@@ -1,0 +1,3 @@
+<% if (it.notice) { %><span class="notice <%= it.notice.tone === 'done' ? 'done' : 'problem' %>" data-notice<% if (it.notice.tone === 'done') { %> data-transient<% } %>><span class="notice-text"><%= it.notice.text %></span><a class="linkbtn no" data-dismiss
+      href="<%= it.dismissTo ?? '/' %>" hx-get="<%= it.dismissTo ?? '/' %>" hx-target="#page" hx-swap="innerHTML"
+      hx-push-url="true">Dismiss</a></span><% } %>

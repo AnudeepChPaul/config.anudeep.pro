@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { Actor } from '@config/src/git/commit-trailers.js';
 import { err, ok, type Result } from '@config/src/identity/types.js';
 import { logCaught, logged, type MethodLog } from '@config/src/logging.js';
+import { buildSchema, type KeyDraft } from '@config/src/schema/builder.js';
 import { SchemaSet, type ValidationError } from '@config/src/schema/validator.js';
 import { type DBEngine, etagFor, type MutationRequest } from '@config/src/store/data-layer.js';
 import { EnvironmentOrder } from '@config/src/store/environment-order.js';
@@ -40,6 +41,7 @@ class Refusal extends Error {
 const refuse = (detail: string, code: ProductWriteError['code'] = 'invalid'): never => {
   throw new Refusal({ code, detail });
 };
+export const ARCHIVE_ALREADY_EXISTS = 'an archive already exists for this product';
 const isEmptySecret = (value: unknown) => value === '' || value === undefined || value === null;
 const identifier = (value: string) => /^[a-z][a-z0-9-]*$/.test(value);
 export const productBase = (files: ReadonlyMap<string, string>, service: string): string =>
@@ -166,9 +168,16 @@ export class ProductWriteOperations {
     });
   }
 
-  setRetiring(service: string, retiring: boolean, actor: Actor): Promise<Outcome> {
+  setRetiring(
+    service: string,
+    retiring: boolean,
+    actor: Actor,
+    options: { readonly force?: boolean } = {},
+  ): Promise<Outcome> {
     return this.run(service, actor, async (session) => {
       session.requireProduct();
+      if (retiring && !options.force && session.files.has(`archived/${service}.yaml`))
+        refuse(ARCHIVE_ALREADY_EXISTS);
       const document = session.productSchema();
       if (retiring) document.retiring = true;
       else delete document.retiring;
@@ -195,6 +204,76 @@ export class ProductWriteOperations {
         changes[key] = source[key];
       }
       await session.values(request.to, changes);
+    });
+  }
+
+  addKeys(
+    request: {
+      service: string;
+      environment: string;
+      keys: readonly KeyDraft[];
+      expectedEtag?: string | null;
+    },
+    actor: Actor,
+  ): Promise<Outcome> {
+    return this.run(request.service, actor, async (session) => {
+      session.requireProduct();
+      const lower = session.order.all()[0];
+      if (request.environment !== lower) refuse(`variables can only be added in ${lower}`);
+      if (!request.keys.length) refuse('add at least one variable');
+      const built = buildSchema({ service: request.service, keys: request.keys });
+      if (!built.ok)
+        throw new Refusal({
+          code: 'invalid',
+          detail: 'invalid schema',
+          errors: built.error,
+        });
+      const added = ((parse(built.value) as { keys?: Record<string, unknown> }).keys ??
+        {}) as Record<string, unknown>;
+      const document = session.productSchema();
+      const declared = { ...((document.keys ?? {}) as Record<string, unknown>) };
+      const clashes: ValidationError[] = [];
+      for (const name of Object.keys(added)) {
+        if (Object.hasOwn(declared, name))
+          clashes.push({ key: name, message: `'${name}' is already declared` });
+      }
+      if (clashes.length)
+        throw new Refusal({ code: 'invalid', detail: 'invalid schema', errors: clashes });
+      document.keys = { ...declared, ...added };
+      const nextSource = stringify(document);
+      const candidate = SchemaSet.fromFiles({ [request.service]: nextSource });
+      const names = Object.keys(added);
+      const defaults: Record<string, unknown> = {};
+      for (const key of request.keys) {
+        if (key.secret) continue;
+        if (key.default === null || key.default === undefined) continue;
+        defaults[key.name.trim()] = key.default;
+      }
+      const path = `config/${request.service}/${request.environment}.yaml`;
+      if (!session.files.has(path)) refuse('create the environment file first');
+      for (const [envPath] of session.environments()) {
+        const environment = envPath.slice(`config/${request.service}/`.length, -5);
+        const current = await session.document(environment);
+        const next = configOnly(current);
+        if (environment === request.environment) {
+          const source = session.files.get(path);
+          if (request.expectedEtag !== undefined && request.expectedEtag !== etagFor(source ?? ''))
+            refuse('file changed; review and reapply your edit', 'conflict');
+          for (const [key, value] of Object.entries(defaults)) next[key] = value;
+        }
+        const validation = candidate.validate(request.service, next);
+        if (!validation.ok)
+          throw new Refusal({
+            code: 'invalid',
+            detail: 'configuration is invalid',
+            errors: validation.error,
+          });
+        if (environment === request.environment && !isDeepStrictEqual(configOnly(current), next)) {
+          next.version = bumpedVersion(current);
+          session.put(path, await session.encode(environment, next, candidate), names);
+        }
+      }
+      session.put(`schema/${request.service}.yaml`, nextSource, names);
     });
   }
 
@@ -232,7 +311,12 @@ export class ProductWriteOperations {
     });
   }
 
-  archiveProduct(service: string, actor: Actor, expectedBase?: string): Promise<Outcome> {
+  archiveProduct(
+    service: string,
+    actor: Actor,
+    expectedBase?: string,
+    options: { readonly force?: boolean } = {},
+  ): Promise<Outcome> {
     return this.run(service, actor, async (session) => {
       if (expectedBase !== undefined && expectedBase !== productBase(session.files, service))
         refuse('Product changed; review the archive again.', 'conflict');
@@ -240,7 +324,7 @@ export class ProductWriteOperations {
       if (!session.schemas.isRetiring(service))
         refuse('mark the product retiring before archiving');
       const archivePath = `archived/${service}.yaml`;
-      if (session.files.has(archivePath)) refuse('an archive already exists for this product');
+      if (session.files.has(archivePath) && !options.force) refuse(ARCHIVE_ALREADY_EXISTS);
       const environments = Object.fromEntries(
         session
           .environments()

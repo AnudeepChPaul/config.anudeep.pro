@@ -24,21 +24,27 @@ set -eu
 
 repo="${1:?usage: repo-provenance.sh <repo-dir>}"
 
+echo "[repo-provenance] repo=$repo CONFIG_GIT_REMOTE=${CONFIG_GIT_REMOTE:-} CONFIG_AGE_KEY_set=$([ -n "${CONFIG_AGE_KEY:-}" ] && echo yes || echo no)" >&2
+
 if [ -d "$repo/.git" ]; then
+  echo "[repo-provenance] $repo/.git exists → keep" >&2
   echo "keep"
   exit 0
 fi
 
 if [ -z "${CONFIG_GIT_REMOTE:-}" ]; then
+  echo "[repo-provenance] CONFIG_GIT_REMOTE empty → refuse" >&2
   echo "no git remote is configured, so there is nothing to clone." >&2
   echo "set CONFIG_GIT_REMOTE in .env and run again." >&2
   exit 1
 fi
 
 if [ -z "${CONFIG_AGE_KEY:-}" ]; then
+  echo "[repo-provenance] CONFIG_AGE_KEY empty → refuse" >&2
   echo "a git remote is configured but no age key is, and the clone's secrets" >&2
   echo "would not decrypt. set CONFIG_AGE_KEY in .env and run again." >&2
   exit 1
 fi
 
+echo "[repo-provenance] remote and age key present → clone" >&2
 echo "clone"

@@ -1,0 +1,54 @@
+<div class="row keyrow <%= it.found ? 'found' : '' %>"<% if (it.found) { %> id="found"<% } %>>
+  <span class="keypick">
+    <input type="checkbox" name="select" value="<%= it.key %>" data-select="<%= it.key %>"
+           aria-label="Select <%= it.key %> for Promote or Delete">
+  </span>
+  <div class="keybody">
+    <div class="keyline">
+      <% if (it.peek) { %>
+      <span class="peek" tabindex="0">
+        <label for="<%= it.name %>"><%= it.key %></label>
+        <span class="detail">
+          <% if (it.change) { %>
+          <span class="wasnow"><span class="was"><%= it.change.from %></span><span class="arrow">→</span><span class="is"><%= it.change.to %></span></span>
+          <% } %>
+          <% for (const held of it.elsewhere) { %>
+          <div><span class="envname"><%= held.environment %></span> <span class="is"><%= held.shown %></span></div>
+          <% } %>
+        </span>
+      </span>
+      <% } else { %>
+      <label for="<%= it.name %>"><%= it.key %></label>
+      <% } %>
+      <span class="hint">(<%= it.signature %>)</span>
+    </div>
+    <% if (it.description) { %><div class="hint keydesc"><%= it.description %></div><% } %>
+    <% if (it.control === 'secret') { %>
+    <input type="password" name="<%= it.name %>" id="<%= it.name %>" value="" autocomplete="off"
+           data-key="<%= it.key %>" data-original="<%= it.original %>" data-secret
+           placeholder="Leave blank to keep the current value">
+    <% } else if (it.control === 'bool') { %>
+    <% if (it.valueDefined) { %><input type="hidden" name="<%= it.name %>" value="false"><% } %>
+    <label class="switch">
+      <input type="checkbox" name="<%= it.name %>" id="<%= it.name %>" value="true"
+             data-key="<%= it.key %>" data-original="<%= it.original %>"<% if (it.checked) { %> checked<% } %>>
+      <span class="track"><span class="knob"></span></span>
+      <span class="state"></span>
+    </label>
+    <% } else if (it.control === 'enum') { %>
+    <select name="<%= it.name %>" id="<%= it.name %>" data-key="<%= it.key %>" data-original="<%= it.original %>">
+      <option value=""></option>
+      <% for (const option of it.enumValues) { %>
+      <option value="<%= option %>"<% if (option === it.selectedValue) { %> selected<% } %>><%= option %></option>
+      <% } %>
+    </select>
+    <% } else { %>
+    <input type="<%= it.inputType %>" name="<%= it.name %>" id="<%= it.name %>" value="<%= it.formatted %>"
+           data-key="<%= it.key %>" data-original="<%= it.original %>"<% if (it.min !== undefined) { %> min="<%= it.min %>"<% } %><% if (it.max !== undefined) { %> max="<%= it.max %>"<% } %>>
+    <% } %>
+    <% if (it.chips.length) { %>
+    <div class="chips"><% for (const member of it.chips) { %><span class="chip-item"><%= member %></span><% } %></div>
+    <% } %>
+    <% if (it.error) { %><p class="err"><%= it.error %></p><% } %>
+  </div>
+</div>

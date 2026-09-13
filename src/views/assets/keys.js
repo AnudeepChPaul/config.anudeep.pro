@@ -138,16 +138,36 @@
       }
 
       const leaving = target.closest('[data-discard]');
-      if (!leaving) return;
-      const form = document.querySelector('#new-product');
-      if (!form || !touched(form)) return;
+      if (leaving) {
+        const form = document.querySelector('#new-product');
+        if (!form || !touched(form)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const line = leaving.closest('.actionline');
+        const ask = line && line.querySelector('[data-discard-confirm]');
+        if (ask) ask.hidden = false;
+        leaving.hidden = true;
+        return;
+      }
 
-      event.preventDefault();
-      event.stopPropagation();
-      const line = leaving.closest('.actionline');
-      const ask = line && line.querySelector('[data-discard-confirm]');
-      if (ask) ask.hidden = false;
-      leaving.hidden = true;
+      const opening = target.closest('[data-open-add-keys]');
+      if (opening) {
+        const form = document.querySelector('#add-keys');
+        if (!form) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openAddKeys(form);
+        return;
+      }
+
+      const cancelling = target.closest('[data-cancel-add-keys]');
+      if (cancelling) {
+        const form = cancelling.closest('form');
+        if (!form || form.id !== 'add-keys') return;
+        event.preventDefault();
+        event.stopPropagation();
+        cancelAddKeys(form);
+      }
     },
     true,
   );
@@ -191,17 +211,52 @@
     }
   });
 
+  const namedIn = (form) =>
+    [...form.querySelectorAll('[name$=".name"]')].some((input) => (input.value || '').trim().length > 0);
+
   const syncAddKey = () => {
-    const line = document.querySelector('[data-add-key-line]');
-    if (!line) return;
-    const named = [...document.querySelectorAll('#new-product [name$=".name"]')].some(
-      (input) => (input.value || '').trim().length > 0,
-    );
-    line.hidden = !named;
+    for (const line of document.querySelectorAll('[data-add-key-line]')) {
+      const form = line.closest('form');
+      if (!form) continue;
+      line.hidden = !namedIn(form);
+    }
+    for (const line of document.querySelectorAll('[data-add-keys-submit]')) {
+      const form = line.closest('form');
+      if (!form) continue;
+      line.hidden = !namedIn(form);
+    }
   };
 
-  const addKeyRow = () => {
-    const form = document.querySelector('#new-product');
+  const openAddKeys = (form) => {
+    const opener = document.querySelector('[data-open-add-keys-line]');
+    const panel = form.querySelector('[data-add-keys-panel]');
+    if (opener) opener.hidden = true;
+    if (panel) panel.hidden = false;
+    const name = form.querySelector('input[name$=".name"]');
+    if (name) name.focus();
+  };
+
+  const cancelAddKeys = (form) => {
+    const rows = form.querySelector('#key-rows');
+    const list = rows ? [...rows.querySelectorAll('[data-key-row]')] : [];
+    for (const extra of list.slice(1)) extra.remove();
+    const first = list[0];
+    if (first) {
+      for (const el of first.querySelectorAll('[name]')) {
+        if (el.type === 'checkbox' || el.type === 'radio') el.checked = false;
+        else if (el.tagName === 'SELECT') el.selectedIndex = 0;
+        else el.value = '';
+      }
+      apply(first);
+    }
+    const panel = form.querySelector('[data-add-keys-panel]');
+    const opener = document.querySelector('[data-open-add-keys-line]');
+    if (panel) panel.hidden = true;
+    if (opener) opener.hidden = false;
+    syncAddKey();
+  };
+
+  const addKeyRow = (form) => {
     const rows = form && form.querySelector('#key-rows');
     const last = rows && rows.querySelector('[data-key-row]:last-of-type');
     if (!form || !rows || !last) return;
@@ -227,7 +282,8 @@
 
   document.addEventListener('input', (event) => {
     const target = event.target;
-    if (!target || !target.matches || !target.matches('#new-product [name$=".name"]')) return;
+    if (!target || !target.matches || !target.matches('[name$=".name"]')) return;
+    if (!target.closest('form')?.querySelector('[data-add-key-line]')) return;
     syncAddKey();
   });
 
@@ -235,11 +291,22 @@
     'submit',
     (event) => {
       const submitter = event.submitter;
-      if (!submitter || !submitter.closest || !submitter.closest('[data-add-key]')) return;
+      if (!submitter || !submitter.closest) return;
+      const form = submitter.closest('form');
+      if (!form) return;
+      if (submitter.closest('[data-open-add-keys]')) {
+        const add = document.querySelector('#add-keys');
+        if (!add) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openAddKeys(add);
+        return;
+      }
+      if (!submitter.closest('[data-add-key]')) return;
       if (event.defaultPrevented) return;
       event.preventDefault();
       event.stopPropagation();
-      addKeyRow();
+      addKeyRow(form);
     },
     true,
   );

@@ -3,3 +3,7 @@ dist
 .env
 *.log
 /var
+src/views/generated/*.ts
+deploy/local-iam-caddy/*.pem
+deploy/local-iam-caddy/*-key.pem
+!deploy/local-iam-caddy/absent-ca.pem

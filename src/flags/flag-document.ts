@@ -16,7 +16,8 @@ export interface EnvironmentNames {
   has(environment: string): boolean;
 }
 
-const NAME = /^[A-Z][A-Z0-9_]*$/;
+/** PascalCase identifier: starts with an uppercase letter, then letters or digits. */
+const NAME = /^[A-Z][A-Za-z0-9]*$/;
 
 /** Parses and validates the complete plaintext flag document at its file boundary. */
 export class FlagValidator {
@@ -39,7 +40,7 @@ export class FlagValidator {
     const flags = new Map<string, ReadonlyMap<string, boolean>>();
     for (const [name, rawValues] of Object.entries(parsed.flags)) {
       if (!NAME.test(name))
-        errors.push({ key: name, message: 'flag name must be UPPER_SNAKE_CASE' });
+        errors.push({ key: name, message: 'flag name must be TitleCase' });
       if (!isRecord(rawValues)) {
         errors.push({ key: name, message: 'flag values must be an environment mapping' });
         continue;

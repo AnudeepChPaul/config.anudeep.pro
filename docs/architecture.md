@@ -64,8 +64,14 @@ flowchart TD
 
 - **GitHub** over SSH with a write-scoped deploy key (`CONFIG_GIT_SSH_KEY`), and an optional push
   webhook. Both are optional: with no remote the registry is local-only and the console says so.
-- **iam** for operator sign-in over OpenID Connect (OIDC). When iam is unreachable, break-glass
-  sign-in opens — that is the only condition under which it does.
+- **iam** for operator sign-in over OpenID Connect (OIDC). While iam is reachable and OIDC
+  is configured, unauthenticated console requests `302` to `/login/iam` (then IAM) with a
+  safe relative `next` path. After `/login/callback`, the session cookie is set and the
+  browser returns to `next` (default `/`). When iam is unreachable, break-glass sign-in
+  opens — that is the only condition under which it does. When iam is up but OIDC env is
+  missing, the sign-in page says so; it does not offer break-glass. Locally, `https://iam.anudeep.pro`
+  is Caddy on the host (loopback 443 → IAM `:8000` and console `:8200`, one SAN certificate);
+  the `app` container uses `extra_hosts` and `NODE_EXTRA_CA_CERTS` (`make iam-caddy`). Health remains HTTP on `host.docker.internal:8000`.
 - **SOPS** and **age** for encryption. Each namespace file carries its own envelope.
 - **Postgres `log-db`** (Compose) for application and access logs. Not the config file store.
 
@@ -121,9 +127,37 @@ writes, deletes, revisions, and SHA-256 entity tags. `FileWriter` performs temp-
 updated by `SyncEngine` when Auto sync is on (idle writes and the configured interval), or when
 an operator confirms **Sync changes now**. Preference is `${CONFIG_DB_PATH}/.journal/auto-sync.json`.
 
-`flags.yaml` is plaintext and validated by `FlagValidator`; configuration files remain encrypted
+`flags.yaml` is plaintext and validated by `FlagValidator` (TitleCase names with optional digits);
+configuration files remain encrypted
 by SOPS. `ConfigCache` serves decrypted configuration and resolved per-environment flags from
 memory, so the Unix socket read path does not depend on Git or disk availability.
+
+## Console HTML rendering
+
+Operator pages are Eta files under `src/views/templates/` (layout, partials, pages).
+`pnpm eta:compile` compiles them to `src/views/generated/registry.ts` (gitignored). Request
+handlers still call `render*` functions; those functions build view models and call compiled
+template functions. Production `node dist/server.js` does not read `.eta` files. Auto-escape is
+on; `include` inserts already-escaped HTML. `@fastify/view` is not used.
+
+```mermaid
+flowchart TD
+    EtaSrc["src/views/templates *.eta"] --> Compile["pnpm eta:compile"]
+    Compile --> Generated["src/views/generated/registry.ts"]
+    Route["live-ui or auth"] --> RenderFn["renderProduct and peers"]
+    RenderFn --> Model["TypeScript view model"]
+    RenderFn --> Runtime["runtime.render"]
+    Runtime --> Generated
+    Runtime --> Html["escaped HTML string"]
+    Route --> Reply["text/html response"]
+```
+
+The page footer is `src/views/templates/footer.eta` and the console tabs are
+`src/views/templates/header.eta`. Both sit outside `#page`. htmx swaps of `#page` leave them
+in place. `updateHeader` appends `#pagechrome` with `hx-swap-oob` only when the URL crosses
+Products ↔ Features; `updateFooter` does the same for Auto sync. `.pagehead` (title, search,
+notices, actions) lives inside `#page` so it updates with the body.
+
 # Direct-write safety checkpoint — 2026-09-10
 
 Direct value writes compare the ciphertext read before decryption with the file at commit. Product creation uses a coherent DB snapshot and checks every participating ETag; retirement checks the schema ETag. The console cutover that removes drafts is complete as of 2026-09-11.

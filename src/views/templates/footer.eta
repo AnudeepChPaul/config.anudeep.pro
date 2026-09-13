@@ -1,0 +1,21 @@
+<% if (it.build || it.settingsLink || it.autoSync !== undefined) { %>
+<footer class="pagefoot" id="pagefoot"<% if (it.updateFooter) { %> hx-swap-oob="true"<% } %>>
+  <% if (it.build) { %><span class="build"><%= it.build %></span><% } %>
+  <% if (it.autoSync !== undefined) { %>
+  <form class="autosync" method="post" action="/sync/auto"
+        hx-post="/sync/auto" hx-target="#page" hx-select-oob="#pagefoot" hx-swap="innerHTML">
+    <input type="hidden" name="autoSync" value="false">
+    <label class="switch policy">
+      <span class="name">Auto sync</span>
+      <input type="checkbox" name="autoSync" value="true"<% if (it.autoSync) { %> checked<% } %>
+             onchange="this.form.requestSubmit()" aria-label="Auto sync">
+      <span class="track"><span class="knob"></span></span>
+    </label>
+  </form>
+  <% } %>
+  <% if (it.settingsLink) { %>
+  <a href="/settings" hx-get="/settings" hx-target="#page" hx-swap="innerHTML"
+     hx-push-url="true">Settings</a>
+  <% } %>
+</footer>
+<% } %>

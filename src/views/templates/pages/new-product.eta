@@ -1,0 +1,47 @@
+<% if (!it.fragment) { layout("layouts/document") } %>
+    <%~ include("partials/page-header", { heading: it.heading, trail: it.trail, facts: it.facts, search: it.search, compact: false, actionsHtml: "" }) %>
+      <% for (const problem of it.formProblems) { %><div class="card error"><%= problem.message %></div><% } %>
+      <form method="post" action="/p/new" hx-post="/p/new" hx-target="#page"
+            hx-swap="innerHTML" id="new-product">
+
+        <div class="actionline">
+          <%~ include("partials/write-action", { className: "linkbtn go", post: "/p/new", include: "#new-product", resting: "Create product", running: "Creating", attrName: undefined, vals: undefined }) %>
+          <span class="sep">·</span>
+
+          <a class="linkbtn no" data-discard href="/" hx-get="/" hx-target="#page"
+             hx-swap="innerHTML" hx-push-url="true">Discard</a>
+          <span class="discard-ask" data-discard-confirm hidden>
+            <span>Discard with unsaved changes?</span>
+            <a class="linkbtn no" href="/" hx-get="/" hx-target="#page" hx-swap="innerHTML"
+               hx-push-url="true">Yes, discard</a>
+            <span class="sep">·</span>
+            <button type="button" class="linkbtn" data-keep>Keep editing</button>
+          </span>
+          <span class="add-variable">
+            <button type="submit" class="linkbtn" name="intent" value="add-key" data-add-key>+ Add variable</button>
+          </span>
+        </div>
+        <div class="card">
+          <div class="fieldrow">
+            <label class="field">
+              <span class="fieldlabel">Name</span>
+              <input type="text" name="name" value="<%= it.typedName %>" placeholder="audit"
+                     spellcheck="false">
+            </label>
+            <label class="field">
+              <span class="fieldlabel">uid <span class="hint">must be unique</span></span>
+              <input type="text" name="uid" value="<%= it.typedUid %>" inputmode="numeric" placeholder="1004">
+            </label>
+          </div>
+          <div class="fieldrow">
+            <span class="fieldlabel">Environments</span>
+            <% for (const environment of it.environmentChoices) { %>
+            <label class="field checkfield">
+                <input type="checkbox" name="environment" value="<%= environment.name %>"<% if (environment.checked) { %> checked<% } %>>
+                <span><%= environment.name %></span>
+              </label>
+            <% } %>
+          </div>
+        </div>
+        <div id="key-rows"><% for (const row of it.keyRows) { %><%~ include("partials/key-draft", row) %><% } %></div>
+      </form>

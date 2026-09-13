@@ -1,4 +1,6 @@
-import { escapeHtml, html } from '@config/src/views/html.js';
+import { compileAll } from '@config/src/views/compile-eta.js';
+import { escapeHtml } from '@config/src/views/html.js';
+import { renderWithRegistry } from '@config/src/views/runtime.js';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -19,7 +21,7 @@ describe('escapeHtml', () => {
 
   it('escapes ampersands first so escapes are not double-decoded', () => {
     // Replacing < before & would turn `&lt;` into `&amp;lt;` and display the wrong text; doing
-    // it the other way round can produce a live `<` from `&amp;#60;`.
+    // the other way round can produce a live `<` from `&amp;#60;`.
     expect(escapeHtml('&lt;')).toBe('&amp;lt;');
   });
 
@@ -40,29 +42,66 @@ describe('escapeHtml', () => {
   });
 });
 
-describe('html template tag', () => {
-  it('escapes interpolated values', () => {
-    // The default has to be safe: a template that escapes only when remembered will eventually
-    // be forgotten.
-    expect(String(html`<p>${'<script>alert(1)</script>'}</p>`)).toBe(
-      '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>',
+describe('compiled Eta interpolations', () => {
+  it('escapes interpolated values by default', async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const root = await mkdtemp(join(tmpdir(), 'eta-escape-'));
+    const templates = join(root, 'templates');
+    await mkdir(templates);
+    await writeFile(join(templates, 'p.eta'), '<p><%= it.value %></p>', 'utf8');
+    const registry = await compileAll({ templatesDir: templates, outDir: join(root, 'out') });
+    expect(renderWithRegistry(registry, 'p', { value: '<script>alert(1)</script>' })).toContain(
+      '&lt;script&gt;alert(1)&lt;/script&gt;',
     );
+    await rm(root, { recursive: true, force: true });
   });
 
-  it('leaves the literal parts of the template untouched', () => {
-    expect(String(html`<p class="x">${'hi'}</p>`)).toBe('<p class="x">hi</p>');
+  it('does not escape an included fragment that was already escaped', async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const root = await mkdtemp(join(tmpdir(), 'eta-include-esc-'));
+    const templates = join(root, 'templates');
+    await mkdir(join(templates, 'partials'), { recursive: true });
+    await writeFile(join(templates, 'partials', 'item.eta'), '<li><%= it.name %></li>', 'utf8');
+    await writeFile(
+      join(templates, 'list.eta'),
+      '<ul><%~ include("partials/item") %></ul>',
+      'utf8',
+    );
+    const registry = await compileAll({ templatesDir: templates, outDir: join(root, 'out') });
+    expect(renderWithRegistry(registry, 'list', { name: 'a<b' }).replaceAll('\n', '')).toBe(
+      '<ul><li>a&lt;b</li></ul>',
+    );
+    await rm(root, { recursive: true, force: true });
   });
+});
 
-  it('does not escape a fragment that was already rendered', () => {
-    // Composing pages from parts must not double-escape, or nested markup arrives as text.
-    const row = html`<li>${'a<b'}</li>`;
-
-    expect(String(html`<ul>${row}</ul>`)).toBe('<ul><li>a&lt;b</li></ul>');
-  });
-
-  it('joins arrays of fragments without commas', () => {
-    const rows = ['a', 'b'].map((k) => html`<li>${k}</li>`);
-
-    expect(String(html`<ul>${rows}</ul>`)).toBe('<ul><li>a</li><li>b</li></ul>');
+describe('page templates escape repository strings', () => {
+  it('escapes a script in a key name and a value', async () => {
+    const { renderProduct } = await import('@config/src/views/pages.js');
+    const page = renderProduct({
+      service: 'iam',
+      environment: 'dev',
+      environments: ['dev'],
+      etag: 'e',
+      rows: [
+        {
+          key: '<script>x</script>',
+          definition: { type: 'string', secret: false },
+          value: '</textarea><script>alert(1)</script>',
+        },
+      ],
+      version: 1,
+      next: null,
+      retiring: false,
+      missing: false,
+    });
+    expect(page).toContain('&lt;script&gt;x&lt;/script&gt;');
+    expect(page).toContain('&lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(page).not.toContain('<script>x</script>');
+    expect(page).not.toContain('</textarea><script>alert(1)</script>');
   });
 });

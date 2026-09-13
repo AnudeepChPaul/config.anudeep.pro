@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
-import { setUserEmail, logCaught } from '@config/src/logging.js';
+import { logCaught, setUserEmail } from '@config/src/logging.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { BreakGlass } from '../auth/break-glass.js';
 import { createPkce, type OidcClient, pkceFor } from '../auth/oidc.js';
 import type { Session, SessionCodec } from '../auth/session.js';
 import { renderLogin } from '../views/pages.js';
+import { safeNextPath } from './safe-next-path.js';
 
 /**
  * Sign-in, sign-out, and the guard in front of everything else.
@@ -34,6 +35,16 @@ interface FlowState {
   nonce: string;
   verifier: string;
   expiresAt: number;
+  /** Safe relative path to return to after a successful callback. */
+  next: string;
+}
+
+function iamStartLocation(next: string | undefined): string {
+  return `/login/iam?next=${encodeURIComponent(safeNextPath(next))}`;
+}
+
+function loginPageLocation(next: string | undefined): string {
+  return `/login?next=${encodeURIComponent(safeNextPath(next))}`;
 }
 
 /** Long enough to sign in, short enough that an abandoned flow cannot be resumed later. */
@@ -72,55 +83,70 @@ export function registerAuthRoutes(
     setUserEmail(session?.email);
     if (session || open.has(request.url.split('?')[0] ?? '')) return;
 
-    return reply.code(302).header('location', '/login').send();
-  });
-
-  app.get('/login', async (request, reply) => {
-    if (request.session) return reply.code(302).header('location', '/').send();
-
-    // Break-glass is offered only while iam is unreachable, so the page has to ask.
+    const next = request.url.startsWith('/') ? request.url : '/';
     const iamUp = await auth.isIamReachable();
-    return reply.type('text/html; charset=utf-8').send(
-      String(
-        renderLogin({
-          iamReachable: iamUp,
-          iamConfigured: Boolean(auth.oidc),
-          iamLoginUrl: '/login/iam',
-        }),
-      ),
-    );
+    const location = iamUp && auth.oidc ? iamStartLocation(next) : loginPageLocation(next);
+    return reply.code(302).header('location', location).send();
   });
 
-  app.get('/login/iam', async (_request, reply) => {
-    if (!auth.oidc) return reply.code(404).send();
+  app.get(
+    '/login',
+    async (request: FastifyRequest<{ Querystring: Record<string, string> }>, reply) => {
+      if (request.session) return reply.code(302).header('location', '/').send();
 
-    // State, nonce and verifier are minted here and kept in a signed cookie rather than in
-    // process memory: a server-side map would be one more thing to expire and to lose on a
-    // restart, in the middle of someone signing in.
-    const flow: FlowState = {
-      state: randomBytes(16).toString('base64url'),
-      nonce: randomBytes(16).toString('base64url'),
-      verifier: createPkce().verifier,
-      expiresAt: Date.now() + FLOW_TTL_MS,
-    };
+      const query = request.query ?? {};
+      const iamUp = await auth.isIamReachable();
+      // An error query keeps the HTML page so a stale-true health check cannot bounce forever.
+      if (iamUp && auth.oidc && !query.error) {
+        return reply.code(302).header('location', iamStartLocation(query.next)).send();
+      }
 
-    const url = await auth.oidc.authorizationUrl({
-      state: flow.state,
-      nonce: flow.nonce,
-      // Derived from the verifier just stored. A fresh pair here would send a challenge that
-      // verifier does not satisfy, and iam would refuse every exchange.
-      pkce: pkceFor(flow.verifier),
-    });
+      return reply.type('text/html; charset=utf-8').send(
+        String(
+          renderLogin({
+            iamReachable: iamUp,
+            iamConfigured: Boolean(auth.oidc),
+            iamLoginUrl: iamStartLocation(query.next),
+          }),
+        ),
+      );
+    },
+  );
 
-    return reply
-      .setCookie(FLOW_COOKIE, auth.codec.signValue(flow), {
-        ...auth.codec.cookieOptions(insecureCookie),
-        maxAge: FLOW_TTL_MS / 1000,
-      })
-      .code(302)
-      .header('location', url)
-      .send();
-  });
+  app.get(
+    '/login/iam',
+    async (request: FastifyRequest<{ Querystring: Record<string, string> }>, reply) => {
+      if (!auth.oidc) return reply.code(404).send();
+
+      // State, nonce and verifier are minted here and kept in a signed cookie rather than in
+      // process memory: a server-side map would be one more thing to expire and to lose on a
+      // restart, in the middle of someone signing in.
+      const flow: FlowState = {
+        state: randomBytes(16).toString('base64url'),
+        nonce: randomBytes(16).toString('base64url'),
+        verifier: createPkce().verifier,
+        expiresAt: Date.now() + FLOW_TTL_MS,
+        next: safeNextPath(request.query?.next),
+      };
+
+      const url = await auth.oidc.authorizationUrl({
+        state: flow.state,
+        nonce: flow.nonce,
+        // Derived from the verifier just stored. A fresh pair here would send a challenge that
+        // verifier does not satisfy, and iam would refuse every exchange.
+        pkce: pkceFor(flow.verifier),
+      });
+
+      return reply
+        .setCookie(FLOW_COOKIE, auth.codec.signValue(flow), {
+          ...auth.codec.cookieOptions(insecureCookie),
+          maxAge: FLOW_TTL_MS / 1000,
+        })
+        .code(302)
+        .header('location', url)
+        .send();
+    },
+  );
 
   app.get(
     '/login/callback',
@@ -163,7 +189,7 @@ export function registerAuthRoutes(
           auth.codec.cookieOptions(insecureCookie),
         )
         .code(303)
-        .header('location', '/')
+        .header('location', safeNextPath(flow.next))
         .send();
     },
   );
@@ -177,7 +203,7 @@ export function registerAuthRoutes(
           renderLogin({
             iamReachable: await auth.isIamReachable(),
             iamConfigured: Boolean(auth.oidc),
-            iamLoginUrl: '/login/iam',
+            iamLoginUrl: iamStartLocation('/'),
             error: detail,
           }),
         ),
@@ -201,7 +227,7 @@ export function registerAuthRoutes(
               renderLogin({
                 iamReachable: await auth.isIamReachable(),
                 iamConfigured: Boolean(auth.oidc),
-                iamLoginUrl: '/login/iam',
+                iamLoginUrl: iamStartLocation('/'),
                 error: result.error.detail,
               }),
             ),

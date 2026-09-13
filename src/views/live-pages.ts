@@ -1,15 +1,10 @@
+import { keyDraftModels } from '@config/src/routes/product-form.js';
 import type { KeyDefinition } from '@config/src/schema/validator.js';
-import { html, raw, type SafeHtml } from '@config/src/views/html.js';
-import {
-  consoleTabs,
-  layout,
-  layoutChrome,
-  type PageNotice,
-  pageHeader,
-  titled,
-  trail,
-  writeAction,
-} from '@config/src/views/page-frame.js';
+import { isMetadataKey } from '@config/src/store/metadata.js';
+import type { JournalEntry } from '@config/src/store/write-journal.js';
+import { layoutChrome, type PageNotice, titled } from '@config/src/views/page-frame.js';
+import { render } from '@config/src/views/render.js';
+import { formatGistWhen, syncRowsFromJournal } from '@config/src/views/sync-gist.js';
 
 /** A live value that has not reached Git yet, compared with the last committed copy. */
 export interface UnsyncedChange {
@@ -17,6 +12,8 @@ export interface UnsyncedChange {
   from: unknown;
   to: unknown;
   secret?: boolean;
+  /** Schema keys have no live value to diff; the write is the declaration itself. */
+  kind?: 'added' | 'removed';
 }
 
 export interface LiveKeyRow {
@@ -49,52 +46,133 @@ export interface LiveProduct {
 
 const shownValue = (value: unknown, secret?: boolean): string => {
   if (secret) return '••••';
-  if (value === undefined) return '—';
+  if (value === undefined) return '(None)';
   if (Array.isArray(value)) return value.map(String).join(', ');
   if (value !== null && typeof value === 'object') return JSON.stringify(value);
   return String(value);
 };
 
-const wasNow = (change: UnsyncedChange): SafeHtml =>
-  html`<span class="wasnow"><span class="was">${shownValue(change.from, change.secret)}</span><span class="arrow">→</span><span class="is">${shownValue(change.to, change.secret)}</span></span>`;
+const changelogCount = (
+  changelog:
+    | {
+        environments: readonly {
+          changelog: readonly { key: string }[];
+          keys: readonly string[];
+        }[];
+      }
+    | undefined,
+): number => {
+  if (!changelog) return 0;
+  const keys = new Set<string>();
+  for (const environment of changelog.environments) {
+    if (environment.changelog.length)
+      for (const change of environment.changelog) keys.add(change.key);
+    else for (const key of environment.keys) keys.add(key);
+  }
+  return keys.size;
+};
 
-const changePeek = (change: UnsyncedChange): SafeHtml =>
-  html`<span class="detail">${wasNow(change)}</span>`;
+const changelogPeek = (
+  name: string,
+  entries: readonly JournalEntry[],
+  changesByPath: Readonly<Record<string, readonly UnsyncedChange[]>>,
+) => {
+  const related = entries.filter((entry) => entry.path.startsWith(`config/${name}/`));
+  if (related.length === 0) return undefined;
+  let lastAt = '';
+  for (const entry of related) if (entry.timestamp > lastAt) lastAt = entry.timestamp;
+  const environments: {
+    name: string;
+    changelog: { key: string; from: string; to: string; kind?: 'added' | 'removed' }[];
+    keys: string[];
+  }[] = [];
+  for (const path of new Set(related.map((entry) => entry.path))) {
+    const environment = path.match(/^config\/[^/]+\/([^/]+)\.yaml$/)?.[1];
+    const envEntries = related.filter((entry) => entry.path === path);
+    environments.push({
+      name: environment ? titled(environment) : '',
+      changelog: (changesByPath[path] ?? []).map((change) => ({
+        key: change.key,
+        from: shownValue(change.from, change.secret),
+        to: shownValue(change.to, change.secret),
+        kind: change.kind,
+      })),
+      keys: [
+        ...new Set(envEntries.flatMap((entry) => entry.keys.filter((key) => !isMetadataKey(key)))),
+      ].sort((left, right) => left.localeCompare(right)),
+    });
+  }
+  return { when: lastAt ? formatGistWhen(lastAt) : '', environments };
+};
 
-const idleDiffs = (changes: readonly UnsyncedChange[]): SafeHtml =>
-  changes.length === 0
-    ? html``
-    : html`${changes.map(
-      (change) =>
-        html`<span class="wasnow"><span class="diffkey">${change.key}</span> <span class="was">${shownValue(change.from, change.secret)}</span><span class="arrow">→</span><span class="is">${shownValue(change.to, change.secret)}</span></span>`,
-    )}`;
 export interface LivePageOptions {
   fragment?: boolean;
   settingsLink?: boolean;
   build?: string;
   notice?: PageNotice;
   autoSync?: boolean;
-  currentPath?: string;
+  updateFooter?: boolean;
+  updateHeader?: boolean;
   dismissTo?: string;
 }
-export const livePage = (title: string, body: SafeHtml, options: LivePageOptions): SafeHtml =>
-  options.fragment
-    ? body
-    : layout(title, body, options.settingsLink, options.build, layoutChrome(options));
 
-/**
- * The way back to the retiring list. Three operator rules live here, and each was asked for:
- *   - it says how many, singular or plural, because "Retiring" alone made you open the page to
- *     find out whether there was anything on it;
- *   - it is danger-coloured like Drop, Clear and Not now, because retiring a product takes
- *     something away;
- *   - it is not rendered at all when nothing is retiring, rather than sitting there reading
- *     zero, which is a link to an empty page.
- */
-const retiringLink = (retiring: number): SafeHtml =>
-  retiring === 0
-    ? html``
-    : html`<a class="linkbtn no" href="/p/retiring">${retiring} ${retiring === 1 ? 'product' : 'products'} retiring</a>`;
+const chrome = (title: string, options: LivePageOptions) => ({
+  title,
+  showHeader: true,
+  fragment: Boolean(options.fragment),
+  settingsLink: Boolean(options.settingsLink),
+  build: options.build ?? '',
+  notice: options.notice,
+  dismissTo: options.dismissTo ?? '/',
+  ...layoutChrome(options),
+});
+
+function keyFieldModel(row: LiveKeyRow) {
+  const name = `key.${row.key}`;
+  const value = row.definition.secret ? '' : row.value;
+  const formatted = Array.isArray(value) ? value.join(', ') : (value ?? '');
+  const original = String(formatted);
+  let control: 'secret' | 'bool' | 'enum' | 'input' = 'input';
+  if (row.definition.secret) control = 'secret';
+  else if (row.definition.type === 'bool') control = 'bool';
+  else if (row.definition.type === 'enum') control = 'enum';
+  const declared = row.definition.values ?? [];
+  const quoted = declared.map((value) => `"${value}"`).join(' || ');
+  return {
+    key: row.key,
+    name,
+    found: Boolean(row.found),
+    error: row.error,
+    signature: declared.length > 0 ? `${row.definition.type}, ${quoted}` : row.definition.type,
+    description: row.definition.description ?? '',
+    peek: Boolean(row.change) || Object.keys(row.elsewhere ?? {}).length > 0,
+    control,
+    inputType:
+      row.definition.type === 'int' ? 'number' : row.definition.type === 'url' ? 'url' : 'text',
+    formatted: String(formatted),
+    original,
+    checked: value === true,
+    valueDefined: value !== undefined,
+    min: row.definition.min,
+    max: row.definition.max,
+    enumValues: row.definition.values ?? [],
+    selectedValue: value,
+    chips:
+      row.definition.type === 'string[]' && Array.isArray(row.value)
+        ? row.value.map((member) => String(member))
+        : [],
+    elsewhere: Object.entries(row.elsewhere ?? {}).map(([environment, held]) => ({
+      environment: titled(environment),
+      shown: shownValue(held, row.definition.secret),
+    })),
+    change: row.change
+      ? {
+          from: shownValue(row.change.from, row.change.secret),
+          to: shownValue(row.change.to, row.change.secret),
+        }
+      : undefined,
+  };
+}
 
 export function renderLiveProducts(
   options: LivePageOptions & {
@@ -104,19 +182,22 @@ export function renderLiveProducts(
     retiring?: number;
     retiringOnly?: boolean;
     query?: string;
+    archiveAsk?: { service: string; kind: 'confirm' | 'force'; base?: string };
     /** Unique unsynced keys across every product, for the facts line. */
     unsynced?: number;
     /** Manual git backup is offered only when auto-sync is off and local differs from the remote. */
     showSyncNow?: boolean;
+    entries?: readonly JournalEntry[];
+    changesByPath?: Readonly<Record<string, readonly UnsyncedChange[]>>;
   },
-): SafeHtml {
+): string {
   const query = options.query ?? '';
   const needle = query.toLowerCase();
-  // A product matches on its own name or on any key it declares. `matched` carries WHICH keys
-  // matched, because the result has to link to the key rather than to the product and leave you
-  // to find it again.
   const products = options.products
-    .filter((product) => !options.retiringOnly || product.retiring)
+    .filter(
+      (product) =>
+        !options.retiringOnly || product.retiring || options.archiveAsk?.service === product.name,
+    )
     .map((product) => ({
       product,
       matched: needle
@@ -127,66 +208,41 @@ export function renderLiveProducts(
       ({ product, matched }) =>
         !needle || product.name.toLowerCase().includes(needle) || matched.length > 0,
     );
-  const emptySearch = needle.length > 0 && products.length === 0;
-  const syncNow = options.showSyncNow
-    ? html`<a class="linkbtn" href="/sync" hx-get="/sync" hx-target="#sync-preview" hx-swap="innerHTML">Sync changes now</a>`
-    : html``;
-  const body = html`${consoleTabs('products')}${pageHeader({
-    title: options.retiringOnly ? trail('Retiring') : html`Products`,
-    notice: options.notice,
-    dismissTo: options.dismissTo,
-    facts: html`${products.length} products${options.unsynced
-      ? ` · ${options.unsynced} unsynced`
-      : ''
-      }`,
-    actions: html`<a href="/p/new" class="linkbtn">Add a product</a>${retiringLink(
+  const rows = products.map(({ product, matched }) => {
+    const shownKeys = matched.slice(0, 2);
+    return {
+      name: product.name,
+      label: `${titled(product.name)}${product.uid === undefined ? '' : ` (${product.uid})`}`,
+      missingSchema: Boolean(product.missingSchema),
+      unsynced: product.unsynced,
+      changelog: changelogPeek(product.name, options.entries ?? [], options.changesByPath ?? {}),
+      environmentsLabel: product.environments.map(titled).join(', '),
+      retiring: product.retiring,
+      archiveAsk:
+        options.archiveAsk?.service === product.name ? options.archiveAsk.kind : undefined,
+      archiveBase:
+        options.archiveAsk?.service === product.name ? (options.archiveAsk.base ?? '') : undefined,
+      shownKeys: shownKeys.map((key) => ({
+        name: key,
+        dest: `/p/${product.name}?env=${product.environments[0] ?? ''}&hl=${key}`,
+      })),
+      moreKeys: matched.length - shownKeys.length,
+    };
+  });
+  return render('pages/products', {
+    ...chrome(options.retiringOnly ? 'Retiring' : 'Products', options),
+    activeTab: 'products',
+    retiringOnly: Boolean(options.retiringOnly),
+    heading: options.retiringOnly ? undefined : 'Products',
+    trail: options.retiringOnly ? 'Retiring' : undefined,
+    retiringCount:
       options.retiring ?? options.products.filter((product) => product.retiring).length,
-    )}${syncNow}`,
-    search: html`<form class="search" method="get" action="/"><input type="search" name="q" value="${query}" placeholder="Search products" aria-label="Search products">${writeAction({ resting: html`Search`, running: 'Searching' })}${query ? html`<a class="linkbtn no" href="/">Clear</a>` : html``}</form>`,
-  })}
-    <div id="sync-preview"></div>
-    ${emptySearch ? html`<p class="hint">No key matched.</p>` : html``}
-    <div class="rows">${products.map(({ product, matched }) => {
-    const label = `${titled(product.name)}${product.uid === undefined ? '' : ` (${product.uid})`}`;
-    const unsyncedChip = product.unsynced
-      ? html`<span class="chip wait">${product.unsynced} unsynced</span>`
-      : html``;
-    const name = product.missingSchema
-      ? html`<span class="pname">${label}</span><span class="chip wait">schema is missing</span>${unsyncedChip}`
-      : html`<a class="pname" href="/p/${product.name}">${label}</a>${unsyncedChip}`;
-    const shownKeys = needle ? matched : matched.slice(0, 12);
-    return html`<div class="row"><div class="product-info">${name}<span class="hint">${product.environments.map(titled).join(', ')}</span></div><span class="row-keys">${shownKeys.map((key) => {
-      const dest = `/p/${product.name}?env=${product.environments[0] ?? ''}&hl=${key}`;
-      return html`<a class="chip-item" href="${dest}#found" hx-get="${dest}" hx-target="#page" hx-swap="innerHTML show:none" hx-push-url="true">${key}</a>`;
-    })}</span>${product.retiring ? html`<span class="row-end"><span class="chip">retiring</span><form method="post" action="/p/${product.name}/retire"><input type="hidden" name="retiring" value="false">${writeAction({ resting: html`Cancel retirement`, running: 'Cancelling' })}</form><form method="post" action="/p/${product.name}/archive">${writeAction({ className: 'linkbtn no', resting: html`Archive`, running: 'Archiving' })}</form></span>` : html``}</div>`;
-  })}</div>`;
-  return livePage(options.retiringOnly ? 'Retiring' : 'Products', body, options);
-}
-
-function field(row: LiveKeyRow): SafeHtml {
-  const name = `key.${row.key}`;
-  const value = row.definition.secret ? '' : row.value;
-  const formatted = Array.isArray(value) ? value.join(', ') : (value ?? '');
-  const original = String(formatted);
-  let control: SafeHtml;
-  if (row.definition.secret)
-    control = html`<input type="password" name="${name}" id="${name}" value="" autocomplete="off" data-key="${row.key}" data-original="${original}" data-secret placeholder="Leave blank to keep the current value">`;
-  else if (row.definition.type === 'bool')
-    control = html`${value !== undefined ? html`<input type="hidden" name="${name}" value="false">` : html``
-      }<label class="switch"><input type="checkbox" name="${name}" id="${name}" value="true" data-key="${row.key}" data-original="${original}" ${value === true ? raw('checked') : html``}><span class="track"><span class="knob"></span></span><span class="state"></span></label>`;
-  else if (row.definition.type === 'enum')
-    control = html`<select name="${name}" id="${name}" data-key="${row.key}" data-original="${original}"><option value=""></option>${(row.definition.values ?? []).map((option) => html`<option value="${option}" ${option === value ? raw('selected') : html``}>${option}</option>`)}</select>`;
-  else
-    control = html`<input type="${row.definition.type === 'int' ? 'number' : row.definition.type === 'url' ? 'url' : 'text'}" name="${name}" id="${name}" value="${formatted}" data-key="${row.key}" data-original="${original}" ${row.definition.min !== undefined ? html`min="${row.definition.min}"` : html``} ${row.definition.max !== undefined ? html`max="${row.definition.max}"` : html``}>`;
-  const elsewhere = Object.entries(row.elsewhere ?? {});
-  const chips =
-    row.definition.type === 'string[]' && Array.isArray(row.value)
-      ? html`<div class="chips">${row.value.map((member) => html`<span class="chip-item">${String(member)}</span>`)}</div>`
-      : html``;
-  const keyName = row.change
-    ? html`<span class="peek" tabindex="0"><label for="${name}">${row.key}</label>${changePeek(row.change)}</span>`
-    : html`<label for="${name}">${row.key}</label>`;
-  return html`<div class="row keyrow ${row.found ? 'found' : ''}" ${row.found ? raw('id="found"') : html``}><span class="keypick"><input type="checkbox" name="select" value="${row.key}" data-select="${row.key}" aria-label="Select ${row.key} for Promote or Delete"></span><div class="keybody"><div class="keyline">${keyName}${elsewhere.length ? html`<span class="peek" tabindex="0">In other environments<span class="detail">${elsewhere.map(([environment, held]) => html`<div><span class="envname">${environment}</span> <span class="is">${held === undefined ? '—' : String(held)}</span></div>`)}</span></span>` : html``}</div><span class="hint">${row.definition.description ?? row.definition.type}${row.definition.secret ? ' · secret' : ''}</span>${control}${chips}${row.error ? html`<p class="err">${row.error}</p>` : html``}</div></div>`;
+    showSyncNow: Boolean(options.showSyncNow),
+    emptySearch: needle.length > 0 && products.length === 0,
+    facts: `${products.length} products${options.unsynced ? ` · ${options.unsynced} unsynced` : ''}`,
+    search: { action: '/', query, placeholder: 'Search products', clearHref: '/' },
+    rows,
+  });
 }
 
 export function renderLiveProduct(
@@ -202,45 +258,74 @@ export function renderLiveProduct(
     missing: boolean;
     query?: string;
     unsynced?: readonly UnsyncedChange[];
+    entries?: readonly JournalEntry[];
+    changesByPath?: Readonly<Record<string, readonly UnsyncedChange[]>>;
+    retireAsk?: 'confirm' | 'force';
+    keyDrafts?: ReadonlyArray<Record<string, string>>;
+    keyProblems?: ReadonlyArray<{ key: string; message: string }>;
   },
-): SafeHtml {
+): string {
   const action = `/p/${options.service}/${options.environment}`;
   const back = `/p/${options.service}?env=${encodeURIComponent(options.environment)}`;
   const query = options.query ?? '';
-  const body = html`${consoleTabs('products')}${pageHeader({
-    title: trail(titled(options.service)),
-    notice: options.notice,
-    dismissTo: back,
-    facts: html`${options.environment} · version ${options.version}${options.retiring ? ' · retiring' : ''}`,
-    search: html`<form class="search" method="get" action="/p/${options.service}"><input type="hidden" name="env" value="${options.environment}"><input type="search" name="q" value="${query}" placeholder="Search keys" aria-label="Search keys">${writeAction({ resting: html`Search`, running: 'Searching' })}${query ? html`<a class="linkbtn no" href="${back}">Clear</a>` : html``}</form>`,
-    actions: html`<form method="post" action="/p/${options.service}/retire"><input type="hidden" name="retiring" value="${options.retiring ? 'false' : 'true'}">${writeAction(
-      {
-        className: options.retiring ? 'linkbtn' : 'linkbtn no',
-        resting: html`${options.retiring ? 'Cancel retirement' : 'Retire'}`,
-        running: options.retiring ? 'Cancelling' : 'Retiring',
-      },
-    )}</form>`,
-  })}
-    <nav class="tabs" aria-label="Product environments">${options.environments.map((environment) => html`<a class="tab ${environment === options.environment ? 'on' : ''}" href="/p/${options.service}?env=${environment}" hx-get="/p/${options.service}?env=${environment}" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">${titled(environment)}</a>`)}</nav>
-    ${options.missing
-      ? html`<p class="hint">No file for ${options.environment} yet.</p>
-    <form method="post" action="${action}" class="actionslot"><div class="actionline"><input type="hidden" name="intent" value="create">${writeAction({ resting: html`Create from schema defaults`, running: 'Creating' })}</div></form>
-    <div class="rows"><div class="row"><span class="row-keys">${options.rows.map((row) => html`<span class="chip-item">${row.key}</span>`)}</span></div></div>`
-      : html`
-    <form id="config-form" method="post" action="${action}" hx-post="${action}" hx-target="#page" hx-swap="innerHTML" data-live-values data-keys data-save-post="${action}" data-delete-post="/p/${options.service}/delete-keys"${options.next
-          ? html` data-promote-post="/promote" data-promote-label="Promote to ${options.next}"`
-          : html``
-        }>
-      <input type="hidden" name="etag" value="${options.etag ?? ''}">
-      <input type="hidden" name="environment" value="${options.environment}">
-      <input type="hidden" name="service" value="${options.service}">
-      <input type="hidden" name="from" value="${options.environment}">
-      <input type="hidden" name="to" value="${options.next ?? ''}">
-      <div class="actionslot"><div class="actionline"><span class="idle">${options.rows.length} variables in ${options.environment} · serving revision ${options.version}${idleDiffs(options.unsynced ?? [])}</span></div></div>
-      <div class="rows">${options.rows.map(field)}</div>
-    </form>`
-    }`;
-  return livePage(options.service, body, options);
+  const changelog =
+    changelogPeek(options.service, options.entries ?? [], options.changesByPath ?? {}) ??
+    (options.unsynced?.length
+      ? {
+          when: '',
+          environments: [
+            {
+              name: titled(options.environment),
+              changelog: options.unsynced.map((change) => ({
+                key: change.key,
+                from: shownValue(change.from, change.secret),
+                to: shownValue(change.to, change.secret),
+              })),
+              keys: options.unsynced.map((change) => change.key),
+            },
+          ],
+        }
+      : undefined);
+  const canAddKeys = !options.missing && options.environment === options.environments[0];
+  const keyRows = keyDraftModels(options.keyDrafts, options.keyProblems);
+  return render('pages/product', {
+    ...chrome(options.service, { ...options, dismissTo: options.dismissTo ?? back }),
+    activeTab: 'products',
+    service: options.service,
+    serviceTitle: titled(options.service),
+    trail: titled(options.service),
+    environment: options.environment,
+    action,
+    next: options.next,
+    retiring: options.retiring,
+    missing: options.missing,
+    etag: options.etag,
+    version: options.version,
+    facts: `${options.environment} · version ${options.version}${options.retiring ? ' · retiring' : ''}`,
+    search: {
+      action: `/p/${options.service}`,
+      query,
+      placeholder: 'Search keys',
+      clearHref: back,
+      hidden: [{ name: 'env', value: options.environment }],
+    },
+    envTabsLabel: 'Product environments',
+    envTabs: options.environments.map((environment) => ({
+      href: `/p/${options.service}?env=${environment}`,
+      label: titled(environment),
+      on: environment === options.environment,
+    })),
+    rows: options.rows.map(keyFieldModel),
+    changelog,
+    unsyncedCount: changelogCount(changelog),
+    retireAsk: options.retireAsk,
+    canAddKeys,
+    keyRows,
+    keyFormProblems: (options.keyProblems ?? []).filter((problem) => problem.key === ''),
+    named: keyRows.some((row) => row.name.trim().length > 0),
+    addKeysOpen:
+      options.keyDrafts !== undefined || Boolean(options.keyProblems && options.keyProblems.length),
+  });
 }
 
 export function renderConfirmation(
@@ -250,43 +335,101 @@ export function renderConfirmation(
     action: string;
     fields: Readonly<Record<string, string | readonly string[]>>;
     back: string;
+    confirmLabel?: string;
+    confirmClass?: string;
+    cancelPost?: {
+      action: string;
+      fields: Readonly<Record<string, string | readonly string[]>>;
+      label: string;
+    };
   },
-): SafeHtml {
-  return livePage(
-    options.title,
-    html`${consoleTabs('products')}${pageHeader({ title: html`${options.title}`, notice: options.notice })}
-    <div class="card"><p>${options.message}</p><form method="post" action="${options.action}">${Object.entries(options.fields).flatMap(([name, values]) => (typeof values === 'string' ? [values] : values).map((value) => html`<input type="hidden" name="${name}" value="${value}">`))}<div class="actionline end">${writeAction({ resting: html`Yes, continue`, running: 'Continuing', attributes: html`name="confirm" value="yes"` })}<a class="linkbtn no" href="${options.back}">Cancel</a></div></form></div>`,
-    options,
-  );
+): string {
+  const hidden = (fields: Readonly<Record<string, string | readonly string[]>>) =>
+    Object.entries(fields).flatMap(([name, values]) =>
+      (typeof values === 'string' ? [values] : values).map((value) => ({ name, value })),
+    );
+  return render('pages/confirmation', {
+    ...chrome(options.title, options),
+    activeTab: 'products',
+    heading: options.title,
+    message: options.message,
+    action: options.action,
+    back: options.back,
+    confirmLabel: options.confirmLabel ?? 'Yes, continue',
+    confirmClass: options.confirmClass ?? 'linkbtn',
+    hiddenFields: hidden(options.fields),
+    cancelPost: options.cancelPost
+      ? {
+          action: options.cancelPost.action,
+          label: options.cancelPost.label,
+          hiddenFields: hidden(options.cancelPost.fields),
+        }
+      : undefined,
+  });
 }
 
 export function renderSyncPreview(
   options: LivePageOptions & {
-    entries: readonly { path: string; keys: readonly string[]; actor: string }[];
+    entries: readonly JournalEntry[];
     unpushed: readonly { subject: string }[];
+    changesByPath?: Readonly<Record<string, readonly UnsyncedChange[]>>;
+    retiring?: readonly string[];
   },
-): SafeHtml {
-  const actions = [
-    ...options.entries.map(
-      (entry) => html`<li>${entry.path}: ${entry.keys.join(', ') || 'keys'} · ${entry.actor}</li>`,
-    ),
-    ...options.unpushed.map((commit) => html`<li>${commit.subject}</li>`),
-  ];
-  const count = options.entries.length + options.unpushed.length;
-  const card = html`<div class="card" id="sync-card">
-    ${pageHeader({
-    title: html`Sync changes now`,
-    facts: html`${count} ${count === 1 ? 'action' : 'actions'} to sync`,
+): string {
+  const rows = syncRowsFromJournal(options.entries, new Set(options.retiring ?? []));
+  const decorate = (gist: (typeof rows.gists)[number]) => {
+    const config = gist.path.match(/^config\/([^/]+)\/([^/]+)\.yaml$/);
+    return {
+      path: gist.path,
+      product: config?.[1] ? titled(config[1]) : gist.label,
+      environment: config?.[2] ? titled(config[2]) : '',
+      lastAt: gist.lastAt,
+      when: gist.lastAt ? formatGistWhen(gist.lastAt) : '',
+      keys: gist.keys,
+      changelog: (options.changesByPath?.[gist.path] ?? []).map((change) => ({
+        key: change.key,
+        from: shownValue(change.from, change.secret),
+        to: shownValue(change.to, change.secret),
+        kind: change.kind,
+      })),
+    };
+  };
+  const grouped = new Map<string, ReturnType<typeof decorate>[]>();
+  for (const gist of rows.gists.map(decorate)) {
+    const bucket = gist.environment ? gist.product : gist.path;
+    const held = grouped.get(bucket) ?? [];
+    held.push(gist);
+    grouped.set(bucket, held);
+  }
+  const gists = [...grouped.values()].map((environments) => {
+    let lastAt = '';
+    for (const env of environments) if (env.lastAt > lastAt) lastAt = env.lastAt;
+    return {
+      product: environments[0]?.product ?? '',
+      when: lastAt ? formatGistWhen(lastAt) : '',
+      environments,
+    };
+  });
+  const added = rows.added.map((name) => {
+    const environments = (rows.configsOf[name] ?? []).map(decorate);
+    let lastAt = '';
+    for (const env of environments) if (env.lastAt > lastAt) lastAt = env.lastAt;
+    return {
+      name: titled(name),
+      when: lastAt ? formatGistWhen(lastAt) : '',
+      environments,
+    };
+  });
+  const archived = rows.archived.map((name) => titled(name));
+  const envCount = gists.reduce((sum, gist) => sum + gist.environments.length, 0);
+  const count = added.length + archived.length + envCount + options.unpushed.length;
+  return render('pages/sync-preview', {
+    ...chrome('Sync changes now', options),
     compact: true,
-  })}
-    <ul class="sync-actions">${actions}</ul>
-    <form method="post" action="/sync" hx-post="/sync" hx-target="#page" hx-swap="innerHTML">
-      <div class="actionline end">
-        ${writeAction({ resting: html`Confirm`, running: 'Syncing', attributes: html`name="confirm" value="yes"` })}
-        <a class="linkbtn no" href="/" hx-get="/" hx-target="#sync-preview" hx-select="#sync-preview">Cancel</a>
-      </div>
-    </form>
-  </div>`;
-  if (options.fragment) return card;
-  return livePage('Sync changes now', html`${consoleTabs('products')}${card}`, options);
+    activeTab: 'products',
+    facts: `${count} ${count === 1 ? 'action' : 'actions'} to sync`,
+    registry: { added, archived },
+    gists,
+    unpushed: options.unpushed,
+  });
 }

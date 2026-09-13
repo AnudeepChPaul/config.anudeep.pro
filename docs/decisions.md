@@ -135,8 +135,19 @@ secret that encryption left in plaintext is still refused.
 ## Feature flags are global booleans
 
 `flags.yaml` contains globally unique flag names with boolean values per declared environment.
-There is no targeting, rollout, context, or draft path. An absent environment value resolves to
-false, which is the safe failure direction.
+Flag names are TitleCase with optional digits (`NewCheckout`, `Checkout2`): they must start with
+an uppercase letter and then contain only letters or digits. Underscores and leading digits are
+refused. There is no targeting, rollout, context, or draft path. An absent environment value
+resolves to false, which is the safe failure direction.
+
+## Flag names are TitleCase — 2026-09-12
+
+**Chosen:** `/^[A-Z][A-Za-z0-9]*$/` for flag names in `FlagValidator` and the Features add form.
+**Rejected:** keep `UPPER_SNAKE_CASE`; allow camelCase or kebab-case.
+**Why:** operators asked for TitleCase identifiers with number support (`Checkout2`).
+**Consequence:** existing `NEW_CHECKOUT`-style names fail validation until renamed. Product schema
+keys stay upper snake case.
+
 # Direct-write safety checkpoint — 2026-09-10
 
 Direct writers capture their base before expensive encryption and use explicit expected ETags, including null for absent files. Semantic no-op saves preserve ciphertext to avoid spurious versions from randomized encryption.
@@ -155,4 +166,25 @@ Pending `drafts.json` is discarded at boot (`discardLegacyWork`).
 **Rejected:** stdout-only (no Postgres); shipping through `audit.anudeep.pro` ingest.
 **Why:** promote failures already computed `ValidationError[]` but the console showed only "configuration is invalid". Operators debug IAM by request id in Postgres; this service uses `request_sid` (`sid_` prefix) and copies the same value into `request_id`.
 **Consequence:** Compose owns `log-db` (`postgresql://config:config@log-db:5432/log`, host port 5435). `CONFIG_LOG_DATABASE_URL` may still be unset for a host process. Inbound `X-Request-Sid` is ignored; secret values are redacted or never passed to log fields.
+
+## Compiled Eta console templates — 2026-09-12
+
+**Chosen:** Option 4 — compile `.eta` files to JavaScript at build time (`pnpm eta:compile`), one runtime path of compiled functions, `render*` kept for routes and tests.
+**Rejected:** file-based `eta.render` at request time; `@fastify/view` on the web app or Read API; Eta strings inside TypeScript; a second disk renderer for `tsx watch`.
+**Why:** missing templates and syntax errors must fail at compile, not on the first operator request. Production must not read `.eta` from disk.
+**Consequence:** `src/views/generated/` is gitignored and produced before test, typecheck, and build. Unused `@fastify/view` was removed. Tagged templates in `src/views` are gone; `escapeHtml` remains as Eta's `escapeFunction`.
+
+## Unauthenticated console traffic starts IAM when it can — 2026-09-12
+
+**Chosen:** Option 1 — automatic OIDC redirect. Guard and `GET /login` send the browser to `/login/iam?next=…` while IAM is reachable and OIDC is configured. Callback returns to a `safeNextPath` stored on the flow cookie. Logout still clears only `config_session`.
+**Rejected:** click-through login page (Option 2); reverse-proxy identity headers (Option 3).
+**Why:** the operator asked to be sent to IAM and back without an extra click, using the existing authorization-code + PKCE client.
+**Consequence:** Compose `app` must reach IAM health (`host.docker.internal`, not a planted dead port) and must pass `CONFIG_IAM_*`. A missing OIDC trio still shows “not configured”, never the console and never break-glass. `/login?error=` does not auto-redirect.
+
+## Local `https://iam.anudeep.pro` via host Caddy — 2026-09-12
+
+**Chosen:** Option 1 — Caddy on the Mac, mkcert, `/etc/hosts`, Compose `extra_hosts` + `NODE_EXTRA_CA_CERTS`. Health stays on `:8000`.
+**Rejected:** rewriting discovery URLs in `OidcClient`; changing local `TOKEN_ISSUER` to `host.docker.internal`.
+**Why:** IAM already stamps `iss=https://iam.anudeep.pro`; the missing piece is that origin on loopback 443, not a second issuer string.
+**Consequence:** `make iam-caddy`. Caddy binds `127.0.0.1` only. One mkcert SAN certificate covers `iam.anudeep.pro` and `config.anudeep.pro`. Local console URL is `https://config.anudeep.pro/`. Production Caddy is unchanged.
 

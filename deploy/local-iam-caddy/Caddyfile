@@ -1,0 +1,17 @@
+{
+	auto_https disable_redirects
+}
+
+# One mkcert SAN certificate (local-anudeep.pem) covers both names. IAM_CADDY_DIR is this
+# directory, absolute: Caddy resolves tls files from cwd, not from the Caddyfile.
+iam.anudeep.pro {
+	bind 127.0.0.1
+	tls {$IAM_CADDY_DIR}/local-anudeep.pem {$IAM_CADDY_DIR}/local-anudeep-key.pem
+	reverse_proxy 127.0.0.1:8000
+}
+
+config.anudeep.pro {
+	bind 127.0.0.1
+	tls {$IAM_CADDY_DIR}/local-anudeep.pem {$IAM_CADDY_DIR}/local-anudeep-key.pem
+	reverse_proxy 127.0.0.1:8200
+}

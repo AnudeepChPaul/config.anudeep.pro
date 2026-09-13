@@ -144,6 +144,27 @@ describe('sync routes', () => {
     await app.close();
   });
 
+  it('returns to the htmx page when auto-sync is turned off', async () => {
+    const write = vi.fn(async () => {});
+    const app = await appWith({
+      syncScheduler: {
+        syncNow: async () => ({ kind: 'clean' as const, files: [] }),
+        isAutoSync: () => true,
+        setAutoSync: () => {},
+      },
+      autoSyncStore: { read: async () => true, write },
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/sync/auto',
+      payload: { autoSync: 'false' },
+      headers: { 'hx-current-url': 'http://127.0.0.1:8200/features?env=dev' },
+    });
+    expect(write).toHaveBeenCalledWith(false);
+    expect(response.headers.location).toBe('/features?env=dev');
+    await app.close();
+  });
+
   it('surfaces a thrown sync as backup-failed', async () => {
     const status = new SyncStatus();
     const app = await appWith({

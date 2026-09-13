@@ -79,10 +79,7 @@ const everyState = (): Array<[string, string]> => [
       }),
     ),
   ],
-  [
-    'products, retiring only',
-    String(renderProducts({ products: [], retiringOnly: true })),
-  ],
+  ['products, retiring only', String(renderProducts({ products: [], retiringOnly: true }))],
   ['product, clean', product()],
   ['product, retiring', product({ retiring: true })],
   [
@@ -90,6 +87,7 @@ const everyState = (): Array<[string, string]> => [
     product({ environment: 'prod', next: null }),
   ],
   ['product, environment with no file', product({ service: 'api', missing: true, rows: [] })],
+  ['product, asking to retire', product({ retireAsk: 'confirm' })],
   [
     'products, reporting a success',
     String(
@@ -130,12 +128,7 @@ const everyState = (): Array<[string, string]> => [
     String(renderFeatures({ flags: {}, environment: 'dev', environments: ['dev'] })),
   ],
   ['a new product, nothing typed yet', String(renderNewProduct({ environments: ['dev', 'prod'] }))],
-  [
-    'settings',
-    String(
-      renderSettings({ env: { CONFIG_GIT_REMOTE: 'git@github.com:a/b.git' }, fragment: true }),
-    ),
-  ],
+  ['settings', String(renderSettings({ env: { CONFIG_GIT_REMOTE: 'git@github.com:a/b.git' } }))],
   [
     'login, identity provider up',
     String(renderLogin({ iamReachable: true, iamConfigured: true, iamLoginUrl: '/login/iam' })),
@@ -184,8 +177,9 @@ describe('the rules hold in every state, not just the ones anyone looked at', ()
     for (const [name, html] of everyState()) {
       const body = bodyOf(html);
       const negatives =
-        body.match(/<(?:a|button)[^>]*>[\s\S]{0,120}?(?:Not now|Clear|Drop|Dismiss|Archive|Retire)\b/g) ??
-        [];
+        body.match(
+          /<(?:a|button)[^>]*>[\s\S]{0,120}?(?:Not now|Clear|Drop|Dismiss|Archive|Retire)\b/g,
+        ) ?? [];
       for (const control of negatives) {
         expect(control, `${name}: ${control}`).toMatch(/class="linkbtn no"/);
       }

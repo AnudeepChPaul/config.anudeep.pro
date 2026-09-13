@@ -31,7 +31,7 @@ import { registerWebhookRoutes, type WebhookOptions } from './routes/webhook.js'
 /** How long to wait for a connect attempt before calling a socket abandoned. */
 const LIVENESS_TIMEOUT_MS = 1_000;
 
-export class SocketInUseError extends Error { }
+export class SocketInUseError extends Error {}
 
 /**
  * Whether anything is actually accepting connections on `path`.
@@ -161,7 +161,7 @@ export interface WebAppOptions extends UiRouteOptions {
   readonly logSink?: LogDbSink;
 }
 
-export class UnprotectedUiError extends Error { }
+export class UnprotectedUiError extends Error {}
 
 /**
  * The CRUD UI, over HTTP.

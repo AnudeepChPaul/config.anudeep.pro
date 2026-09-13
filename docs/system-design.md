@@ -16,6 +16,10 @@ medium, not the hot read path.
 
 Outside the database, on the host: `snapshot.json` (last known good), `break-glass.yaml` (emergency
 credential, deliberately not mirrored). At cutover, any leftover `drafts.json` is discarded.
+The console authenticates operators with IAM OIDC when IAM is up and configured; otherwise the
+emergency credential. It does not share IAM’s session cookie. Locally, discovery and token
+exchange use `https://iam.anudeep.pro` through host Caddy (`make iam-caddy`); health stays on
+IAM’s HTTP port.
 
 ### Document metadata
 
@@ -54,6 +58,9 @@ Not applicable: OpenTelemetry pipeline, Grafana dashboards in this change.
 
 `new` and `retiring` are reserved product names.
 
+Console HTML is compiled Eta: routes call `render*` which return escaped strings. Fragment
+requests (`HX-Request`) set `fragment: true` so the document layout is skipped.
+
 ### Webhook — HTTP, `POST /webhooks/github`
 
 HMAC-verified. Absent secret closes the route rather than opening it.
@@ -87,6 +94,38 @@ classDiagram
     ProductWriteOperations --> DBEngine
     ProductWriteOperations --> SchemaSet
 ```
+
+Console pages are compiled Eta functions. Request handlers never read `.eta` files.
+
+```mermaid
+classDiagram
+    class EtaCompiler {
+        +compileAll() templates
+        +watch() void
+    }
+    class TemplateRegistry {
+        +compiledTemplates Record
+    }
+    class ViewRuntime {
+        +renderWithRegistry(templates, name, model) string
+    }
+    class ViewModelBuilders {
+        +renderLogin(options) string
+        +renderSettings(options) string
+        +renderProducts(options) string
+        +renderProduct(options) string
+        +renderFeatures(options) string
+        +renderFeatureAddRow(environment) string
+        +renderNewProduct(options) string
+        +renderConfirmation(options) string
+        +renderSyncPreview(options) string
+    }
+    EtaCompiler --> TemplateRegistry : writes
+    ViewRuntime --> TemplateRegistry : reads
+    ViewModelBuilders --> ViewRuntime : render
+```
+
+Not applicable: a second disk `eta.render` path in development, `@fastify/view` on the web app or Read API, persistence or auth changes in this renderer.
 
 ### Atomic multi-file ordering
 

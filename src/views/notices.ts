@@ -82,6 +82,13 @@ const WORDING: Record<string, (count: number | null) => Notice> = {
     tone: 'problem',
     text: 'No git remote is configured, so nothing was pushed.',
   }),
+  'keys-added': (count) => ({
+    tone: 'done',
+    text:
+      count === null
+        ? 'Variables added. Live now.'
+        : `Added ${count} variable${count === 1 ? '' : 's'}. Live now.`,
+  }),
   'nothing-selected': () => ({
     tone: 'problem',
     text: 'Select keys for Promote or Delete.',

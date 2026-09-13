@@ -68,7 +68,15 @@
   main {
     max-width: 54rem;
     margin: 0 auto;
-    padding: 1.5rem 1rem 0.5rem 4rem;
+    padding: 1.5rem 4rem 0;
+  }
+
+  /* Outside #page: console tabs only. A body swap leaves them in place unless the tab changed. */
+  #pagechrome {
+    max-width: 54rem;
+    margin: 0 auto;
+    padding: 1.5rem 4rem 0;
+    box-sizing: border-box;
   }
 
   a {
@@ -97,7 +105,7 @@
      will use. A floor one pixel under the line box is not a floor: the row grew on the page
      that had more in it, so the title moved as you navigated. */
   .pagehead {
-    margin-bottom: 1.25rem;
+    margin-bottom: 1rem;
   }
 
   .pagehead .searchrow {
@@ -240,6 +248,7 @@
     gap: 6px;
     flex: 1 1 12rem;
     min-width: 0;
+    align-items: center;
   }
 
   .row-end {
@@ -249,7 +258,7 @@
     justify-content: flex-end;
     gap: 8px 14px;
     margin-left: auto;
-    flex: 0 0 auto;
+    flex: 1 0 auto;
   }
 
   .row-end form {
@@ -339,7 +348,7 @@
     margin: 0;
   }
 
-  .keydraft {
+  .key-card {
     margin-bottom: 12px;
   }
 
@@ -355,12 +364,107 @@
     justify-content: flex-end;
   }
 
+  .actionline>.add-variable {
+    margin-left: auto;
+  }
+
+  /* Sync preview: same type size as the rest of the console. Groups sit under the compact
+     pagehead; Confirm lives on the title row. */
+  #sync-card .pagehead {
+    margin-bottom: 1rem;
+  }
+
+  .sync-group+.sync-group {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--hair);
+  }
+
+  .sync-group>.facts {
+    font-size: var(--type-sm);
+    color: var(--muted);
+    height: 1.25rem;
+    line-height: 1.25rem;
+  }
+
   .sync-actions {
-    margin-bottom: 1.5rem;
+    margin: 0.35rem 0 0;
+  }
+
+  .sync-actions>li {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+    padding: 0.6rem 1rem;
+    border-radius: var(--radius-lg);
+    background-color: var(--ground);
+  }
+
+  .sync-actions>li+li {
+    margin-top: 0.75rem;
+  }
+
+  .sync-heading {
+    font-size: var(--type-base);
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .sync-sep {
+    font-weight: 400;
+    color: var(--muted);
+    margin: 0 0.25rem;
+  }
+
+  .sync-env {
+    font-size: var(--type-sm);
+    font-weight: 400;
+    color: var(--muted);
+  }
+
+  .sync-item {
+    font-size: var(--type-sm);
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .sync-added {
+    color: var(--accent);
+  }
+
+  .sync-retired,
+  .sync-archived {
+    color: var(--danger);
+  }
+
+  .detail .sync-tree {
+    padding-left: 0;
+  }
+
+  .sync-tree {
+    margin: 0.35rem 0 0;
+    padding: 0 0 0 1.25rem;
+    list-style: none;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .sync-tree>li+li {
+    margin-top: 0.45rem;
+  }
+
+  .sync-vars {
+    margin: 0.2rem 0 0;
+    padding: 0 0 0 1.25rem;
+    list-style: none;
+    width: 100%;
+    box-sizing: border-box;
   }
 
   .discard-ask,
-  .archive-ask {
+  .archive-ask,
+  .retire-ask {
     display: inline-flex;
     align-items: center;
     gap: 10px;
@@ -493,6 +597,10 @@
     color: var(--ink);
   }
 
+  .linkbtn.ink {
+    color: var(--ink);
+  }
+
   /* The row kept for the outcome of the last write, between the search and the title. It is
      rendered on every page whether or not it holds anything and has a fixed height, so a notice
      appears in place rather than pushing the title and everything under it down the page.
@@ -540,7 +648,7 @@
   .pagefoot {
     max-width: 54rem;
     margin: 0 auto;
-    padding: 18px 1rem 28px 4rem;
+    padding: 1.5rem 4rem;
     font-size: var(--type-xs);
     display: flex;
     justify-content: center;
@@ -562,6 +670,14 @@
 
   .pagefoot a:hover {
     color: var(--accent);
+  }
+
+  .pagefoot label {
+    margin: 0;
+  }
+
+  .pagefoot .switch .policy {
+    margin: 0;
   }
 
   /* A value read out of the environment: monospace, because a path or a remote is read
@@ -641,7 +757,7 @@
     padding: 8px 14px;
     font-size: var(--type-sm);
     border-bottom: 2px solid transparent;
-    color: var(--muted);
+    color: var(--accent);
     text-decoration: none;
     font-weight: 600;
   }
@@ -652,8 +768,8 @@
   }
 
   .tab.on {
-    border-bottom-color: var(--ink);
-    color: var(--ink);
+    border-bottom-color: var(--unpublished);
+    color: var(--unpublished);
     font-weight: 600;
   }
 
@@ -704,12 +820,24 @@
   }
 
   .wasnow .was {
-    color: var(--muted);
+    color: var(--unpublished);
     text-decoration: line-through;
   }
 
   .wasnow .arrow {
     color: var(--muted);
+    margin: 0 0.5rem;
+  }
+
+  .wasnow .is {
+    color: var(--accent);
+  }
+
+  .sync-vars .wasnow {
+    display: list-item;
+    flex-wrap: wrap;
+    margin-top: 0.2rem;
+    list-style: disc;
   }
 
   /* A product's name on the list: the one thing on that page you are looking for. */
@@ -830,7 +958,7 @@
   }
 
   .detail .was {
-    color: var(--muted);
+    color: var(--unpublished);
     text-decoration: line-through;
   }
 
@@ -838,9 +966,56 @@
     color: var(--ink);
   }
 
+  .detail .wasnow .is {
+    color: var(--accent);
+  }
+
   /* ---------------------------------------------------------------- the toolbar */
   .actions {
     font-size: var(--type-sm);
+  }
+
+  .product-live {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 14px;
+    align-items: start;
+  }
+
+  .product-live>#config-form,
+  .product-live>.add-keys {
+    display: contents;
+  }
+
+  .product-live [data-add-keys-panel]:not([hidden]) {
+    display: contents;
+  }
+
+  .product-live .actionslot {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .product-live [data-add-keys-confirm] {
+    grid-column: 2;
+    grid-row: 1;
+    margin-bottom: 0;
+    align-self: center;
+  }
+
+  .product-live .key-drafts {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .product-live [data-add-key-line] {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+
+  .product-live .rows {
+    grid-column: 1 / -1;
+    grid-row: 4;
   }
 
   .actionslot {
@@ -868,6 +1043,14 @@
     margin-left: auto;
   }
 
+  .actionslot .idle>[data-open-add-keys-line] {
+    margin-left: auto;
+  }
+
+  .actionslot .idle:has(.selection)>[data-open-add-keys-line] {
+    display: none;
+  }
+
   .actionline input,
   .actionline code {
     font-size: inherit;
@@ -889,6 +1072,18 @@
   .idle .diffkey {
     font-weight: 600;
     color: var(--ink);
+  }
+
+  .sync-vars .diffkey {
+    font-weight: 400;
+    color: var(--muted);
+    font-style: italic;
+    margin-right: 0.5rem;
+  }
+
+  .sync-vars .is {
+    color: var(--accent);
+    font-weight: 500;
   }
 
   .sep {
@@ -920,6 +1115,11 @@
 
   .keyline label {
     margin-bottom: 0;
+  }
+
+  .keydesc {
+    display: block;
+    margin: 0 0 .35rem;
   }
 
   .keyrow {
@@ -1012,8 +1212,12 @@
     transition: transform .12s ease;
   }
 
+  .switch .track {
+    background: var(--danger);
+  }
+
   .switch input:checked~.track {
-    background: var(--ink);
+    background: var(--accent);
   }
 
   .switch input:checked~.track .knob {
@@ -1059,6 +1263,26 @@
   .peek:hover .detail,
   .peek:focus-within .detail {
     display: block;
+  }
+
+  .sync-actions .peek {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    border-bottom: none;
+  }
+
+  .sync-heading.peek .sync-product {
+    border-bottom: 1px dotted var(--field-line);
+  }
+
+  .sync-actions .detail {
+    z-index: 6;
+  }
+
+  .unsynced-badge {
+    border-bottom: none;
+    align-items: center;
   }
 
   .keyline .peek label {

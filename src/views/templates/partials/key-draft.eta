@@ -1,0 +1,53 @@
+<div class="card key-card" data-key-row>
+      <div class="fieldrow">
+        <label class="field">
+          <span class="fieldlabel">Key</span>
+          <input type="text" name="key.<%= it.index %>.name" value="<%= it.name %>" placeholder="SESSION_TTL"
+                 spellcheck="false">
+        </label>
+        <label class="field">
+          <span class="fieldlabel">Type</span>
+          <select name="key.<%= it.index %>.type" data-key-type>
+            <% for (const type of it.types) { %>
+            <option value="<%= type %>"<% if (it.type === type) { %> selected<% } %>><%= type %></option>
+            <% } %>
+          </select>
+        </label>
+      </div>
+      <div class="fieldrow" data-when="string">
+        <label class="field checkfield">
+          <input type="checkbox" name="key.<%= it.index %>.secret" value="1" data-key-secret<% if (it.secret) { %> checked<% } %>>
+          <span class="fieldlabel">This will be treated as secret</span>
+        </label>
+      </div>
+      <div class="fieldrow">
+        <label class="field" data-when="string" data-not-secret>
+          <span class="fieldlabel">Values <span class="hint">comma separated</span></span>
+          <input type="text" name="key.<%= it.index %>.values" value="<%= it.values %>" placeholder="optional, all">
+        </label>
+        <label class="field" data-when="int">
+          <span class="fieldlabel">Min</span>
+          <input type="number" step="1" name="key.<%= it.index %>.min" value="<%= it.min %>">
+        </label>
+        <label class="field" data-when="int">
+          <span class="fieldlabel">Max</span>
+          <input type="number" step="1" name="key.<%= it.index %>.max" value="<%= it.max %>">
+        </label>
+        <label class="field" data-when="string int url string[]" data-not-secret>
+          <span class="fieldlabel">Default <span class="hint">blank means none</span></span>
+          <input type="text" data-key-default name="key.<%= it.index %>.default" value="<%= it.default %>">
+        </label>
+        <label class="field checkfield" data-when="bool">
+          <input type="checkbox" name="key.<%= it.index %>.defaultBool" value="true"<% if (it.defaultBool === 'true') { %> checked<% } %>>
+          <span class="fieldlabel">Default <span class="hint">unticked means none</span></span>
+        </label>
+      </div>
+      <div class="fieldrow">
+        <label class="field wide">
+          <span class="fieldlabel">Description</span>
+          <input type="text" name="key.<%= it.index %>.description" value="<%= it.description %>"
+                 placeholder="What this key does">
+        </label>
+      </div>
+      <% for (const problem of it.problems) { %><p class="err"><%= problem.message %></p><% } %>
+    </div>

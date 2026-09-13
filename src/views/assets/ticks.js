@@ -79,12 +79,46 @@
     const form = currentForm();
     const line = form?.querySelector('.actionline .idle');
     if (!form || !line) return;
+    const boxes = [...form.querySelectorAll('input[name="select"]')];
+    const picked = boxes.filter((box) => box.checked);
+    const ticked = picked.length > 0;
+    const facts = line.querySelector('[data-idle-facts]');
+    if (facts) facts.hidden = ticked;
+    for (const badge of line.querySelectorAll(':scope > .unsynced-badge')) badge.hidden = ticked;
+    let selection = line.querySelector(':scope > .selection');
+    if (ticked) {
+      if (!selection) {
+        selection = document.createElement('span');
+        selection.className = 'selection';
+        const count = document.createElement('span');
+        count.className = 'linkbtn';
+        count.dataset.selectionCount = '';
+        const none = document.createElement('button');
+        none.type = 'button';
+        none.className = 'linkbtn no';
+        none.dataset.selectNone = '';
+        none.textContent = 'Deselect';
+        const all = document.createElement('button');
+        all.type = 'button';
+        all.className = 'linkbtn ink';
+        all.dataset.selectAll = '';
+        all.textContent = 'Select all';
+        selection.append(count, none, all);
+        const firstWrite = line.querySelector(':scope > button');
+        if (firstWrite) line.insertBefore(selection, firstWrite);
+        else line.append(selection);
+      }
+      const count = selection.querySelector('[data-selection-count]');
+      if (count) count.textContent = `${picked.length} of ${boxes.length} selected`;
+    } else if (selection) {
+      selection.remove();
+    }
     const wanted = recipes(form);
-    for (const extra of [...line.querySelectorAll('button')]) {
+    for (const extra of [...line.querySelectorAll(':scope > button')]) {
       if (!wanted.some((spec) => spec.intent === extra.value)) extra.remove();
     }
     for (const spec of wanted) {
-      const existing = line.querySelector(`button[value="${spec.intent}"]`);
+      const existing = line.querySelector(`:scope > button[value="${spec.intent}"]`);
       const button = existing ?? spec.make();
       line.append(button);
       if (!existing) globalThis.htmx?.process?.(button);
@@ -107,6 +141,18 @@
   };
   document.addEventListener('change', refresh);
   document.addEventListener('input', refresh);
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!target || !target.closest) return;
+    const pick = target.closest('[data-select-all], [data-select-none]');
+    if (!pick) return;
+    event.preventDefault();
+    const form = pick.closest('form[data-live-values]');
+    if (!form) return;
+    const on = Boolean(pick.closest('[data-select-all]'));
+    for (const box of form.querySelectorAll('input[name="select"]')) box.checked = on;
+    refresh();
+  });
   document.addEventListener('htmx:beforeRequest', (event) => {
     const { elt, xhr } = event.detail;
     const form = elt?.closest?.('form[data-live-values]');

@@ -1,0 +1,12 @@
+<% if (!it.fragment) { layout("layouts/document") } %>
+    <% const actionsHtml = capture(function () { %>
+    <a class="linkbtn" href="<%= it.addUrl %>" hx-get="<%= it.addUrl %>"
+        hx-target="#feature-list" hx-swap="beforeend">Add a feature</a>
+    <% }) %>
+    <%~ include("partials/page-header", { heading: it.heading, trail: it.trail, facts: it.facts, search: it.search, compact: false, actionsHtml: actionsHtml }) %>
+    <%~ include("partials/env-tabs") %>
+    <% if (it.error) { %><div class="card error"><%= it.error %></div><% } %>
+    <ul class="rows" id="feature-list">
+      <% if (it.adding) { %><%~ include("pages/feature-add-row") %><% } %>
+      <% if (it.featureRows.length > 0) { %><% for (const row of it.featureRows) { %><%~ include("partials/feature-row", row) %><% } %><% } else { %><li class="row"><span class="hint">No features yet.</span></li><% } %>
+    </ul>

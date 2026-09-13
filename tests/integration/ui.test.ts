@@ -573,8 +573,9 @@ keys:
     it('shows what another environment holds for the same key', async () => {
       const body = await page();
 
-      expect(body).toContain('In other environments');
       expect(body).toContain('class="peek"');
+      expect(body).toMatch(/MFA_ENFORCEMENT[\s\S]*enum, &quot;optional&quot; \|\| &quot;admins&quot; \|\| &quot;all&quot;/);
+      expect(body).not.toContain('In other environments');
     });
   });
 });
@@ -1462,7 +1463,7 @@ keys:
     it('states where you are on the idle line', async () => {
       const body = await page();
 
-      expect(body).toMatch(/<span class="idle">[^<]*variables in/);
+      expect(body).toMatch(/class="idle"[\s\S]*variables in/);
     });
 
     it('shows where you are, with no hidden selection placeholder', async () => {

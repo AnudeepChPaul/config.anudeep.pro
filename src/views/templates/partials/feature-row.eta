@@ -1,0 +1,12 @@
+<li class="row feature-row">
+      <span class="feature-name"><%= it.name %></span>
+      <form class="feature-switch" method="post" action="<%= it.action %>" hx-post="<%= it.action %>"
+            hx-target="#page" hx-swap="innerHTML">
+        <input type="hidden" name="environment" value="<%= it.environment %>">
+        <label class="switch" title="<%= it.enabled ? 'Disable' : 'Enable' %> <%= it.name %>">
+          <input type="checkbox" name="value" value="true"<% if (it.enabled) { %> checked<% } %>
+                 onchange="this.form.requestSubmit()" aria-label="<%= it.name %>">
+          <span class="track"><span class="knob"></span></span><span class="state"></span>
+        </label>
+      </form>
+    </li>

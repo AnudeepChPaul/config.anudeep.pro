@@ -9,8 +9,10 @@ beforeAll(() => {
 beforeEach(() => {
   document.body.innerHTML = `<div id="page">
     <form id="config-form" data-live-values data-save-post="/p/iam/dev" data-promote-post="/promote" data-promote-label="Promote to stage" data-delete-post="/p/iam/delete-keys">
-      <div class="actionline"><span class="idle">3 variables in dev · serving revision 3</span></div>
+      <div class="actionline"><span class="idle"><span data-idle-facts>3 variables in dev · serving revision 3<span class="peek unsynced-badge" tabindex="0"><span class="chip wait">1 unsynced change</span><span class="detail"><span class="wasnow"><span class="diffkey">SESSION_TTL</span> <span class="was">30</span><span class="arrow">→</span><span class="is">60</span></span></span></span></span></span></div>
       <input name="select" value="A" type="checkbox" data-select="A">
+      <input name="select" value="B" type="checkbox" data-select="B">
+      <input name="select" value="C" type="checkbox" data-select="C">
       <input name="key.A" value="one" data-original="one">
       <input name="key.SECRET" type="password" data-original="" data-secret>
     </form>
@@ -32,7 +34,7 @@ it('does not select or lock a changed key', () => {
   expect(box.classList.contains('locked')).toBe(false);
 });
 it('starts as one idle span, with no actions in the document', () => {
-  expect(idle().querySelectorAll('span')).toHaveLength(0);
+  expect(idle().querySelector(':scope > button')).toBeNull();
   expect(save()).toBeNull();
   expect(promote()).toBeNull();
   expect(remove()).toBeNull();
@@ -62,7 +64,7 @@ it('puts Promote then Delete in that same span only while a key is ticked', () =
   const box = document.querySelector<HTMLInputElement>('[name="select"]')!;
   box.checked = true;
   box.dispatchEvent(new Event('change', { bubbles: true }));
-  expect([...idle().querySelectorAll('button')].map((button) => button.value)).toEqual([
+  expect([...idle().querySelectorAll(':scope > button')].map((button) => button.value)).toEqual([
     'promote',
     'delete',
   ]);
@@ -71,6 +73,48 @@ it('puts Promote then Delete in that same span only while a key is ticked', () =
   box.dispatchEvent(new Event('change', { bubbles: true }));
   expect(promote()).toBeNull();
   expect(remove()).toBeNull();
+});
+it('replaces the idle facts with a selection count and Select all while a key is ticked', () => {
+  const facts = idle().querySelector('[data-idle-facts]') as HTMLElement;
+  const box = document.querySelector<HTMLInputElement>('[name="select"]')!;
+  expect(facts.hidden).toBe(false);
+  expect(idle().querySelector('.selection')).toBeNull();
+  box.checked = true;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
+  expect(facts.hidden).toBe(true);
+  const selection = idle().querySelector('.selection') as HTMLElement;
+  expect(selection.querySelector('[data-selection-count]')?.textContent).toBe('1 of 3 selected');
+  expect(selection.querySelector('[data-selection-count]')?.className).toContain('linkbtn');
+  const none = selection.querySelector('[data-select-none]') as HTMLButtonElement;
+  const all = selection.querySelector('[data-select-all]') as HTMLButtonElement;
+  expect(none.textContent).toBe('Deselect');
+  expect(none.className).toBe('linkbtn no');
+  expect(none.nextElementSibling).toBe(all);
+  expect(all.textContent).toBe('Select all');
+  expect(all.className).toContain('linkbtn');
+  expect(all.className).toContain('ink');
+  all.click();
+  expect(
+    [...document.querySelectorAll<HTMLInputElement>('input[name="select"]')].every(
+      (input) => input.checked,
+    ),
+  ).toBe(true);
+  expect(selection.querySelector('[data-selection-count]')?.textContent).toBe('3 of 3 selected');
+  none.click();
+  expect(facts.hidden).toBe(false);
+  expect(idle().querySelector('.selection')).toBeNull();
+  expect(idle().textContent).toContain('3 variables in dev');
+});
+it('drops the idle unsynced badge while a key is ticked', () => {
+  const badge = idle().querySelector('[data-idle-facts] > .unsynced-badge') as HTMLElement;
+  expect(badge.hidden).toBe(false);
+  const box = document.querySelector<HTMLInputElement>('[name="select"]')!;
+  box.checked = true;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
+  expect((idle().querySelector('[data-idle-facts]') as HTMLElement).hidden).toBe(true);
+  box.checked = false;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
+  expect((idle().querySelector('[data-idle-facts]') as HTMLElement).hidden).toBe(false);
 });
 it('swaps conflict and validation pages but not server failures', () => {
   for (const status of [409, 422, 500]) {

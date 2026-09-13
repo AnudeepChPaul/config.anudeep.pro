@@ -13,10 +13,10 @@ describe('FlagWriteService', () => {
     const root = await mkdtemp(join(tmpdir(), 'config-flag-write-'));
     const service = new FlagWriteService(new DBEngine(root), new FlagValidator(environments));
 
-    const result = await service.set('NEW_CHECKOUT', 'prod', true);
+    const result = await service.set('NewCheckout', 'prod', true);
 
     expect(result.kind).toBe('written');
-    expect(await service.get('NEW_CHECKOUT', 'prod')).toBe(true);
+    expect(await service.get('NewCheckout', 'prod')).toBe(true);
   });
 
   it('rejects an unknown environment without changing the file', async () => {
@@ -24,7 +24,7 @@ describe('FlagWriteService', () => {
     const engine = new DBEngine(root);
     const service = new FlagWriteService(engine, new FlagValidator(environments));
 
-    const result = await service.set('NEW_CHECKOUT', 'qa', true);
+    const result = await service.set('NewCheckout', 'qa', true);
 
     expect(result.kind).toBe('invalid');
     expect(await engine.read('flags.yaml')).toBeNull();

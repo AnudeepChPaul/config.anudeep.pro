@@ -1,0 +1,5 @@
+<% if (it.showHeader && it.activeTab) { %>
+<header id="pagechrome"<% if (it.updateHeader) { %> hx-swap-oob="true"<% } %>>
+  <%~ include("partials/console-tabs") %>
+</header>
+<% } %>

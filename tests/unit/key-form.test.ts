@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { renderNewProduct } from '@config/src/views/pages.js';
+import { renderNewProduct, renderProduct } from '@config/src/views/pages.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 /**
@@ -28,7 +28,7 @@ const run = () => {
   new Function(source)();
 };
 
-const row = () => document.querySelector('.keydraft') as HTMLElement;
+const row = () => document.querySelector('.key-card') as HTMLElement;
 const typeSelect = () => row().querySelector('select') as HTMLSelectElement;
 const secretBox = () => row().querySelector('[name$=".secret"]') as HTMLInputElement;
 const fieldFor = (suffix: string) =>
@@ -262,7 +262,7 @@ describe('discarding the form', () => {
     discard().click();
 
     expect(confirmRow().hidden).toBe(false);
-    expect(confirmRow().textContent).toMatch(/unsaved changes/i);
+    expect(confirmRow().textContent).toMatch(/Discard with unsaved changes\?/);
   });
 
   it('keeps the form when the question is answered no', () => {
@@ -302,17 +302,14 @@ describe('the action line', () => {
 });
 
 describe('adding another variable', () => {
-  it('starts with one key row and no add control', () => {
+  it('puts + Add variable on the right of the action line, not under the draft', () => {
+    const form = document.querySelector('#new-product') as HTMLElement;
+    const line = form.querySelector('.actionline') as HTMLElement;
+    const add = line.querySelector('[data-add-key]') as HTMLButtonElement;
+    expect(add.textContent).toMatch(/\+ Add variable/);
+    expect(form.querySelector('#key-rows + [data-add-key-line]')).toBeNull();
+    expect(form.querySelector('#key-rows [data-add-key]')).toBeNull();
     expect(document.querySelectorAll('[data-key-row]')).toHaveLength(1);
-    expect((document.querySelector('[data-add-key-line]') as HTMLElement).hidden).toBe(true);
-  });
-
-  it('offers Add a variable once a key name is typed', () => {
-    const name = document.querySelector('[name="key.0.name"]') as HTMLInputElement;
-    name.value = 'SESSION_TTL';
-    name.dispatchEvent(new Event('input', { bubbles: true }));
-    expect((document.querySelector('[data-add-key-line]') as HTMLElement).hidden).toBe(false);
-    expect(document.querySelector('[data-add-key]')?.textContent).toMatch(/Add a variable/);
   });
 
   it('appends a blank row with the next index, without posting', () => {
@@ -333,17 +330,58 @@ describe('adding another variable', () => {
     expect((document.querySelector('[name="key.1.name"]') as HTMLInputElement).value).toBe('');
   });
 
-  it('renders every row the server sent back, with Add a variable', () => {
+  it('renders every row the server sent back, with + Add variable still on the action line', () => {
     document.body.innerHTML = String(
       renderNewProduct({
         environments: ['dev'],
         fragment: true,
-        typed: { keys: [{ name: 'SESSION_TTL', type: 'int' }, { name: 'REGION', type: 'string' }, {}] },
+        typed: {
+          keys: [{ name: 'SESSION_TTL', type: 'int' }, { name: 'REGION', type: 'string' }, {}],
+        },
       }),
     );
     expect(document.querySelectorAll('[data-key-row]')).toHaveLength(3);
-    expect((document.querySelector('[name="key.1.name"]') as HTMLInputElement).value).toBe('REGION');
-    expect((document.querySelector('[data-add-key-line]') as HTMLElement).hidden).toBe(false);
+    expect((document.querySelector('[name="key.1.name"]') as HTMLInputElement).value).toBe(
+      'REGION',
+    );
+    const line = document.querySelector('#new-product > .actionline') as HTMLElement;
+    expect(line.querySelector('[data-add-key]')?.textContent).toMatch(/\+ Add variable/);
+    expect(document.querySelector('[data-add-key-line]')).toBeNull();
+  });
+
+  it('appends a blank row on the product page the same way', () => {
+    document.body.innerHTML = String(
+      renderProduct({
+        service: 'web',
+        environment: 'dev',
+        environments: ['dev', 'prod'],
+        etag: 'e',
+        rows: [],
+        version: 1,
+        next: 'prod',
+        retiring: false,
+        missing: false,
+        fragment: true,
+      }),
+    );
+    const form = document.querySelector('#add-keys') as HTMLFormElement;
+    const open = document.querySelector('[data-open-add-keys]') as HTMLElement;
+    open.click();
+    expect((form.querySelector('[data-add-keys-panel]') as HTMLElement).hidden).toBe(false);
+    expect((form.querySelector('[data-add-keys-confirm]') as HTMLElement).hidden).toBe(false);
+    expect((form.querySelector('[data-add-keys-submit]') as HTMLElement).hidden).toBe(true);
+    expect(form.querySelector('[data-cancel-add-keys]')?.textContent).toMatch(/Cancel/);
+    const name = document.querySelector('#add-keys [name="key.0.name"]') as HTMLInputElement;
+    name.value = 'SESSION_TTL';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    expect((form.querySelector('[data-add-keys-submit]') as HTMLElement).hidden).toBe(false);
+    expect(form.querySelector('[data-add-keys-confirm] .linkbtn.go')?.textContent).toMatch(/Confirm/);
+    const add = form.querySelector('[data-add-key] button') as HTMLButtonElement;
+    const event = new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: add });
+    form.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(form.querySelectorAll('[data-key-row]')).toHaveLength(2);
+    expect((form.querySelector('[name="key.1.name"]') as HTMLInputElement).value).toBe('');
   });
 });
 

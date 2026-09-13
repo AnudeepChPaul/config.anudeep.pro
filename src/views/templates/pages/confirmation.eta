@@ -1,0 +1,18 @@
+<% if (!it.fragment) { layout("layouts/document") } %>
+    <%~ include("partials/page-header", { heading: it.heading, trail: it.trail, facts: it.facts, search: it.search, compact: false, actionsHtml: "" }) %>
+    <div class="card"><p><%= it.message %></p>
+      <div class="actionline end">
+        <form method="post" action="<%= it.action %>" hx-post="<%= it.action %>" hx-target="#page" hx-swap="innerHTML">
+          <% for (const field of it.hiddenFields) { %><input type="hidden" name="<%= field.name %>" value="<%= field.value %>"><% } %>
+          <%~ include("partials/write-action", { resting: it.confirmLabel, running: "Continuing", attrName: "confirm", attrValue: "yes", className: it.confirmClass, post: undefined, vals: undefined }) %>
+        </form>
+        <% if (it.cancelPost) { %>
+        <form method="post" action="<%= it.cancelPost.action %>" hx-post="<%= it.cancelPost.action %>" hx-target="#page" hx-swap="innerHTML">
+          <% for (const field of it.cancelPost.hiddenFields) { %><input type="hidden" name="<%= field.name %>" value="<%= field.value %>"><% } %>
+          <%~ include("partials/write-action", { resting: it.cancelPost.label, running: "Cancelling", attrName: undefined, attrValue: undefined, className: "linkbtn no", post: undefined, vals: undefined }) %>
+        </form>
+        <% } else { %>
+        <a class="linkbtn no" href="<%= it.back %>">Cancel</a>
+        <% } %>
+      </div>
+    </div>

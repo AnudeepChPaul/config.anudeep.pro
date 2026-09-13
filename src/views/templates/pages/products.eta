@@ -1,0 +1,8 @@
+<% if (!it.fragment) { layout("layouts/document") } %>
+    <% const actionsHtml = capture(function () { %>
+    <a href="/p/new" class="linkbtn" hx-get="/p/new" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Add a product</a><% if (it.retiringCount > 0) { %><a class="linkbtn no" href="/p/retiring" hx-get="/p/retiring" hx-target="#page" hx-swap="innerHTML" hx-push-url="true"><%= it.retiringCount %> <%= it.retiringCount === 1 ? "product" : "products" %> retiring</a><% } %><% if (it.showSyncNow) { %><a class="linkbtn" href="/sync" hx-get="/sync" hx-target="#sync-preview" hx-swap="innerHTML">Sync changes now</a><% } %>
+    <% }) %>
+    <%~ include("partials/page-header", { heading: it.heading, trail: it.trail, facts: it.facts, search: it.search, compact: false, actionsHtml: actionsHtml }) %>
+    <div id="sync-preview"></div>
+    <% if (it.emptySearch) { %><p class="hint">No key matched.</p><% } %>
+    <div class="rows"><% for (const row of it.rows) { %><%~ include("partials/product-row", row) %><% } %></div>

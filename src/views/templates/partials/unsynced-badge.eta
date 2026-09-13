@@ -1,0 +1,9 @@
+<% const count = Number(it.count) || 0 %>
+<% if (count) { %>
+<span class="peek unsynced-badge" tabindex="0">
+  <span class="chip wait"><%= count %> <%= it.changes ? (count === 1 ? 'unsynced change' : 'unsynced changes') : 'unsynced' %></span>
+  <% if (it.changelog) { %>
+  <%~ include("partials/sync-detail", it.changelog) %>
+  <% } %>
+</span>
+<% } %>

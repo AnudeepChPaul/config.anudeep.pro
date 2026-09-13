@@ -18,8 +18,6 @@ services:
       CONFIG_REPO_DIR: /var/lib/config/repo
       CONFIG_SOCKET_PATH: /run/config/config.sock
       CONFIG_SNAPSHOT_PATH: /var/lib/config/snapshot.json
-      # Binds inside the container; the port mapping below decides who can reach it. The UI has
-      # no authentication until slice 10, which is also why CONFIG_ENVIRONMENT must stay dev.
       CONFIG_HTTP_HOST: 0.0.0.0
       CONFIG_AGE_KEY: ${CONFIG_AGE_KEY:-}
       # Signing key for the session cookie. Its presence is what turns the guard on.
@@ -27,10 +25,17 @@ services:
       # The console is reached over plain http here. Refused in prod whatever is set: a session
       # cookie that can travel in the clear is not a session.
       CONFIG_INSECURE_COOKIE: "1"
-      # How reachability is decided. Unset means "iam is up", which keeps break-glass shut;
-      # point it at a dead port locally to exercise the emergency path.
-      CONFIG_IAM_HEALTH_URL: ${CONFIG_IAM_HEALTH_URL:-}
+      # How reachability is decided. From this container, the host's IAM is not 127.0.0.1.
+      # Default talks to IAM on the Docker host. Point at a dead URL to force break-glass.
+      CONFIG_IAM_HEALTH_URL: ${CONFIG_IAM_HEALTH_URL:-http://host.docker.internal:8000/healthz}
       CONFIG_IAM_CHECK_INTERVAL_MS: ${CONFIG_IAM_CHECK_INTERVAL_MS:-10000}
+      CONFIG_IAM_ISSUER: ${CONFIG_IAM_ISSUER:-}
+      CONFIG_IAM_CLIENT_ID: ${CONFIG_IAM_CLIENT_ID:-}
+      CONFIG_IAM_CLIENT_SECRET: ${CONFIG_IAM_CLIENT_SECRET:-}
+      CONFIG_IAM_REDIRECT_URI: ${CONFIG_IAM_REDIRECT_URI:-}
+      # mkcert root CA so fetch('https://iam.anudeep.pro/...') trusts local TLS. Unset, the
+      # mount is a dummy file and this variable is absent.
+      NODE_EXTRA_CA_CERTS: ${CONFIG_IAM_TLS_CA:+/run/certs/iam-rootCA.pem}
       # Where publishes are pushed. Unset, the registry is local-only: every publish commits and
       # is served, and the console says so — "not yet pushed to GitHub" — rather than pretending.
       CONFIG_GIT_REMOTE: ${CONFIG_GIT_REMOTE:-}
@@ -56,34 +61,44 @@ services:
         condition: service_healthy
     volumes:
       - ./src:/app/src:ro
+      # compile-eta writes registry.ts here; the rest of src stays read-only.
+      - ./src/views/generated:/app/src/views/generated
+      - ./scripts:/app/scripts:ro
+      # Baked into the image at build; without this mount, `pnpm dev` keeps the image's
+      # package.json while src/ already reflects the checkout.
+      - ./package.json:/app/package.json:ro
       - ./deploy:/app/deploy:ro
       # Read-only, and the default is a path that does not exist — with no remote configured
       # nothing reads it. Docker creates a directory for a missing source, which ssh rejects as
       # a key file, so an unset CONFIG_DEPLOY_KEY fails at the push and not silently.
       - ${CONFIG_DEPLOY_KEY:-./deploy/no-deploy-key}:/run/secrets/deploy_key:ro
+      - ${CONFIG_IAM_TLS_CA:-./deploy/local-iam-caddy/absent-ca.pem}:/run/certs/iam-rootCA.pem:ro
       - ./tsconfig.json:/app/tsconfig.json:ro
       - config_repo:/var/lib/config
       - config_socket:/run/config
-    # 127.0.0.1 explicitly: an unauthenticated editor that can close registration must not be
-    # reachable from the network, and a bare "8200:8200" would publish it on every interface.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      # Browser and discovery use https://iam.anudeep.pro; inside the container that name
+      # must be the host, where Caddy listens on 443.
+      - "iam.anudeep.pro:host-gateway"
+      - "config.anudeep.pro:host-gateway"
+    # 127.0.0.1 explicitly: the console is session-gated, but still must not be published on
+    # every interface. A bare "8200:8200" would.
     ports: ["127.0.0.1:8200:8200"]
 
   # `docker compose run --rm test` — the suite on Linux, where SO_PEERCRED exists.
   #
   # Not a long-running service and deliberately not part of `up`: it runs, reports, and exits.
   #
-  # node_modules comes from the image and nothing is mounted over it. Only the four paths below
-  # are bound, so the Linux-native koffi binary can never meet the darwin one in the host
-  # checkout — which is what the named volume this used to carry was for. That volume also
-  # SHADOWED the image's dependencies, so a package added on the host was missing in here even
-  # after a rebuild; vitest reported the unloadable file beside a green count for everything
-  # else, and a whole test file sat unrun.
+  # node_modules comes from the image and nothing is mounted over it. src is read-only except
+  # generated/ (eta compile writes registry.ts). Tests and scripts are bound from the checkout.
   test:
     build:
       context: .
       dockerfile: Dockerfile.test
     volumes:
       - ./src:/app/src:ro
+      - ./src/views/generated:/app/src/views/generated
       - ./tests:/app/tests:ro
       # The dev scripts are tested too: env-keep.sh decides what survives `make reset`, and
       # getting that wrong disarms publishing without saying so.

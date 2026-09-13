@@ -1,25 +1,11 @@
-import { html, raw, type SafeHtml } from '@config/src/views/html.js';
-import {
-  consoleTabs,
-  layout,
-  layoutChrome,
-  type PageNotice,
-  pageHeader,
-  titled,
-} from '@config/src/views/page-frame.js';
-export function renderFeatureAddRow(environment = ''): SafeHtml {
-  return html`<li class="row feature-row">
-    <form method="post" action="/features" hx-post="/features" hx-target="#page"
-          hx-swap="innerHTML" class="fieldrow feature-add">
-      ${environment ? html`<input type="hidden" name="environment" value="${environment}">` : html``}
-      <label class="field">Feature name
-        <input type="text" name="name" required pattern="[A-Z][A-Z0-9_]*" autofocus>
-      </label>
-      <button type="submit">Save</button>
-      <a class="linkbtn no" href="/features?env=${encodeURIComponent(environment)}" hx-get="/features?env=${encodeURIComponent(environment)}" hx-target="#page"
-         hx-swap="innerHTML" hx-push-url="true">Cancel</a>
-    </form>
-  </li>`;
+import { layoutChrome, type PageNotice, titled } from '@config/src/views/page-frame.js';
+import { render } from '@config/src/views/render.js';
+
+export function renderFeatureAddRow(environment = ''): string {
+  return render('pages/feature-add-row', {
+    environment,
+    environmentEncoded: encodeURIComponent(environment),
+  });
 }
 
 export function renderFeatures(options: {
@@ -34,51 +20,41 @@ export function renderFeatures(options: {
   build?: string;
   fragment?: boolean;
   autoSync?: boolean;
-  currentPath?: string;
-}): SafeHtml {
+  updateFooter?: boolean;
+  updateHeader?: boolean;
+}): string {
   const names = Object.keys(options.flags).sort((left, right) => left.localeCompare(right));
-  const rows = names.map((name) => {
+  const featureRows = names.map((name) => {
     const enabled = options.flags[name]?.[options.environment] === true;
-    const action = `/features/${encodeURIComponent(name)}`;
-    return html`<li class="row feature-row">
-      <span class="feature-name">${name}</span>
-      <form class="feature-switch" method="post" action="${action}" hx-post="${action}"
-            hx-target="#page" hx-swap="innerHTML">
-        <input type="hidden" name="environment" value="${options.environment}">
-        <label class="switch" title="${enabled ? 'Disable' : 'Enable'} ${name}">
-          <input type="checkbox" name="value" value="true" ${enabled ? raw('checked') : raw('')}
-                 onchange="this.form.requestSubmit()" aria-label="${name}">
-          <span class="track"><span class="knob"></span></span><span class="state"></span>
-        </label>
-      </form>
-    </li>`;
+    return {
+      name,
+      enabled,
+      environment: options.environment,
+      action: `/features/${encodeURIComponent(name)}`,
+    };
   });
-  const addRow = options.adding ? renderFeatureAddRow(options.environment) : html``;
-  const addUrl = `/features/new?env=${encodeURIComponent(options.environment)}`;
-  const body = html`
-    ${consoleTabs('features')}
-    ${pageHeader({
-      ...(options.notice ? { notice: options.notice } : {}),
-      dismissTo: '/features',
-      title: html`Features`,
-      facts: html`Feature flags · ${options.environment}`,
-      actions: options.environment
-        ? html`<a class="linkbtn" href="${addUrl}" hx-get="${addUrl}"
-        hx-target="#feature-list" hx-swap="beforeend">Add a feature</a>`
-        : html``,
-    })}
-    <nav class="tabs" aria-label="Feature environments">${(options.environments ?? []).map(
-      (environment) => {
-        const url = `/features?env=${encodeURIComponent(environment)}`;
-        return html`<a class="tab ${environment === options.environment ? 'on' : ''}" href="${url}" hx-get="${url}" hx-target="#page" hx-swap="innerHTML" hx-push-url="true">${titled(environment)}</a>`;
-      },
-    )}</nav>
-    ${options.error ? html`<div class="card error">${options.error}</div>` : html``}
-    <ul class="rows" id="feature-list">
-      ${addRow}
-      ${rows.length > 0 ? rows : html`<li class="row"><span class="hint">No features yet.</span></li>`}
-    </ul>`;
-  return options.fragment
-    ? body
-    : layout('Features', body, options.settingsLink, options.build, layoutChrome(options));
+  return render('pages/features', {
+    title: 'Features',
+    showHeader: true,
+    heading: 'Features',
+    fragment: Boolean(options.fragment),
+    settingsLink: Boolean(options.settingsLink),
+    build: options.build ?? '',
+    notice: options.notice,
+    dismissTo: '/features',
+    ...layoutChrome(options),
+    activeTab: 'features',
+    environment: options.environment,
+    adding: Boolean(options.adding),
+    error: options.error,
+    facts: `Feature flags · ${options.environment}`,
+    addUrl: `/features/new?env=${encodeURIComponent(options.environment)}`,
+    environmentEncoded: encodeURIComponent(options.environment),
+    envTabsLabel: 'Feature environments',
+    envTabs: (options.environments ?? []).map((environment) => {
+      const url = `/features?env=${encodeURIComponent(environment)}`;
+      return { href: url, label: titled(environment), on: environment === options.environment };
+    }),
+    featureRows,
+  });
 }

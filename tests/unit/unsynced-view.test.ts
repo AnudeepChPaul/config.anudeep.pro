@@ -28,7 +28,7 @@ describe('unsynced changes on the product list', () => {
 });
 
 describe('unsynced changes on the product page', () => {
-  it('lists saved diffs on the idle line in a small type and peeks old to new on the key name', () => {
+  it('badges unsynced count on the idle line and peeks the changelog on hover', () => {
     document.body.innerHTML = String(
       renderProduct({
         service: 'iam',
@@ -52,9 +52,10 @@ describe('unsynced changes on the product page', () => {
     );
 
     const idle = document.querySelector('.idle') as HTMLElement;
-    expect(idle.textContent).toContain('SESSION_TTL');
-    expect(idle.querySelector('.was')?.textContent).toBe('900');
-    expect(idle.querySelector('.is')?.textContent).toBe('1200');
+    expect(idle.querySelector('.unsynced-badge .chip.wait')?.textContent).toBe('1 unsynced change');
+    expect(idle.querySelector('.unsynced-badge .sync-env-name')?.textContent).toBe('Dev');
+    expect(idle.querySelector('.unsynced-badge .sync-vars .was')?.textContent).toBe('900');
+    expect(idle.querySelector('.unsynced-badge .sync-vars .is')?.textContent).toBe('1200');
 
     const peek = document.querySelector('.keyline .peek') as HTMLElement;
     expect(peek.querySelector('label')?.textContent).toBe('SESSION_TTL');
@@ -62,7 +63,7 @@ describe('unsynced changes on the product page', () => {
     expect(peek.querySelector('.detail .is')?.textContent).toBe('1200');
   });
 
-  it('masks a secret in both the idle line and the hover', () => {
+  it('masks a secret in the idle changelog and the key hover', () => {
     document.body.innerHTML = String(
       renderProduct({
         service: 'iam',

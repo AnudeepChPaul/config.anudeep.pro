@@ -11,6 +11,7 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY tsconfig*.json ./
 COPY src/ ./src/
+COPY scripts/compile-eta.ts ./scripts/compile-eta.ts
 RUN pnpm build && pnpm prune --prod
 
 FROM node:24-bookworm-slim AS runtime

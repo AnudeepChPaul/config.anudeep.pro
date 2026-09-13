@@ -1,0 +1,33 @@
+<% if (!it.fragment) { layout("layouts/document") } %>
+      <h1>Sign in</h1>
+      <p class="sub">config.anudeep.pro</p>
+      <% if (it.error) { %><div class="card error"><%= it.error %></div><% } %>
+      <% if (it.iamReachable) { %>
+      <div class="card">
+        <p class="sub">Sign in with iam to continue.</p>
+        <% if (it.iamConfigured === false) { %><span class="hint">iam sign-in is not configured on this instance.</span>
+        <% } else { %><a href="<%= it.iamLoginUrl %>">Sign in with iam</a>
+        <% } %>
+      </div>
+      <% } else { %>
+      <div class="card">
+        <p class="sub">iam is unreachable, so break-glass sign-in is available.</p>
+      </div>
+      <div class="card">
+        <div class="banner inset">
+          <strong>Every attempt raises an alert.</strong>
+          <span class="hint">Successful or not — this credential cannot be revoked through iam.</span>
+        </div>
+        <form method="post" action="/login/break-glass">
+          <div class="field">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" autocomplete="off" required>
+          </div>
+          <div class="field">
+            <label for="code">Authenticator code <span class="hint">6 digits, single use</span></label>
+            <input type="text" id="code" name="code" inputmode="numeric" autocomplete="off" required>
+          </div>
+          <button type="submit">Sign in</button>
+        </form>
+      </div>
+      <% } %>

@@ -1,0 +1,5 @@
+<nav class="tabs" aria-label="<%= it.envTabsLabel %>">
+<% for (const tab of it.envTabs ?? []) { %>
+<a class="tab <%= tab.on ? 'on' : '' %>" href="<%= tab.href %>" hx-get="<%= tab.href %>" hx-target="#page" hx-swap="innerHTML" hx-push-url="true"><%= tab.label %></a>
+<% } %>
+</nav>

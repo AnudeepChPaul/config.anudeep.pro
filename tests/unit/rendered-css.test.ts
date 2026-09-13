@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type KeyRow,
   renderProduct,
@@ -15,33 +17,43 @@ import { describe, expect, it } from 'vitest';
  *
  * These assert the MECHANISM — the rules that make the behaviour possible. They cannot prove
  * the page looks right; only that the thing whose absence caused each bug is still there.
+ *
+ * Styles live in `src/views/assets/base.css` and are linked from the document layout, not
+ * inlined in the HTML the renderer returns.
  */
+
+const stylesheet = readFileSync(join(process.cwd(), 'src/views/assets/base.css'), 'utf8');
+const withSheet = (html: string): string => `${stylesheet}\n${html}`;
 
 const definition = (over: Record<string, unknown> = {}) =>
   ({ type: 'bool', secret: false, ...over }) as unknown as KeyRow['definition'];
 
 const productsPage = () =>
-  String(
-    renderProducts({
-      products: [
-        { name: 'iam', environments: ['dev'], retiring: false, keys: ['A', 'B', 'C', 'D'] },
-      ],
-    }),
+  withSheet(
+    String(
+      renderProducts({
+        products: [
+          { name: 'iam', environments: ['dev'], retiring: false, keys: ['A', 'B', 'C', 'D'] },
+        ],
+      }),
+    ),
   );
 
 const productPage = (rows: KeyRow[]) =>
-  String(
-    renderProduct({
-      service: 'iam',
-      environment: 'dev',
-      environments: ['dev'],
-      etag: 'e',
-      rows,
-      version: 1,
-      next: null,
-      retiring: false,
-      missing: false,
-    }),
+  withSheet(
+    String(
+      renderProduct({
+        service: 'iam',
+        environment: 'dev',
+        environments: ['dev'],
+        etag: 'e',
+        rows,
+        version: 1,
+        next: null,
+        retiring: false,
+        missing: false,
+      }),
+    ),
   );
 
 describe('the hover panel is not clipped by its container', () => {
@@ -51,20 +63,20 @@ describe('the hover panel is not clipped by its container', () => {
   const listOverflow = (page: string) => page.match(/\.rows\s*\{[^}]*\}/)?.[0] ?? '';
 
   it('does not hide overflow on the row list', () => {
-    const page = String(renderProducts({ products: [] }));
+    const page = productsPage();
 
     expect(listOverflow(page)).not.toMatch(/overflow:\s*hidden/);
   });
 
   it('still rounds the card, on the first and last rows instead', () => {
-    const page = String(renderProducts({ products: [] }));
+    const page = productsPage();
 
-    expect(page).toContain('.rows > *:first-child');
-    expect(page).toContain('.rows > *:last-child');
+    expect(page).toMatch(/\.rows\s*>\s*\*:first-child/);
+    expect(page).toMatch(/\.rows\s*>\s*\*:last-child/);
   });
 
   it('gives the panel a stacking order so a later row does not cover it', () => {
-    const page = String(renderProducts({ products: [] }));
+    const page = productsPage();
 
     expect(page).toMatch(/\.detail\s*\{[^}]*z-index/);
   });
@@ -86,19 +98,19 @@ describe('the switch reflects the checkbox', () => {
   it('styles the track from :checked rather than a server-rendered class', () => {
     const body = page();
 
-    expect(body).toMatch(/\.switch input:checked ~ \.track\s*\{/);
+    expect(body).toMatch(/\.switch input:checked\s*~\s*\.track\s*\{/);
     expect(body).not.toMatch(/\.track\.on\s*\{/);
   });
 
   it('moves the knob from :checked too', () => {
-    expect(page()).toMatch(/\.switch input:checked ~ \.track \.knob\s*\{/);
+    expect(page()).toMatch(/\.switch input:checked\s*~\s*\.track\s*\.knob\s*\{/);
   });
 
   it('generates the word beside it rather than rendering it once', () => {
     const body = page();
 
     expect(body).toMatch(/\.switch \.state::after\s*\{\s*content: 'false'/);
-    expect(body).toMatch(/\.switch input:checked ~ \.state::after\s*\{\s*content: 'true'/);
+    expect(body).toMatch(/\.switch input:checked\s*~\s*\.state::after\s*\{\s*content: 'true'/);
     // Nothing static to contradict the live state.
     expect(body).toContain('<span class="state"></span>');
   });
@@ -130,7 +142,7 @@ describe('the switch reflects the checkbox', () => {
   it('keeps focus visible, since the real checkbox is hidden', () => {
     // Hiding the input to draw a switch removes the browser's own focus ring; without a
     // replacement the control is invisible to keyboard users.
-    expect(page()).toMatch(/\.switch input:focus-visible ~ \.track/);
+    expect(page()).toMatch(/\.switch input:focus-visible\s*~\s*\.track/);
   });
 });
 
@@ -182,20 +194,48 @@ describe('the action line keeps reading order', () => {
     expect(productPage([])).toMatch(/\.actionline\.end \{[^}]*justify-content:\s*flex-end/);
   });
 
-  it('spaces the sync action list above Confirm', () => {
-    expect(productPage([])).toMatch(/\.sync-actions \{[^}]*margin-bottom:\s*1\.5rem/);
+  it('groups sync lists under the compact heading, without a nested type size', () => {
+    const sheet = productPage([]);
+    expect(sheet).toMatch(/#sync-card \.pagehead \{[^}]*margin-bottom:/);
+    expect(sheet).toMatch(/\.sync-group\s*\+\s*\.sync-group \{[^}]*border-top:/);
+    expect(sheet).not.toMatch(/#sync-card \{[^}]*font-size:/);
+    expect(sheet).not.toMatch(/\.sync-actions \{[^}]*font-size:/);
+    expect(sheet).toMatch(/\.sync-actions \.peek \{/);
+    expect(sheet).toMatch(/\.sync-heading \{[^}]*font-size:\s*var\(--type-base\)/);
+    expect(sheet).toMatch(/\.sync-env \{[^}]*font-size:\s*var\(--type-sm\)/);
+    expect(sheet).toMatch(/\.sync-vars \{[^}]*padding:\s*0 0 0 1\.25rem/);
+    expect(sheet).toMatch(/\.sync-tree \{[^}]*padding:\s*0 0 0 1\.25rem/);
+    expect(sheet).toMatch(/\.sync-added \{[^}]*color:\s*var\(--accent\)/);
+    expect(sheet).toMatch(/\.sync-retired,\s*\.sync-archived \{[^}]*color:\s*var\(--danger\)/);
+    expect(sheet).toMatch(/\.wasnow \.was \{[^}]*color:\s*var\(--unpublished\)/);
+    expect(sheet).toMatch(/\.wasnow \.is \{[^}]*color:\s*var\(--accent\)/);
   });
 
-  it('keeps a retiring row\'s actions on the right', () => {
+  it("keeps a retiring row's actions on the right", () => {
     expect(productPage([])).toMatch(/\.row-end \{[^}]*margin-left:\s*auto/);
     expect(productPage([])).toMatch(/\.row-end \{[^}]*justify-content:\s*flex-end/);
   });
 });
 
 describe('the product toolbar sits on the right', () => {
+  it('docks Confirm and Cancel on the toolbar and the draft across the page', () => {
+    const css = productPage([]);
+    expect(css).toMatch(/\.product-live \{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*auto/);
+    expect(css).toMatch(/\.product-live>#config-form,\s*\n\s*\.product-live>\.add-keys \{[^}]*display:\s*contents/);
+    expect(css).toMatch(/\[data-add-keys-confirm\] \{[^}]*grid-column:\s*2/);
+    expect(css).toMatch(/\[data-add-keys-confirm\] \{[^}]*grid-row:\s*1/);
+    expect(css).toMatch(/\.key-drafts \{[^}]*grid-column:\s*1\s*\/\s*-1/);
+  });
+
   it('pushes the write actions to the right edge of the slot', () => {
     const css = productPage([]);
-    expect(css).toMatch(/\.actionslot \.idle > button:first-of-type\s*\{[^}]*margin-left:\s*auto/);
+    expect(css).toMatch(
+      /\.actionslot \.idle\s*>\s*button:first-of-type\s*\{[^}]*margin-left:\s*auto/,
+    );
+    expect(css).toMatch(
+      /\.actionslot \.idle\s*>\s*\[data-open-add-keys-line\]\s*\{[^}]*margin-left:\s*auto/,
+    );
+    expect(css).toMatch(/\.actionline>\.add-variable \{[^}]*margin-left:\s*auto/);
   });
 
   it('draws the idle line in the small type, so saved diffs fit beside the facts', () => {
@@ -337,7 +377,7 @@ describe('a hidden element is actually hidden', () => {
  * now a role with a name, and a rule that wants a colour has to pick one.
  */
 describe('colour is a role, not a literal', () => {
-  const css = () => productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '';
+  const css = () => stylesheet;
 
   it('defines every role once, at the root', () => {
     const sheet = css();
@@ -425,7 +465,7 @@ describe('nothing styles itself inline', () => {
  * whose scrollbar comes and goes moves sideways by the width of it.
  */
 describe('nothing moves when you navigate', () => {
-  const css = () => productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '';
+  const css = () => stylesheet;
 
   it('fixes each header row to a height, rather than a floor it can exceed', () => {
     // min-height 1.15rem against a 1.5 line box is 1px short: the row was taller on the page
@@ -474,7 +514,7 @@ describe('nothing moves when you navigate', () => {
  * that writes a draft; both are still recognisably actions.
  */
 describe('an action is never painted as a state', () => {
-  const css = () => productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '';
+  const css = () => stylesheet;
   const rule = (selector: string) =>
     css().match(new RegExp(`\\${selector} \\{[^}]*\\}`))?.[0] ?? '';
 
@@ -515,9 +555,7 @@ describe('a link action is the same size whichever element it is', () => {
   // inherited 15px from the body. Search beside Clear, and "Save 3 as a draft in prod?" beside
   // "Not now", were a button and an anchor — two sizes, two baselines, two underline heights.
   const rule = (selector: string) =>
-    (productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '').match(
-      new RegExp(`\\${selector} \\{[^}]*\\}`),
-    )?.[0] ?? '';
+    stylesheet.match(new RegExp(`\\${selector} \\{[^}]*\\}`))?.[0] ?? '';
 
   it('states its own size rather than inheriting whatever is around it', () => {
     expect(rule('.linkbtn')).toMatch(/font-size:\s*var\(--type-sm\)/);
@@ -539,9 +577,7 @@ describe('a link action is the same size whichever element it is', () => {
  */
 describe('a negative action is danger-coloured', () => {
   const rule = (selector: string) =>
-    (productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '').match(
-      new RegExp(`\\${selector} \\{[^}]*\\}`),
-    )?.[0] ?? '';
+    stylesheet.match(new RegExp(`\\${selector} \\{[^}]*\\}`))?.[0] ?? '';
 
   it('paints the negative modifier with the danger token', () => {
     expect(rule('.linkbtn.no')).toMatch(/color:\s*var\(--danger\)/);
@@ -566,9 +602,7 @@ describe('a negative action is danger-coloured', () => {
  */
 describe('the notice line', () => {
   const rule = (selector: string) =>
-    (productPage([]).match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '').match(
-      new RegExp(`\\${selector} \\{[^}]*\\}`),
-    )?.[0] ?? '';
+    stylesheet.match(new RegExp(`\\${selector} \\{[^}]*\\}`))?.[0] ?? '';
 
   it('is underlined text at the weight the operator asked for', () => {
     expect(rule('.notice')).toMatch(/font-weight:\s*500/);
@@ -602,10 +636,7 @@ describe('the notice line', () => {
  * the rule existed and applied to nothing.
  */
 describe('the settings table', () => {
-  const sheet = () =>
-    (renderSettings({ env: {}, fragment: false })
-      .toString()
-      .match(/<style>[\s\S]*?<\/style>/) ?? [''])[0];
+  const sheet = () => stylesheet;
   const rule = (selector: string) =>
     sheet().match(new RegExp(`\\${selector} \\{[^}]*\\}`))?.[0] ?? '';
 

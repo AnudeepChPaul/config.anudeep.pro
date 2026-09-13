@@ -1,0 +1,6 @@
+<nav class="tabs" aria-label="Console sections">
+    <a class="tab <%= it.activeTab === 'products' ? 'on' : '' %>" href="/" hx-get="/" hx-target="#page"
+       hx-swap="innerHTML" hx-push-url="true">Products</a>
+    <a class="tab <%= it.activeTab === 'features' ? 'on' : '' %>" href="/features" hx-get="/features"
+       hx-target="#page" hx-swap="innerHTML" hx-push-url="true">Features</a>
+  </nav>

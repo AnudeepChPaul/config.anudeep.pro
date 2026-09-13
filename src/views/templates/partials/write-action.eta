@@ -1,0 +1,4 @@
+<button type="submit" class="<%= it.className ?? 'linkbtn' %>"<% if (it.formId) { %> form="<%= it.formId %>"<% } %><% if (it.post) { %> hx-post="<%= it.post %>" hx-target="#page" hx-swap="innerHTML" hx-include="<%= it.include ?? 'closest form' %>"<% if (it.vals) { %> hx-vals='<%= it.vals %>'<% } %><% } %><% if (it.attrName) { %> name="<%= it.attrName %>" value="<%= it.attrValue %>"<% } %>>
+    <span class="resting"><%= it.resting %></span>
+    <span class="running"><span class="spinner"></span><%= it.running %></span>
+  </button>

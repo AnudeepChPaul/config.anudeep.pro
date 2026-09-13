@@ -57,6 +57,126 @@ it('creates a product atomically and rejects duplicate identities', async () => 
   );
   expect(await db.read('config/duplicate/dev.yaml')).toBeNull();
 });
+it('adds keys to the schema and writes defaults only into the first environment', async () => {
+  const { db, operations } = await fixture();
+  const result = await operations.addKeys(
+    {
+      service: 'web',
+      environment: 'dev',
+      keys: [
+        {
+          name: 'SESSION_TTL',
+          type: 'int',
+          secret: false,
+          values: [],
+          description: '',
+          default: 30,
+        },
+        {
+          name: 'API_TOKEN',
+          type: 'string',
+          secret: true,
+          values: [],
+          description: 'token',
+          default: null,
+        },
+      ],
+    },
+    actor,
+  );
+  expect(result.ok).toBe(true);
+  expect(parse((await db.read('schema/web.yaml')) ?? '').keys).toMatchObject({
+    COUNT: { type: 'int' },
+    PASSWORD: { type: 'string', secret: true },
+    SESSION_TTL: { type: 'int' },
+    API_TOKEN: { type: 'string', secret: true },
+  });
+  expect(parse((await db.read('config/web/dev.yaml')) ?? '')).toEqual({
+    version: 3,
+    COUNT: 3,
+    SESSION_TTL: 30,
+  });
+  expect(parse((await db.read('config/web/prod.yaml')) ?? '')).toEqual({ version: 4, COUNT: 9 });
+  expect(parse((await db.read('config/web/legacy.yaml')) ?? '')).toEqual({ version: 1, COUNT: 10 });
+});
+it('refuses adding a variable in a higher environment or a name the schema already has', async () => {
+  const { db, operations } = await fixture();
+  const before = await db.snapshot();
+  expect(
+    await operations.addKeys(
+      {
+        service: 'web',
+        environment: 'prod',
+        keys: [
+          {
+            name: 'SESSION_TTL',
+            type: 'int',
+            secret: false,
+            values: [],
+            description: '',
+            default: 30,
+          },
+        ],
+      },
+      actor,
+    ),
+  ).toMatchObject({
+    ok: false,
+    error: { code: 'invalid', detail: 'variables can only be added in dev' },
+  });
+  expect(
+    await operations.addKeys(
+      {
+        service: 'web',
+        environment: 'dev',
+        keys: [
+          {
+            name: 'COUNT',
+            type: 'int',
+            secret: false,
+            values: [],
+            description: '',
+            default: 1,
+          },
+        ],
+      },
+      actor,
+    ),
+  ).toMatchObject({
+    ok: false,
+    error: { errors: [{ key: 'COUNT', message: "'COUNT' is already declared" }] },
+  });
+  expect(await db.snapshot()).toEqual(before);
+});
+it('keeps a retirement mark when adding variables', async () => {
+  const { db, operations } = await fixture();
+  expect((await operations.setRetiring('web', true, actor)).ok).toBe(true);
+  expect(
+    (
+      await operations.addKeys(
+        {
+          service: 'web',
+          environment: 'dev',
+          keys: [
+            {
+              name: 'REGION',
+              type: 'string',
+              secret: false,
+              values: [],
+              description: '',
+              default: 'eu',
+            },
+          ],
+        },
+        actor,
+      )
+    ).ok,
+  ).toBe(true);
+  expect(parse((await db.read('schema/web.yaml')) ?? '')).toMatchObject({
+    retiring: true,
+    keys: { REGION: { type: 'string' } },
+  });
+});
 it('promotes selected non-secrets directly and refuses secrets and reversed order', async () => {
   const { db, operations } = await fixture();
   expect(
@@ -103,6 +223,24 @@ it('retirement changes only the schema; archive preserves ciphertext and removes
   expect(parse((await db.read('archived/web.yaml')) ?? '').environments.dev).toBe(before);
   expect(await db.read('config/web/legacy.yaml')).toBeNull();
   expect(parse((await db.read('services.yaml')) ?? '').services).toEqual([]);
+  expect(await db.read('schema/web.yaml')).toBeNull();
+});
+it('refuses retirement when an archive already exists, unless forced', async () => {
+  const { db, operations } = await fixture();
+  await db.write({ path: 'archived/web.yaml', content: 'version: 1\narchived: {by: old}\n' });
+  expect(await operations.setRetiring('web', true, actor)).toMatchObject({
+    ok: false,
+    error: { code: 'invalid', detail: 'an archive already exists for this product' },
+  });
+  expect((await db.read('schema/web.yaml')) ?? '').not.toMatch(/retiring: true/);
+  expect((await operations.setRetiring('web', true, actor, { force: true })).ok).toBe(true);
+  expect((await db.read('schema/web.yaml')) ?? '').toMatch(/retiring: true/);
+  expect(await operations.archiveProduct('web', actor)).toMatchObject({
+    ok: false,
+    error: { detail: 'an archive already exists for this product' },
+  });
+  expect((await operations.archiveProduct('web', actor, undefined, { force: true })).ok).toBe(true);
+  expect(parse((await db.read('archived/web.yaml')) ?? '').archived.by).toBe(actor.email);
   expect(await db.read('schema/web.yaml')).toBeNull();
 });
 it('refuses a delete that would leave an invalid document and writes nothing', async () => {

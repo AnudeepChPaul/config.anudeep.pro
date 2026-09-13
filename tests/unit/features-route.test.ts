@@ -45,14 +45,14 @@ describe('feature flag routes', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/features',
-      payload: 'name=NEW_CHECKOUT&environment=qa',
+      payload: 'name=NewCheckout&environment=qa',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.body).toContain('NEW_CHECKOUT');
+    expect(response.body).toContain('NewCheckout');
     expect(response.body).toContain('features');
-    expect(flags).toEqual({ NEW_CHECKOUT: { qa: false } });
+    expect(flags).toEqual({ NewCheckout: { qa: false } });
     expect(response.body).toContain('Feature flags · qa');
     const invalid = await app.inject({
       method: 'POST',
